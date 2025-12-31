@@ -1,5 +1,5 @@
 True Proxy Downloader
-Download any files resumable or non-resumable file from a low speed routed by direct vps server
+Download any files resumable or non-resumable file from a low speed routed by direct vps server fro high speed output.
 
 ## 🚀 Installation
 
