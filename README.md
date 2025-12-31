@@ -3,5 +3,5 @@ Download any files resumable or non-resumable file from a low speed routed by di
 
 ## 🚀 Installation
 
-- Follow the sh shript
+- copy the script.sh test to vps shell terminal for smooth installation.
 - After installation replace the vps ip here http://VPSIP:8080/
