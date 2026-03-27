@@ -1,0 +1,64 @@
+rm -f setup.sh
+cat > setup.sh << 'EOF'
+#!/bin/bash
+clear
+
+echo "🚀 Setting up Remote Desktop Browser (VNC)..."
+
+echo "💾 Checking Memory & Creating 2GB Swap Space..."
+if ! swapon --show | grep -q "file"; then
+    sudo fallocate -l 2G /swapfile
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+fi
+
+echo "🧹 Cleaning up old processes..."
+killall google-chrome Xvfb x11vnc websockify >/dev/null 2>&1
+rm -f /tmp/.X11-unix/X99
+sleep 2
+
+echo "🔓 Opening Firewall for Port 5000..."
+sudo iptables -I INPUT -p tcp -m tcp --dport 5000 -j ACCEPT >/dev/null 2>&1
+sudo ufw allow 5000/tcp >/dev/null 2>&1
+
+echo "📦 Installing Dependencies & Google Chrome..."
+sudo apt update -qq >/dev/null 2>&1
+sudo DEBIAN_FRONTEND=noninteractive apt install -y xvfb x11vnc net-tools websockify git ufw psmisc wget gnupg >/dev/null 2>&1
+
+# Download official Google Chrome to avoid Ubuntu's broken Chromium snaps
+wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add - >/dev/null 2>&1
+echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google.list >/dev/null 2>&1
+sudo apt update -qq >/dev/null 2>&1
+sudo apt install -y google-chrome-stable >/dev/null 2>&1
+
+echo "📥 Setting up noVNC Web Client..."
+rm -rf /root/noVNC
+git clone https://github.com/novnc/noVNC.git /root/noVNC >/dev/null 2>&1
+
+echo "🖥️ Starting Virtual Display (Xvfb)..."
+Xvfb :99 -screen 0 1280x720x24 -nolisten tcp &>/root/xvfb.log &
+sleep 2
+export DISPLAY=:99
+
+echo "🌐 Starting Google Chrome..."
+google-chrome --no-sandbox --disable-gpu --disable-dev-shm-usage --window-size=1280,720 --start-maximized "https://www.youtube.com" &>/root/chrome.log &
+sleep 3
+
+echo "📡 Starting VNC Server..."
+x11vnc -display :99 -forever -nopw -quiet -rfbport 5900 &>/root/x11vnc.log &
+sleep 2
+
+echo "🌉 Starting Web Bridge (websockify)..."
+websockify --web /root/noVNC 5000 localhost:5900 &>/root/novnc.log &
+
+IP=$(curl -s ifconfig.me)
+echo -e "\n============================================"
+echo "✅ Remote Browser Setup Complete!"
+echo "🌐 Open Google Chrome and click this link:"
+echo "➡️  http://$IP:5000/vnc.html?resize=scale"
+echo "============================================"
+echo "Click 'Connect' on the page to view the browser."
+EOF
+bash setup.sh
