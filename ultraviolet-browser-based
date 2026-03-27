@@ -1,0 +1,41 @@
+rm -f setup.sh
+cat > setup.sh << 'EOF'
+#!/bin/bash
+clear
+
+echo "🛑 Cleaning up old proxy engines..."
+pm2 delete all >/dev/null 2>&1
+sudo fuser -k 8080/tcp >/dev/null 2>&1
+sudo fuser -k 8443/tcp >/dev/null 2>&1
+rm -rf /home/ubuntu/rammerhead
+
+echo "📥 Downloading Latest Ultraviolet (TitaniumNetwork)..."
+cd /home/ubuntu
+rm -rf Ultraviolet-App
+git clone https://github.com/titaniumnetwork-dev/Ultraviolet-App.git >/dev/null 2>&1
+cd Ultraviolet-App
+
+echo "🔨 Installing Modern Engine Dependencies..."
+npm install --silent >/dev/null 2>&1
+
+echo "⚙️ Building the Engine (Takes 1-2 minutes)..."
+npm run build --silent >/dev/null 2>&1
+
+echo "🔐 Generating Self-Signed SSL Certificate..."
+openssl req -nodes -new -x509 -keyout server.key -out server.cert -days 365 -subj "/C=US/ST=State/L=City/O=Organization/OU=Department/CN=localhost" >/dev/null 2>&1
+
+echo "📦 Setting up Local HTTPS Wrapper..."
+sudo npm install -g local-ssl-proxy --silent >/dev/null 2>&1
+
+echo "🚀 Starting Ultraviolet Engine & HTTPS Tunnel..."
+pm2 start src/index.js --name "ultraviolet" >/dev/null 2>&1
+pm2 start "local-ssl-proxy --source 8443 --target 8080 --key server.key --cert server.cert" --name "https-wrapper" >/dev/null 2>&1
+
+IP=$(curl -s ifconfig.me)
+echo -e "\n============================================"
+echo "✅ Modern Ultraviolet Setup Complete!"
+echo "🌐 Open Google Chrome and go to:"
+echo "➡️  https://$IP:8443"
+echo "============================================"
+EOF
+bash setup.sh
