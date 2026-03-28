@@ -1,10 +1,10 @@
-rm -f high_bandwidth_server.sh
-cat > high_bandwidth_server.sh << 'BASH_EOF'
+rm -f dual_engine_server.sh
+cat > dual_engine_server.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING HIGH-BANDWIDTH MASTER SERVER"
+echo "🚀 INITIATING DUAL-ENGINE 6MB MASTER SERVER"
 echo "===================================================="
 
 echo "🛑 [1/8] Cleaning previous processes..."
@@ -20,7 +20,6 @@ sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile >/dev/null 2>&1
 sudo swapon /swapfile
-# Make swap permanent
 sudo sed -i '/swapfile/d' /etc/fstab
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
 sudo sysctl vm.swappiness=10
@@ -44,7 +43,7 @@ rm -rf /root/venv
 python3 -m venv /root/venv
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ [5/8] Compiling the High-Bandwidth Engine..."
+echo "⚙️ [5/8] Compiling the Dual-Engine Architecture..."
 cat > /root/app.py << 'PYTHON_EOF'
 import os, time, uuid, threading, requests, subprocess, shutil, re
 from flask import Flask, jsonify, render_template_string, request, send_file, Response
@@ -56,6 +55,9 @@ os.makedirs(DL_DIR, exist_ok=True)
 
 db = {}
 db_lock = threading.Lock()
+
+# The massive 6MB Chunk size requested
+CHUNK_SIZE = 6291456 
 
 # ==========================================
 # CRASH-PROOF SYSTEM TELEMETRY
@@ -95,7 +97,7 @@ def update_telemetry():
 threading.Thread(target=update_telemetry, daemon=True).start()
 
 # ==========================================
-# BACKGROUND WORKERS (High Speed)
+# ENGINE 1: DISK FORGE WORKERS
 # ==========================================
 def cleaner():
     while True:
@@ -116,7 +118,7 @@ def dl_worker(fid):
     try:
         r = requests.get(f['url'], stream=True, timeout=10)
         f['total'] = int(r.headers.get('content-length', 0))
-        f['status'] = 'Downloading'
+        f['status'] = 'Downloading to Disk'
         
         fname = f"video_{fid}.mp4"
         cd = r.headers.get('content-disposition')
@@ -131,8 +133,7 @@ def dl_worker(fid):
         f['path'] = os.path.join(DL_DIR, f"{fid}_{fname}")
 
         with open(f['path'], 'wb') as out:
-            # Upgraded chunk size for faster disk writing
-            for chunk in r.iter_content(1048576):
+            for chunk in r.iter_content(CHUNK_SIZE): # 6MB Chunks
                 with db_lock:
                     if db[fid]['status'] == 'Stopped': break
                 if chunk:
@@ -159,7 +160,7 @@ def web_forge_worker(fid):
     
     cmd = [
         'nice', '-n', '15',
-        'cpulimit', '-l', '90', '--',
+        'cpulimit', '-l', '95', '--',
         'ffmpeg', '-y', '-i', old_path, 
         '-c:v', 'copy', 
         '-c:a', 'aac', '-b:a', '256k', '-ac', '2', 
@@ -177,55 +178,61 @@ def web_forge_worker(fid):
         with db_lock: db[fid]['status'] = 'Web Forge Failed'
 
 # ==========================================
-# FRONTEND WITH PLYR UI & MEMORY RESUME
+# FRONTEND WITH DUAL ENGINES & PLYR
 # ==========================================
 HTML=r'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ultimate Media Engine</title>
+    <title>Dual-Core Media Engine</title>
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <style>
-        :root { --bg: #0f1115; --card: #1a1d24; --text: #e2e8f0; --accent: #00b3ff; --success: #10b981; --danger: #ef4444; --warn: #f59e0b; --purple: #8b5cf6;}
-        body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; padding: 20px; max-width: 900px; margin: auto; }
+        :root { --bg: #0a0c10; --card: #14171f; --text: #e2e8f0; --accent: #00b3ff; --success: #10b981; --danger: #ef4444; --warn: #f59e0b; --purple: #8b5cf6; --ram: #06b6d4;}
+        body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; padding: 20px; max-width: 950px; margin: auto; }
         h2 { border-bottom: 2px solid #333; padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
         .status-dot { height: 12px; width: 12px; background: var(--success); border-radius: 50%; display: inline-block; box-shadow: 0 0 8px var(--success); }
-        .input-group { display: flex; gap: 10px; margin-bottom: 20px; }
+        .engine-box { background: var(--card); padding: 20px; border-radius: 10px; border: 1px solid #2d3748; margin-bottom: 20px; }
+        .engine-title { font-weight: bold; font-size: 1.2em; margin-bottom: 15px; display:flex; align-items:center; gap:8px;}
+        .input-group { display: flex; gap: 10px; }
         input { flex: 1; padding: 15px; border-radius: 8px; border: 1px solid #333; background: #000; color: white; font-size: 16px; outline: none; }
         button { padding: 12px 18px; border-radius: 8px; border: none; background: var(--accent); color: white; font-weight: bold; cursor: pointer; transition: 0.2s; }
         button:hover { opacity: 0.8; }
         
-        .monitors { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 25px; }
+        .monitors { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 25px; }
         .monitor-card { background: var(--card); padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #2d3748; }
         .monitor-value { font-size: 18px; font-weight: bold; margin-top: 5px; color: var(--accent); }
         
         .file-grid { display: grid; gap: 15px; }
-        .file-card { background: var(--card); padding: 20px; border-radius: 8px; border-left: 5px solid var(--accent); }
+        .file-card { background: var(--card); padding: 20px; border-radius: 8px; position:relative; }
+        .type-disk { border-left: 5px solid var(--purple); }
+        .type-ram { border-left: 5px solid var(--ram); }
         .file-name { font-weight: bold; font-size: 1.1em; word-break: break-all; margin-bottom: 10px; }
         .file-status { color: var(--warn); font-size: 0.9em; margin-bottom: 10px; }
-        progress { width: 100%; height: 10px; border-radius: 5px; margin-bottom: 10px; accent-color: var(--accent); }
+        progress { width: 100%; height: 10px; border-radius: 5px; margin-bottom: 10px; accent-color: var(--success); }
         
-        .link-box { display: flex; gap: 5px; margin-top: 10px; align-items: center; background: #111; padding: 10px; border-radius: 6px; border: 1px solid #333;} 
-        .link-box input {margin: 0; flex: 1; padding: 10px; border: 1px solid #555; background: #000; color: #00ffcc; font-family: monospace; font-size: 14px;}
+        .link-box { display: flex; gap: 5px; margin-top: 10px; align-items: center; background: #000; padding: 10px; border-radius: 6px; border: 1px solid #333;} 
+        .link-box input {margin: 0; flex: 1; padding: 10px; border: 1px solid #555; background: #111; color: #00ffcc; font-family: monospace; font-size: 14px;}
         
-        .btn-group { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 15px; }
+        .btn-group { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 15px; align-items:center; }
         .btn-green { background: var(--success); }
         .btn-purple { background: var(--purple); }
+        .btn-ram { background: var(--ram); color: #000;}
         .btn-red { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
         .btn-red:hover { background: var(--danger); color: white; }
+        
+        .audio-select { background: #000; color: #fff; border: 1px solid #555; padding: 10px; border-radius: 6px; outline:none; }
         
         #vid-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.98); z-index: 1000; align-items: center; justify-content: center; flex-direction: column; }
         .video-container { width: 95%; max-width: 1200px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); border-radius: 8px; overflow: hidden; background: #000; }
         .close-btn { margin-bottom: 15px; background: white; color: black; align-self: flex-end; margin-right: 2.5%; }
-        .warning-text { background: rgba(139, 92, 246, 0.1); border: 1px solid var(--purple); color: var(--purple); padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 0.85em; }
         :root { --plyr-color-main: #00b3ff; }
     </style>
 </head>
 <body>
 
 <h2>
-    <span>🎬 Ultimate Plyr Engine</span>
+    <span>🚀 Dual-Core Media Engine</span>
     <span style="font-size: 14px; color: #888;">API <span class="status-dot" id="dot"></span></span>
 </h2>
 
@@ -236,14 +243,23 @@ HTML=r'''<!DOCTYPE html>
     <div class="monitor-card" style="grid-column: span 3;"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div>
 </div>
 
-<div class="input-group">
-    <input type="text" id="url" placeholder="Paste direct non-resumable link here...">
-    <button id="dlBtn" onclick="addFile()">Download File</button>
+<div class="engine-box">
+    <div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Heavy MKVs / Non-Resumables)</span></div>
+    <div class="input-group">
+        <input type="text" id="url_disk" placeholder="Paste link to download to server disk...">
+        <button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button>
+    </div>
 </div>
 
-<div class="file-grid" id="files">
-    <div style="text-align: center; color: #555; padding: 20px;">Fetching server database...</div>
+<div class="engine-box">
+    <div class="engine-title"><span style="color:var(--ram);">⚡ Engine 2: RAM Proxy</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Resumables / Direct Bypass. No Disk Write.)</span></div>
+    <div class="input-group">
+        <input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM...">
+        <button onclick="addFile('ram')" style="background:var(--ram); color:#000;">Start RAM Proxy</button>
+    </div>
 </div>
+
+<div class="file-grid" id="files"></div>
 
 <div id="vid-modal">
     <button class="close-btn" onclick="closeVid()">Close Player</button>
@@ -263,13 +279,10 @@ const player = new Plyr('#player', {
 let currentFid = null;
 let isLiveStream = false;
 
-// Memory Resume System
+// Memory Resume
 player.on('timeupdate', () => {
-    if(currentFid && !isLiveStream) {
-        localStorage.setItem('plyr_time_' + currentFid, player.currentTime);
-    }
+    if(currentFid && !isLiveStream) localStorage.setItem('plyr_time_' + currentFid, player.currentTime);
 });
-
 player.on('loadedmetadata', () => {
     if(currentFid && !isLiveStream) {
         let savedTime = localStorage.getItem('plyr_time_' + currentFid);
@@ -277,39 +290,38 @@ player.on('loadedmetadata', () => {
     }
 });
 
-function addFile() {
-    let u = document.getElementById('url').value;
+function addFile(type) {
+    let u = document.getElementById('url_' + type).value;
     if(!u) return;
-    let btn = document.getElementById('dlBtn');
-    btn.innerText = "Processing...";
-    fetch('/api/add?url=' + encodeURIComponent(u)).then(() => {
-        document.getElementById('url').value = '';
-        btn.innerText = "Download File";
-    });
+    document.getElementById('url_' + type).value = '';
+    fetch('/api/add?type=' + type + '&url=' + encodeURIComponent(u));
 }
 
 function copyToBox(inputId) {
     let copyText = document.getElementById(inputId);
     copyText.select();
     copyText.setSelectionRange(0, 99999);
-    try { document.execCommand("copy"); alert("✅ IDM Ready Link Copied!"); } 
+    try { document.execCommand("copy"); alert("✅ Proxy/IDM Link Copied!"); } 
     catch(err) { alert("Please manually copy from the box."); }
 }
 
-function playVid(fid) {
+function playVid(src_url, fid) {
     document.getElementById('vid-modal').style.display = 'flex';
     currentFid = fid;
     isLiveStream = false;
-    player.source = { type: 'video', sources: [{ src: '/stream/' + fid, type: 'video/mp4' }] };
+    player.source = { type: 'video', sources: [{ src: src_url, type: 'video/mp4' }] };
     player.play();
 }
 
 function playLiveFix(fid) {
-    alert("⚡ High-Bandwidth OTF Engaged! CPU cap is 90% and Swap is active to prevent crashing. Seeking is disabled in this mode.");
+    let trackSel = document.getElementById('audio_' + fid);
+    let trackNum = trackSel ? trackSel.value : '0';
+
+    alert("⚡ OTF Audio Fix Engaged!\nTrack: " + trackNum + "\nChunk Size: 6MB\nNote: Seeking disabled in live mode. Subtitles require VLC.");
     document.getElementById('vid-modal').style.display = 'flex';
     currentFid = fid;
     isLiveStream = true;
-    player.source = { type: 'video', sources: [{ src: '/stream_live/' + fid, type: 'video/mp4' }] };
+    player.source = { type: 'video', sources: [{ src: '/stream_live/' + fid + '?audio=' + trackNum, type: 'video/mp4' }] };
     player.play();
 }
 
@@ -336,44 +348,70 @@ setInterval(() => {
             let pct = f.total ? Math.round((f.down/f.total)*100) : 0;
             let mb = (f.down/(1024*1024)).toFixed(1);
             let tot = f.total ? (f.total/(1024*1024)).toFixed(1) : '?';
-            let dlLink = window.location.origin + '/dl/' + f.id + '/' + encodeURIComponent(f.name);
-
-            let forgeBtn = '';
-            let streamBtn = '';
             
-            if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
-                streamBtn = `<button class="btn-purple" onclick="playLiveFix('${f.id}')">⚡ Play Live Audio Fix (OTF)</button>`;
+            // CARD RENDER LOGIC
+            if(f.type === 'ram') {
+                // ENGINE 2: RAM PROXY
+                let proxyDlLink = window.location.origin + '/proxy_dl/' + f.id + '/' + encodeURIComponent(f.name);
+                let proxyStreamLink = '/proxy_stream/' + f.id;
                 
-                if (f.status === 'Completed') {
-                    forgeBtn = `<button class="btn-warn" onclick="triggerAction('${f.id}', 'forge')" style="margin-top: 5px;">🎧 Offline Web Forge (Enables Fast-Forwarding)</button>`;
-                } else {
-                    forgeBtn = `<div class="warning-text">⚠️ Live Transcode Mode: Cannot drag timeline while streaming live. Wait for download to finish to use Offline Web Forge.</div>`;
-                }
+                html += `
+                <div class="file-card type-ram">
+                    <div class="file-name">⚡ [RAM] ${f.name}</div>
+                    <div class="file-status">[Proxy Active] - Bypassing Disk</div>
+                    
+                    <div class="link-box">
+                        <input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()">
+                        <button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy IDM Proxy</button>
+                    </div>
+
+                    <div class="btn-group">
+                        <button class="btn-ram" onclick="playVid('${proxyStreamLink}', '${f.id}')">▶️ Start Proxy Stream</button>
+                        <button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Remove</button>
+                    </div>
+                </div>`;
             } else {
-                streamBtn = `<button class="btn-green" onclick="playVid('${f.id}')">▶️ Play Standard Stream</button>`;
-            }
-
-            html += `
-            <div class="file-card">
-                <div class="file-name">${f.name}</div>
-                <div class="file-status">[${f.status}] - ${pct}% (${mb} MB / ${tot} MB)</div>
-                <progress value="${f.down}" max="${f.total||100}"></progress>
+                // ENGINE 1: DISK FORGE
+                let dlLink = window.location.origin + '/dl/' + f.id + '/' + encodeURIComponent(f.name);
                 
-                <div class="link-box">
-                    <input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()">
-                    <button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy IDM</button>
-                </div>
+                let controls = '';
+                if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
+                    controls = `
+                    <select id="audio_${f.id}" class="audio-select">
+                        <option value="0">Audio Track 1 (Default)</option>
+                        <option value="1">Audio Track 2</option>
+                        <option value="2">Audio Track 3</option>
+                    </select>
+                    <button class="btn-purple" onclick="playLiveFix('${f.id}')">⚡ Play Live Transcode</button>
+                    `;
+                    
+                    if (f.status === 'Completed') {
+                        controls += `<button class="btn-warn" onclick="triggerAction('${f.id}', 'forge')">🎧 Offline Web Forge (Enable Seeking)</button>`;
+                    }
+                } else {
+                    controls = `<button class="btn-green" onclick="playVid('/stream/${f.id}', '${f.id}')">▶️ Play Standard</button>`;
+                }
 
-                ${forgeBtn}
+                html += `
+                <div class="file-card type-disk">
+                    <div class="file-name">💿 [DISK] ${f.name}</div>
+                    <div class="file-status">[${f.status}] - ${pct}% (${mb} MB / ${tot} MB)</div>
+                    <progress value="${f.down}" max="${f.total||100}"></progress>
+                    
+                    <div class="link-box">
+                        <input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()">
+                        <button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy IDM Link</button>
+                    </div>
 
-                <div class="btn-group">
-                    ${streamBtn}
-                    <button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Delete</button>
-                </div>
-            </div>`;
+                    <div class="btn-group">
+                        ${controls}
+                        <button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Delete</button>
+                    </div>
+                </div>`;
+            }
         });
         
-        if(html === '') html = '<div style="text-align:center; color:#555; padding:20px;">No files. Paste a URL to begin.</div>';
+        if(html === '') html = '<div style="text-align:center; color:#555; padding:20px;">No active engines. Paste a URL to begin.</div>';
         document.getElementById('files').innerHTML = html;
     }).catch(e => {
         document.getElementById('dot').style.background = 'var(--danger)';
@@ -398,18 +436,36 @@ def api_data():
             safe_files.append({
                 'id': str(fid), 'name': str(f.get('name', 'Unknown')),
                 'status': str(f.get('status', 'Pending')),
-                'down': int(f.get('down', 0)), 'total': int(f.get('total', 0))
+                'down': int(f.get('down', 0)), 'total': int(f.get('total', 0)),
+                'type': str(f.get('type', 'disk'))
             })
     return jsonify({"sys": sys_data, "files": safe_files})
 
 @app.route('/api/add')
 def add():
     u = request.args.get('url')
+    t = request.args.get('type', 'disk')
     if not u: return "Err", 400
     fid = str(uuid.uuid4())[:8]
+    name = os.path.basename(u.split('?')[0]) or f"file_{fid}.mp4"
+    
     with db_lock:
-        db[fid] = {'id': fid, 'url': str(u), 'name': 'Fetching...', 'path': '', 'down': 0, 'total': 0, 'status': 'Starting...', 'start': time.time()}
-    threading.Thread(target=dl_worker, args=(fid,)).start()
+        db[fid] = {'id': fid, 'url': str(u), 'name': name, 'path': '', 'down': 0, 'total': 0, 'status': 'Starting...', 'start': time.time(), 'type': t}
+    
+    if t == 'disk':
+        threading.Thread(target=dl_worker, args=(fid,)).start()
+    else:
+        # For RAM Proxy, just fetch header to get name/size, no downloading
+        try:
+            r = requests.head(u, timeout=5)
+            with db_lock:
+                db[fid]['total'] = int(r.headers.get('content-length', 0))
+                db[fid]['status'] = 'Proxy Active'
+                cd = r.headers.get('content-disposition')
+                if cd and 'filename=' in cd:
+                    db[fid]['name'] = cd.split('filename=')[-1].strip('"\'')
+        except: pass
+
     return "OK"
 
 @app.route('/api/action/<fid>/<act>')
@@ -421,10 +477,49 @@ def action(fid, act):
             try: os.remove(db[fid]['path'])
             except: pass
             del db[fid]
-        elif act == 'forge':
+        elif act == 'forge' and db[fid]['type'] == 'disk':
             threading.Thread(target=web_forge_worker, args=(fid,)).start()
     return "OK"
 
+# ==========================================
+# ENGINE 2: RAM PROXY STREAM & DL
+# ==========================================
+def ram_proxy_generator(url, req_headers):
+    # Pure Python Generator: Passes 6MB chunks through RAM, bypasses disk
+    try:
+        r = requests.get(url, headers=req_headers, stream=True, timeout=10)
+        def generate():
+            for chunk in r.iter_content(CHUNK_SIZE):
+                if chunk: yield chunk
+        return Response(generate(), status=r.status_code, headers={
+            k: v for k, v in r.headers.items() 
+            if k.lower() in ['content-length', 'content-range', 'content-type', 'accept-ranges']
+        })
+    except:
+        return "Proxy Error", 500
+
+@app.route('/proxy_stream/<fid>')
+def proxy_stream(fid):
+    with db_lock:
+        if fid not in db or db[fid]['type'] != 'ram': return "404", 404
+        url = db[fid]['url']
+    req_headers = {k: v for k, v in request.headers.items() if k.lower() == 'range'}
+    return ram_proxy_generator(url, req_headers)
+
+@app.route('/proxy_dl/<fid>/<path:filename>')
+def proxy_dl(fid, filename):
+    with db_lock:
+        if fid not in db or db[fid]['type'] != 'ram': return "404", 404
+        url = db[fid]['url']
+        name = db[fid]['name']
+    req_headers = {k: v for k, v in request.headers.items() if k.lower() == 'range'}
+    resp = ram_proxy_generator(url, req_headers)
+    resp.headers['Content-Disposition'] = f'attachment; filename="{name}"'
+    return resp
+
+# ==========================================
+# ENGINE 1: DISK ROUTES (6MB CHUNKS)
+# ==========================================
 @app.route('/stream/<fid>')
 def stream(fid):
     with db_lock:
@@ -432,14 +527,13 @@ def stream(fid):
         fpath = db[fid]['path']
     return send_file(fpath, conditional=True)
 
-# ==========================================
-# HIGH BANDWIDTH LIVE AUDIO TRANSCODER (OTF)
-# ==========================================
 @app.route('/stream_live/<fid>')
 def stream_live(fid):
     with db_lock:
         if fid not in db or not os.path.exists(db[fid]['path']): return "404", 404
         fpath = db[fid]['path']
+
+    audio_track = request.args.get('audio', '0')
 
     while os.path.getsize(fpath) < 2000000:
         with db_lock:
@@ -447,14 +541,11 @@ def stream_live(fid):
         time.sleep(0.5)
 
     def generate():
-        # Added -threads 2 for audio processing speed
-        # Added -probesize and -analyzeduration to prevent 4K startup stalling
         cmd = [
-            'nice', '-n', '10',
-            'cpulimit', '-l', '90', '--',
-            'ffmpeg', 
-            '-probesize', '50M', '-analyzeduration', '50M',
-            '-i', fpath,
+            'nice', '-n', '15',
+            'cpulimit', '-l', '95', '--',
+            'ffmpeg', '-probesize', '100M', '-analyzeduration', '100M', '-i', fpath,
+            '-map', '0:v:0?', '-map', f'0:a:{audio_track}?',
             '-c:v', 'copy',
             '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
             '-threads', '2',
@@ -465,8 +556,7 @@ def stream_live(fid):
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             while True:
-                # CRITICAL: 1MB chunk sizes to handle heavy 4K bitrates without overhead
-                chunk = process.stdout.read(1048576)
+                chunk = process.stdout.read(CHUNK_SIZE) # Massive 6MB output chunks
                 if not chunk: break
                 yield chunk
         finally:
@@ -475,9 +565,6 @@ def stream_live(fid):
     headers = {'Content-Type': 'video/mp4', 'Cache-Control': 'no-cache'}
     return Response(generate(), mimetype='video/mp4', headers=headers)
 
-# ==========================================
-# HIGH BANDWIDTH IDM SPOOFER
-# ==========================================
 @app.route('/dl/<fid>/<path:filename>')
 def download(fid, filename):
     with db_lock:
@@ -508,8 +595,7 @@ def download(fid, filename):
             local_file.seek(start_byte)
             bytes_sent = 0
             while bytes_sent < length:
-                # 1MB chunks for massive disk read/write throughput
-                chunk = local_file.read(1048576)
+                chunk = local_file.read(CHUNK_SIZE) # Massive 6MB disk reads
                 if chunk:
                     yield chunk
                     bytes_sent += len(chunk)
@@ -558,9 +644,9 @@ systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [8/8] HIGH-BANDWIDTH DEPLOYMENT COMPLETE."
+echo "✅ [8/8] DUAL-ENGINE DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash high_bandwidth_server.sh
+bash dual_engine_server.sh
