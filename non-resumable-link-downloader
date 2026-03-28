@@ -1,0 +1,274 @@
+rm -f setup.sh
+cat > setup.sh << 'EOF'
+#!/bin/bash
+clear
+
+echo "🛑 Cleaning up old architectures..."
+if command -v pm2 &> /dev/null; then pm2 delete all >/dev/null 2>&1; fi
+sudo systemctl stop nginx proxy >/dev/null 2>&1
+killall node python python3 google-chrome Xvfb x11vnc websockify >/dev/null 2>&1
+fuser -k 8080/tcp >/dev/null 2>&1
+fuser -k 8081/tcp >/dev/null 2>&1
+fuser -k 8443/tcp >/dev/null 2>&1
+fuser -k 5000/tcp >/dev/null 2>&1
+sudo swapoff -a >/dev/null 2>&1
+sudo rm -f /swapfile
+sudo sed -i '/swapfile/d' /etc/fstab
+
+echo "📦 Installing Dependencies..."
+apt update -y -qq >/dev/null 2>&1
+apt install -y python3-venv python3-pip python3-psutil ufw >/dev/null 2>&1
+
+echo "🛡️ Configuring Firewall (Port 8080 Only)..."
+ufw allow 8080/tcp >/dev/null 2>&1
+ufw --force enable >/dev/null 2>&1
+
+echo "🐍 Setting up Python Engine..."
+python3 -m venv /root/venv
+/root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
+
+echo "⚙️ Writing the Seedbox Application..."
+cat > /root/proxy.py << 'PYTHON'
+import os, time, uuid, threading, requests, psutil, re
+from flask import Flask, jsonify, render_template_string, request, send_file, Response
+
+app = Flask(__name__)
+DL_DIR = "/root/downloads"
+os.makedirs(DL_DIR, exist_ok=True)
+db = {}
+
+# 24-Hour Garbage Collector
+def cleaner():
+    while True:
+        time.sleep(3600)
+        now = time.time()
+        for fid in list(db.keys()):
+            if now - db[fid]['start'] > 86400: # 24 Hours
+                try: os.remove(db[fid]['path'])
+                except: pass
+                if fid in db: del db[fid]
+threading.Thread(target=cleaner, daemon=True).start()
+
+HTML='''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Media Server</title><style>body{background:#121212;color:#eee;font-family:sans-serif;padding:20px;max-width:800px;margin:auto}input,button{padding:12px;margin:5px 0;width:100%;box-sizing:border-box;background:#222;color:#eee;border:1px solid #444;border-radius:4px;font-size:16px}button{background:#007bff;border:none;cursor:pointer;font-weight:bold;width:auto;padding:8px 15px;margin:2px}button:hover{background:#0056b3}.m{margin-top:20px;background:#1a1a1a;padding:20px;border-radius:8px;border:1px solid #333} .file-item{background:#222;padding:15px;margin-top:10px;border-radius:6px;border-left:4px solid #007bff} progress{width:100%;height:20px;margin:10px 0} .link-box {display: flex; gap: 5px; margin-top: 10px; align-items: center; background: #111; padding: 10px; border-radius: 6px; border: 1px solid #333;} .link-box input {margin: 0; flex: 1; border: 1px solid #555; background: #000; color: #00ffcc; font-family: monospace;} .link-box button {margin: 0; background: #444;}</style></head><body><h2>🚀 VPS Media & Download Server</h2>
+<div style="display:flex;"><input id="url" placeholder="Paste direct file URL here..."><button onclick="startDl()" style="width:120px;margin-left:5px">Download</button></div>
+
+<div class="m"><h3>📂 Active & Completed Files</h3><div id="file-list"></div></div>
+<div class="m" style="display:flex; justify-content:space-between; font-size:0.9em; color:#aaa">
+    <div id="cpu">CPU: Loading...</div><div id="ram">RAM: Loading...</div><div id="disk">Disk: Loading...</div><div id="net">Net: Loading...</div>
+</div>
+
+<script>
+function startDl() {
+    let u = document.getElementById('url').value;
+    if(!u) return;
+    document.getElementById('url').value = '';
+    fetch('/add?url=' + encodeURIComponent(u));
+}
+
+function copyToBox(inputId) {
+    let copyText = document.getElementById(inputId);
+    copyText.select();
+    copyText.setSelectionRange(0, 99999);
+    try {
+        document.execCommand("copy");
+        alert("✅ Resumable Link Copied! Ready for IDM.");
+    } catch(err) {
+        alert("Please manually copy the link from the box.");
+    }
+}
+
+function action(fid, act) { fetch('/action/' + fid + '/' + act); }
+
+setInterval(()=> {
+    fetch('/api/data').then(r=>r.json()).then(d=>{
+        document.getElementById('cpu').innerText='CPU: '+d.sys.cpu+'%';
+        document.getElementById('ram').innerText='RAM: '+d.sys.ram+'%';
+        document.getElementById('disk').innerText='Disk: '+d.sys.disk+'%';
+        document.getElementById('net').innerText='Net: '+d.sys.net;
+        
+        let html = '';
+        for (let [id, f] of Object.entries(d.files)) {
+            let pct = f.total ? Math.round((f.down/f.total)*100) : 0;
+            let mb = (f.down/(1024*1024)).toFixed(1);
+            let tot = f.total ? (f.total/(1024*1024)).toFixed(1) : '?';
+            let bar = f.status === 'Downloading' ? `<progress value="${f.down}" max="${f.total||100}"></progress>` : `<progress value="100" max="100" style="accent-color:#28a745;"></progress>`;
+            let dlLink = window.location.origin + '/dl/' + id;
+            
+            html += `<div class="file-item">
+                <strong style="word-break:break-all;">${f.name}</strong> <span style="color:#00ffcc;font-size:0.9em;">[${f.status}]</span><br>
+                ${bar}<br>
+                <span style="font-size:0.9em; color:#aaa;">Written to disk: ${pct}% (${mb} MB / ${tot} MB)</span><br>
+                
+                <div class="link-box">
+                    <input type="text" id="link_${id}" value="${dlLink}" readonly onclick="this.select()">
+                    <button onclick="copyToBox('link_${id}')">📋 Copy</button>
+                </div>
+                
+                <div style="margin-top: 10px;">
+                    <button onclick="action('${id}', 'stop')" style="background:#dc3545;">🗑️ Stop & Delete</button>
+                </div>
+            </div>`;
+        }
+        if(html === '') html = '<p style="color:#777">No active files. Paste a URL to begin.</p>';
+        document.getElementById('file-list').innerHTML = html;
+    }).catch(e=>{});
+}, 1000);
+</script></body></html>'''
+
+def dl_worker(fid):
+    f = db[fid]
+    try:
+        r = requests.get(f['url'], stream=True, timeout=15)
+        f['total'] = int(r.headers.get('content-length', 0))
+        f['status'] = 'Downloading'
+        
+        cd = r.headers.get('content-disposition')
+        if cd:
+            m = re.search(r'filename="?(.*?)"?(;|$)', cd)
+            if m: 
+                f['name'] = m.group(1)
+                new_path = os.path.join(DL_DIR, f"{fid}_{f['name']}")
+                f['path'] = new_path
+
+        with open(f['path'], 'wb') as out:
+            for chunk in r.iter_content(65536):
+                if f['status'] == 'Stopped': break
+                if chunk:
+                    out.write(chunk)
+                    f['down'] += len(chunk)
+        
+        if f['status'] != 'Stopped':
+            f['status'] = 'Completed'
+    except Exception as e:
+        f['status'] = f'Error: {str(e)[:20]}'
+
+p, pt = psutil.net_io_counters(), time.time()
+def bw():
+    global p, pt; n, t = psutil.net_io_counters(), time.time(); d = t - pt or 1
+    s = (n.bytes_sent - p.bytes_sent) / d; r = (n.bytes_recv - p.bytes_recv) / d
+    p, pt = n, t
+    f = lambda b: f"{b/1024:.2f} KB/s" if b < 1024*1024 else f"{b/(1024*1024):.2f} MB/s"
+    return f"↑ {f(s)} | ↓ {f(r)}"
+
+@app.route('/')
+def index(): return render_template_string(HTML)
+
+@app.route('/add')
+def add():
+    u = request.args.get('url')
+    if not u: return "Err", 400
+    fid = str(uuid.uuid4())[:8]
+    name = os.path.basename(u.split('?')[0]) or f"file_{fid}"
+    db[fid] = {'id': fid, 'url': u, 'name': name, 'path': os.path.join(DL_DIR, f"{fid}_{name}"), 'down': 0, 'total': 0, 'status': 'Starting...', 'start': time.time()}
+    threading.Thread(target=dl_worker, args=(fid,)).start()
+    return "OK"
+
+@app.route('/action/<fid>/<act>')
+def action(fid, act):
+    if fid in db and act == 'stop':
+        db[fid]['status'] = 'Stopped'
+        try: os.remove(db[fid]['path'])
+        except: pass
+        del db[fid]
+    return "OK"
+
+# ==========================================
+# ADVANCED TAILING DOWNLOAD ROUTE
+# ==========================================
+@app.route('/dl/<fid>')
+def download(fid):
+    if fid not in db or not os.path.exists(db[fid]['path']): 
+        return "File not found or deleted.", 404
+        
+    f = db[fid]
+    file_path = f['path']
+    file_name = f['name']
+    total_size = f.get('total', 0)
+    
+    # If the file is 100% finished on the VPS, use standard high-speed send_file
+    if f['status'] == 'Completed':
+        return send_file(file_path, as_attachment=True, download_name=file_name, conditional=True)
+
+    # If the file is actively downloading, spoof the headers so IDM sees the final size
+    range_header = request.headers.get('Range', None)
+    start_byte = 0
+    end_byte = total_size - 1 if total_size else 0
+
+    if range_header and total_size:
+        match = re.search(r'bytes=(\d+)-(\d*)', range_header)
+        if match:
+            start_byte = int(match.group(1))
+            if match.group(2):
+                end_byte = int(match.group(2))
+
+    length = end_byte - start_byte + 1
+
+    def generate():
+        with open(file_path, 'rb') as local_file:
+            local_file.seek(start_byte)
+            bytes_sent = 0
+            
+            while bytes_sent < length:
+                chunk = local_file.read(65536)
+                if chunk:
+                    yield chunk
+                    bytes_sent += len(chunk)
+                else:
+                    # We hit the end of the physical disk file, but it's not finished yet!
+                    if db[fid]['status'] in ['Downloading', 'Starting...']:
+                        time.sleep(0.5) # Wait half a second for the VPS to write more data
+                        local_file.seek(start_byte + bytes_sent) # Re-orient the reader
+                    else:
+                        break # The file finished or errored out
+
+    headers = {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': f'attachment; filename="{file_name}"',
+        'Accept-Ranges': 'bytes'
+    }
+    
+    # Inject the true total file size
+    if total_size:
+        headers['Content-Length'] = str(length)
+        headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{total_size}'
+
+    status_code = 206 if range_header else 200
+    return Response(generate(), status=status_code, headers=headers)
+
+@app.route('/api/data')
+def api_data():
+    return jsonify({
+        'sys': {'cpu': psutil.cpu_percent(), 'ram': psutil.virtual_memory().percent, 'disk': psutil.disk_usage('/').percent, 'net': bw()},
+        'files': db
+    })
+
+if __name__ == '__main__': app.run(host='0.0.0.0', port=8080)
+PYTHON
+
+echo "📝 Creating Systemd Service..."
+cat > /etc/systemd/system/proxy.service << 'SERVICE_EOF'
+[Unit]
+Description=VPS Media Server
+After=network.target
+
+[Service]
+ExecStart=/root/venv/bin/python /root/proxy.py
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+echo "🚀 Starting Media Server..."
+systemctl daemon-reload
+systemctl enable proxy >/dev/null 2>&1
+systemctl restart proxy
+
+IP=$(curl -s ifconfig.me)
+echo -e "\n============================================"
+echo "✅ MEDIA DOWNLOADER ONLINE & IDM READY!"
+echo "🌐 Access your dashboard at: http://$IP:8080"
+echo "============================================"
+EOF
+bash setup.sh
