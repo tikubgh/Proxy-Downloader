@@ -1,31 +1,38 @@
-rm -f ultimate_plyr_streamer.sh
-cat > ultimate_plyr_streamer.sh << 'BASH_EOF'
+rm -f deploy_ultimate.sh
+cat > deploy_ultimate.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
-echo "🛑 1. Cleaning previous environments..."
-sudo systemctl stop proxy >/dev/null 2>&1
-killall -9 python python3 ffmpeg >/dev/null 2>&1
-fuser -k -9 8080/tcp >/dev/null 2>&1
-sleep 2
+echo "===================================================="
+echo "🚀 INITIATING ULTIMATE MEDIA SERVER DEPLOYMENT"
+echo "===================================================="
 
-echo "🛡️ 2. Securing Ports & Installing FFmpeg Engine..."
+echo "🛑 [1/7] Cleaning default processes..."
+sudo systemctl stop proxy >/dev/null 2>&1
+killall -9 python python3 ffmpeg cpulimit >/dev/null 2>&1
+fuser -k -9 8080/tcp >/dev/null 2>&1
+sleep 1
+
+echo "🛡️ [2/7] Securing Ports & Piercing Oracle Firewall..."
 export DEBIAN_FRONTEND=noninteractive
 apt update -y -qq >/dev/null 2>&1
 apt install -y python3-venv python3-pip python3-psutil ffmpeg ufw cpulimit iptables-persistent >/dev/null 2>&1
 
+ufw allow 22/tcp >/dev/null 2>&1
+ufw allow OpenSSH >/dev/null 2>&1
 ufw allow 8080/tcp >/dev/null 2>&1
 ufw --force enable >/dev/null 2>&1
+
 sudo iptables -I INPUT 1 -p tcp --dport 8080 -j ACCEPT
 sudo netfilter-persistent save >/dev/null 2>&1
 
-echo "🐍 3. Building Python Environment..."
+echo "🐍 [3/7] Building Clean Python Environment..."
 mkdir -p /root/downloads
 rm -rf /root/venv
 python3 -m venv /root/venv
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ 4. Writing the Master Plyr Engine..."
+echo "⚙️ [4/7] Compiling the Ultimate Combined Engine..."
 cat > /root/app.py << 'PYTHON_EOF'
 import os, time, uuid, threading, requests, subprocess, shutil, re
 from flask import Flask, jsonify, render_template_string, request, send_file, Response
@@ -39,7 +46,7 @@ db = {}
 db_lock = threading.Lock()
 
 # ==========================================
-# SYSTEM TELEMETRY
+# CRASH-PROOF SYSTEM TELEMETRY
 # ==========================================
 sys_data = {"cpu": 0, "ram": 0, "free_gb": 0, "net": "Booting..."}
 net_p = None
@@ -69,6 +76,7 @@ def update_telemetry():
                     fmt = lambda b: f"{b/1024:.2f} KB/s" if b < 1024*1024 else f"{b/(1024*1024):.2f} MB/s"
                     net_str = f"↑ {fmt(s)} | ↓ {fmt(r)}"
             except: pass
+            
             sys_data = {"cpu": cpu, "ram": ram, "free_gb": free_gb, "net": net_str}
         except: pass
 
@@ -77,6 +85,18 @@ threading.Thread(target=update_telemetry, daemon=True).start()
 # ==========================================
 # BACKGROUND WORKERS
 # ==========================================
+def cleaner():
+    while True:
+        time.sleep(3600)
+        now = time.time()
+        with db_lock:
+            for fid in list(db.keys()):
+                if now - db[fid].get('start', now) > 86400:
+                    try: os.remove(db[fid]['path'])
+                    except: pass
+                    del db[fid]
+threading.Thread(target=cleaner, daemon=True).start()
+
 def dl_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -119,12 +139,11 @@ def web_forge_worker(fid):
         old_name = f['name']
     
     with db_lock:
-        db[fid]['status'] = 'Forging for Web (Fixing Audio & Seeking)...'
+        db[fid]['status'] = 'Forging (Fixing Audio & Maps)...'
         
     new_name = old_name.rsplit('.', 1)[0] + "_WebReady.mp4"
     new_path = os.path.join(DL_DIR, f"{fid}_{new_name}")
     
-    # MAGIC COMMAND: CPU limit to protect SSH, +faststart enables perfect web seeking
     cmd = [
         'nice', '-n', '15',
         'cpulimit', '-l', '90', '--',
@@ -145,14 +164,14 @@ def web_forge_worker(fid):
         with db_lock: db[fid]['status'] = 'Web Forge Failed'
 
 # ==========================================
-# FRONTEND WITH PLYR.JS
+# FRONTEND WITH PLYR UI & MEMORY RESUME
 # ==========================================
-HTML='''<!DOCTYPE html>
+HTML=r'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plyr Media Server</title>
+    <title>Ultimate Media Engine</title>
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <style>
         :root { --bg: #0f1115; --card: #1a1d24; --text: #e2e8f0; --accent: #00b3ff; --success: #10b981; --danger: #ef4444; --warn: #f59e0b; --purple: #8b5cf6;}
@@ -163,16 +182,20 @@ HTML='''<!DOCTYPE html>
         input { flex: 1; padding: 15px; border-radius: 8px; border: 1px solid #333; background: #000; color: white; font-size: 16px; outline: none; }
         button { padding: 12px 18px; border-radius: 8px; border: none; background: var(--accent); color: white; font-weight: bold; cursor: pointer; transition: 0.2s; }
         button:hover { opacity: 0.8; }
+        
         .monitors { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 25px; }
         .monitor-card { background: var(--card); padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #2d3748; }
         .monitor-value { font-size: 18px; font-weight: bold; margin-top: 5px; color: var(--accent); }
+        
         .file-grid { display: grid; gap: 15px; }
         .file-card { background: var(--card); padding: 20px; border-radius: 8px; border-left: 5px solid var(--accent); }
         .file-name { font-weight: bold; font-size: 1.1em; word-break: break-all; margin-bottom: 10px; }
         .file-status { color: var(--warn); font-size: 0.9em; margin-bottom: 10px; }
         progress { width: 100%; height: 10px; border-radius: 5px; margin-bottom: 10px; accent-color: var(--accent); }
+        
         .link-box { display: flex; gap: 5px; margin-top: 10px; align-items: center; background: #111; padding: 10px; border-radius: 6px; border: 1px solid #333;} 
         .link-box input {margin: 0; flex: 1; padding: 10px; border: 1px solid #555; background: #000; color: #00ffcc; font-family: monospace; font-size: 14px;}
+        
         .btn-group { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 15px; }
         .btn-green { background: var(--success); }
         .btn-purple { background: var(--purple); }
@@ -189,7 +212,7 @@ HTML='''<!DOCTYPE html>
 <body>
 
 <h2>
-    <span>🎬 Plyr Video Engine</span>
+    <span>🎬 Ultimate Plyr Engine</span>
     <span style="font-size: 14px; color: #888;">API <span class="status-dot" id="dot"></span></span>
 </h2>
 
@@ -205,7 +228,9 @@ HTML='''<!DOCTYPE html>
     <button id="dlBtn" onclick="addFile()">Download File</button>
 </div>
 
-<div class="file-grid" id="files"></div>
+<div class="file-grid" id="files">
+    <div style="text-align: center; color: #555; padding: 20px;">Fetching server database...</div>
+</div>
 
 <div id="vid-modal">
     <button class="close-btn" onclick="closeVid()">Close Player</button>
@@ -216,11 +241,27 @@ HTML='''<!DOCTYPE html>
 
 <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
 <script>
-// Initialize Advanced Plyr Engine
 const player = new Plyr('#player', {
     controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
     settings: ['quality', 'speed'],
     speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] }
+});
+
+let currentFid = null;
+let isLiveStream = false;
+
+// Memory Resume System
+player.on('timeupdate', () => {
+    if(currentFid && !isLiveStream) {
+        localStorage.setItem('plyr_time_' + currentFid, player.currentTime);
+    }
+});
+
+player.on('loadedmetadata', () => {
+    if(currentFid && !isLiveStream) {
+        let savedTime = localStorage.getItem('plyr_time_' + currentFid);
+        if(savedTime && savedTime > 5) player.currentTime = parseFloat(savedTime);
+    }
 });
 
 function addFile() {
@@ -238,13 +279,24 @@ function copyToBox(inputId) {
     let copyText = document.getElementById(inputId);
     copyText.select();
     copyText.setSelectionRange(0, 99999);
-    try { document.execCommand("copy"); alert("✅ IDM Ready Link Copied!"); } 
+    try { document.execCommand("copy"); alert("✅ IDM Ready Link Copied! Filename will detect correctly."); } 
     catch(err) { alert("Please manually copy from the box."); }
 }
 
 function playVid(fid) {
     document.getElementById('vid-modal').style.display = 'flex';
+    currentFid = fid;
+    isLiveStream = false;
     player.source = { type: 'video', sources: [{ src: '/stream/' + fid, type: 'video/mp4' }] };
+    player.play();
+}
+
+function playLiveFix(fid) {
+    alert("⚡ OTF Audio Fix Engaged! Server is translating Dolby Audio to AAC in real-time. CPU is safely capped at 90%. Note: Seeking is disabled in this mode. Let download finish to use Offline Forge for seeking.");
+    document.getElementById('vid-modal').style.display = 'flex';
+    currentFid = fid;
+    isLiveStream = true;
+    player.source = { type: 'video', sources: [{ src: '/stream_live/' + fid, type: 'video/mp4' }] };
     player.play();
 }
 
@@ -252,11 +304,11 @@ function closeVid() {
     document.getElementById('vid-modal').style.display = 'none';
     player.pause();
     player.source = { type: 'video', sources: [] };
+    currentFid = null;
 }
 
 function triggerAction(fid, act) { fetch('/api/action/' + fid + '/' + act); }
 
-// UI Loop
 setInterval(() => {
     fetch('/api/data').then(r => r.json()).then(data => {
         document.getElementById('dot').style.background = 'var(--success)';
@@ -271,18 +323,23 @@ setInterval(() => {
             let pct = f.total ? Math.round((f.down/f.total)*100) : 0;
             let mb = (f.down/(1024*1024)).toFixed(1);
             let tot = f.total ? (f.total/(1024*1024)).toFixed(1) : '?';
-            let dlLink = window.location.origin + '/dl/' + f.id;
+            
+            // CRITICAL FIX: Append the filename to the URL so IDM detects it natively
+            let dlLink = window.location.origin + '/dl/' + f.id + '/' + encodeURIComponent(f.name);
 
             let forgeBtn = '';
             let streamBtn = '';
             
-            if (f.status === 'Completed') {
-                if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
-                    forgeBtn = `
-                    <div class="warning-text">⚠️ High Quality MKV/Dolby Detected. Standard stream may have no audio or break seeking.</div>
-                    <button class="btn-purple" onclick="triggerAction('${f.id}', 'forge')" style="margin-top: 5px;">🎧 Forge for Web (Fixes Audio & Enables Seeking)</button>`;
+            if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
+                streamBtn = `<button class="btn-purple" onclick="playLiveFix('${f.id}')">⚡ Play Live Audio Fix (OTF)</button>`;
+                
+                if (f.status === 'Completed') {
+                    forgeBtn = `<button class="btn-warn" onclick="triggerAction('${f.id}', 'forge')" style="margin-top: 5px;">🎧 Offline Web Forge (Fixes Audio + Enables Fast-Forwarding)</button>`;
+                } else {
+                    forgeBtn = `<div class="warning-text">⚠️ Live Transcode Mode: You cannot drag the timeline while streaming live. Wait for download to finish to use Offline Web Forge.</div>`;
                 }
-                streamBtn = `<button class="btn-green" onclick="playVid('${f.id}')">▶️ Start Video Stream</button>`;
+            } else {
+                streamBtn = `<button class="btn-green" onclick="playVid('${f.id}')">▶️ Play Standard Stream</button>`;
             }
 
             html += `
@@ -293,14 +350,14 @@ setInterval(() => {
                 
                 <div class="link-box">
                     <input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()">
-                    <button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy IDM</button>
+                    <button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy IDM Link</button>
                 </div>
 
                 ${forgeBtn}
 
                 <div class="btn-group">
                     ${streamBtn}
-                    <button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Stop & Delete</button>
+                    <button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Delete</button>
                 </div>
             </div>`;
         });
@@ -357,20 +414,54 @@ def action(fid, act):
             threading.Thread(target=web_forge_worker, args=(fid,)).start()
     return "OK"
 
-# ==========================================
-# SEEKABLE STREAM ROUTE (HTTP 206 Partial)
-# ==========================================
 @app.route('/stream/<fid>')
 def stream(fid):
     with db_lock:
         if fid not in db or not os.path.exists(db[fid]['path']): return "404", 404
         fpath = db[fid]['path']
-    # conditional=True enables Range Requests, allowing Plyr to seek through the file perfectly
-    return send_file(fpath, conditional=True, mimetype='video/mp4')
+    return send_file(fpath, conditional=True)
 
-# Tailing IDM Downloader
-@app.route('/dl/<fid>')
-def download(fid):
+@app.route('/stream_live/<fid>')
+def stream_live(fid):
+    with db_lock:
+        if fid not in db or not os.path.exists(db[fid]['path']): return "404", 404
+        fpath = db[fid]['path']
+
+    while os.path.getsize(fpath) < 2000000:
+        with db_lock:
+            if db[fid]['status'] == 'Stopped': return "404", 404
+        time.sleep(0.5)
+
+    def generate():
+        cmd = [
+            'nice', '-n', '15',
+            'cpulimit', '-l', '90', '--',
+            'ffmpeg', '-i', fpath,
+            '-c:v', 'copy',
+            '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
+            '-threads', '1',
+            '-movflags', 'frag_keyframe+empty_moov',
+            '-f', 'mp4',
+            'pipe:1'
+        ]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            while True:
+                chunk = process.stdout.read(65536)
+                if not chunk: break
+                yield chunk
+        finally:
+            process.terminate()
+
+    headers = {'Content-Type': 'video/mp4', 'Cache-Control': 'no-cache'}
+    return Response(generate(), mimetype='video/mp4', headers=headers)
+
+# ==========================================
+# IDM SPOOFER WITH FILENAME PARSING
+# ==========================================
+# CRITICAL FIX: The <path:filename> forces IDM to parse the actual filename from the URL string
+@app.route('/dl/<fid>/<path:filename>')
+def download(fid, filename):
     with db_lock:
         if fid not in db or not os.path.exists(db[fid]['path']): return "404", 404
         f = db[fid]
@@ -427,10 +518,10 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, threaded=True)
 PYTHON_EOF
 
-echo "📝 [5/6] Registering System Service..."
+echo "📝 [5/7] Registering System Service..."
 cat > /etc/systemd/system/proxy.service << 'SERVICE_EOF'
 [Unit]
-Description=Plyr Media Engine
+Description=Ultimate Media Engine
 After=network.target
 
 [Service]
@@ -442,14 +533,15 @@ User=root
 WantedBy=multi-user.target
 SERVICE_EOF
 
-echo "🚀 [6/6] Booting Web Server..."
+echo "🚀 [6/7] Booting Engine..."
 systemctl daemon-reload
 systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy
 
 IP=$(curl -s ifconfig.me)
+echo "✅ [7/7] DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
-echo "✅ PLYR ENGINE & WEB FORGE DEPLOYED."
+echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash ultimate_plyr_streamer.sh
+bash deploy_ultimate.sh
