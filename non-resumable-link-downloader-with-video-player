@@ -1,19 +1,31 @@
-rm -f deploy_ultimate.sh
-cat > deploy_ultimate.sh << 'BASH_EOF'
+rm -f high_bandwidth_server.sh
+cat > high_bandwidth_server.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING ULTIMATE MEDIA SERVER DEPLOYMENT"
+echo "🚀 INITIATING HIGH-BANDWIDTH MASTER SERVER"
 echo "===================================================="
 
-echo "🛑 [1/7] Cleaning default processes..."
+echo "🛑 [1/8] Cleaning previous processes..."
 sudo systemctl stop proxy >/dev/null 2>&1
 killall -9 python python3 ffmpeg cpulimit >/dev/null 2>&1
 fuser -k -9 8080/tcp >/dev/null 2>&1
 sleep 1
 
-echo "🛡️ [2/7] Securing Ports & Piercing Oracle Firewall..."
+echo "💾 [2/8] Forging 4GB Swap Memory (RAM Expansion)..."
+sudo swapoff -a >/dev/null 2>&1
+sudo rm -f /swapfile
+sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile >/dev/null 2>&1
+sudo swapon /swapfile
+# Make swap permanent
+sudo sed -i '/swapfile/d' /etc/fstab
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+sudo sysctl vm.swappiness=10
+
+echo "🛡️ [3/8] Securing Ports & Piercing Oracle Firewall..."
 export DEBIAN_FRONTEND=noninteractive
 apt update -y -qq >/dev/null 2>&1
 apt install -y python3-venv python3-pip python3-psutil ffmpeg ufw cpulimit iptables-persistent >/dev/null 2>&1
@@ -26,13 +38,13 @@ ufw --force enable >/dev/null 2>&1
 sudo iptables -I INPUT 1 -p tcp --dport 8080 -j ACCEPT
 sudo netfilter-persistent save >/dev/null 2>&1
 
-echo "🐍 [3/7] Building Clean Python Environment..."
+echo "🐍 [4/8] Building Clean Python Environment..."
 mkdir -p /root/downloads
 rm -rf /root/venv
 python3 -m venv /root/venv
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ [4/7] Compiling the Ultimate Combined Engine..."
+echo "⚙️ [5/8] Compiling the High-Bandwidth Engine..."
 cat > /root/app.py << 'PYTHON_EOF'
 import os, time, uuid, threading, requests, subprocess, shutil, re
 from flask import Flask, jsonify, render_template_string, request, send_file, Response
@@ -83,7 +95,7 @@ def update_telemetry():
 threading.Thread(target=update_telemetry, daemon=True).start()
 
 # ==========================================
-# BACKGROUND WORKERS
+# BACKGROUND WORKERS (High Speed)
 # ==========================================
 def cleaner():
     while True:
@@ -119,7 +131,8 @@ def dl_worker(fid):
         f['path'] = os.path.join(DL_DIR, f"{fid}_{fname}")
 
         with open(f['path'], 'wb') as out:
-            for chunk in r.iter_content(65536):
+            # Upgraded chunk size for faster disk writing
+            for chunk in r.iter_content(1048576):
                 with db_lock:
                     if db[fid]['status'] == 'Stopped': break
                 if chunk:
@@ -279,7 +292,7 @@ function copyToBox(inputId) {
     let copyText = document.getElementById(inputId);
     copyText.select();
     copyText.setSelectionRange(0, 99999);
-    try { document.execCommand("copy"); alert("✅ IDM Ready Link Copied! Filename will detect correctly."); } 
+    try { document.execCommand("copy"); alert("✅ IDM Ready Link Copied!"); } 
     catch(err) { alert("Please manually copy from the box."); }
 }
 
@@ -292,7 +305,7 @@ function playVid(fid) {
 }
 
 function playLiveFix(fid) {
-    alert("⚡ OTF Audio Fix Engaged! Server is translating Dolby Audio to AAC in real-time. CPU is safely capped at 90%. Note: Seeking is disabled in this mode. Let download finish to use Offline Forge for seeking.");
+    alert("⚡ High-Bandwidth OTF Engaged! CPU cap is 90% and Swap is active to prevent crashing. Seeking is disabled in this mode.");
     document.getElementById('vid-modal').style.display = 'flex';
     currentFid = fid;
     isLiveStream = true;
@@ -323,8 +336,6 @@ setInterval(() => {
             let pct = f.total ? Math.round((f.down/f.total)*100) : 0;
             let mb = (f.down/(1024*1024)).toFixed(1);
             let tot = f.total ? (f.total/(1024*1024)).toFixed(1) : '?';
-            
-            // CRITICAL FIX: Append the filename to the URL so IDM detects it natively
             let dlLink = window.location.origin + '/dl/' + f.id + '/' + encodeURIComponent(f.name);
 
             let forgeBtn = '';
@@ -334,9 +345,9 @@ setInterval(() => {
                 streamBtn = `<button class="btn-purple" onclick="playLiveFix('${f.id}')">⚡ Play Live Audio Fix (OTF)</button>`;
                 
                 if (f.status === 'Completed') {
-                    forgeBtn = `<button class="btn-warn" onclick="triggerAction('${f.id}', 'forge')" style="margin-top: 5px;">🎧 Offline Web Forge (Fixes Audio + Enables Fast-Forwarding)</button>`;
+                    forgeBtn = `<button class="btn-warn" onclick="triggerAction('${f.id}', 'forge')" style="margin-top: 5px;">🎧 Offline Web Forge (Enables Fast-Forwarding)</button>`;
                 } else {
-                    forgeBtn = `<div class="warning-text">⚠️ Live Transcode Mode: You cannot drag the timeline while streaming live. Wait for download to finish to use Offline Web Forge.</div>`;
+                    forgeBtn = `<div class="warning-text">⚠️ Live Transcode Mode: Cannot drag timeline while streaming live. Wait for download to finish to use Offline Web Forge.</div>`;
                 }
             } else {
                 streamBtn = `<button class="btn-green" onclick="playVid('${f.id}')">▶️ Play Standard Stream</button>`;
@@ -350,7 +361,7 @@ setInterval(() => {
                 
                 <div class="link-box">
                     <input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()">
-                    <button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy IDM Link</button>
+                    <button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy IDM</button>
                 </div>
 
                 ${forgeBtn}
@@ -421,6 +432,9 @@ def stream(fid):
         fpath = db[fid]['path']
     return send_file(fpath, conditional=True)
 
+# ==========================================
+# HIGH BANDWIDTH LIVE AUDIO TRANSCODER (OTF)
+# ==========================================
 @app.route('/stream_live/<fid>')
 def stream_live(fid):
     with db_lock:
@@ -433,13 +447,17 @@ def stream_live(fid):
         time.sleep(0.5)
 
     def generate():
+        # Added -threads 2 for audio processing speed
+        # Added -probesize and -analyzeduration to prevent 4K startup stalling
         cmd = [
-            'nice', '-n', '15',
+            'nice', '-n', '10',
             'cpulimit', '-l', '90', '--',
-            'ffmpeg', '-i', fpath,
+            'ffmpeg', 
+            '-probesize', '50M', '-analyzeduration', '50M',
+            '-i', fpath,
             '-c:v', 'copy',
             '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
-            '-threads', '1',
+            '-threads', '2',
             '-movflags', 'frag_keyframe+empty_moov',
             '-f', 'mp4',
             'pipe:1'
@@ -447,7 +465,8 @@ def stream_live(fid):
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             while True:
-                chunk = process.stdout.read(65536)
+                # CRITICAL: 1MB chunk sizes to handle heavy 4K bitrates without overhead
+                chunk = process.stdout.read(1048576)
                 if not chunk: break
                 yield chunk
         finally:
@@ -457,9 +476,8 @@ def stream_live(fid):
     return Response(generate(), mimetype='video/mp4', headers=headers)
 
 # ==========================================
-# IDM SPOOFER WITH FILENAME PARSING
+# HIGH BANDWIDTH IDM SPOOFER
 # ==========================================
-# CRITICAL FIX: The <path:filename> forces IDM to parse the actual filename from the URL string
 @app.route('/dl/<fid>/<path:filename>')
 def download(fid, filename):
     with db_lock:
@@ -490,7 +508,8 @@ def download(fid, filename):
             local_file.seek(start_byte)
             bytes_sent = 0
             while bytes_sent < length:
-                chunk = local_file.read(65536)
+                # 1MB chunks for massive disk read/write throughput
+                chunk = local_file.read(1048576)
                 if chunk:
                     yield chunk
                     bytes_sent += len(chunk)
@@ -518,7 +537,7 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, threaded=True)
 PYTHON_EOF
 
-echo "📝 [5/7] Registering System Service..."
+echo "📝 [6/8] Registering System Service..."
 cat > /etc/systemd/system/proxy.service << 'SERVICE_EOF'
 [Unit]
 Description=Ultimate Media Engine
@@ -533,15 +552,15 @@ User=root
 WantedBy=multi-user.target
 SERVICE_EOF
 
-echo "🚀 [6/7] Booting Engine..."
+echo "🚀 [7/8] Booting Engine..."
 systemctl daemon-reload
 systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [7/7] DEPLOYMENT COMPLETE."
+echo "✅ [8/8] HIGH-BANDWIDTH DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash deploy_ultimate.sh
+bash high_bandwidth_server.sh
