@@ -6,28 +6,31 @@ clear
 echo "🛑 Cleaning up old architectures..."
 if command -v pm2 &> /dev/null; then pm2 delete all >/dev/null 2>&1; fi
 sudo systemctl stop nginx proxy >/dev/null 2>&1
-killall node python python3 google-chrome Xvfb x11vnc websockify >/dev/null 2>&1
-fuser -k 8080/tcp >/dev/null 2>&1
-fuser -k 8081/tcp >/dev/null 2>&1
-fuser -k 8443/tcp >/dev/null 2>&1
-fuser -k 5000/tcp >/dev/null 2>&1
+killall -9 node python python3 google-chrome Xvfb x11vnc websockify >/dev/null 2>&1
+fuser -k -9 8080/tcp >/dev/null 2>&1
+fuser -k -9 8081/tcp >/dev/null 2>&1
+fuser -k -9 8443/tcp >/dev/null 2>&1
+fuser -k -9 5000/tcp >/dev/null 2>&1
 sudo swapoff -a >/dev/null 2>&1
 sudo rm -f /swapfile
 sudo sed -i '/swapfile/d' /etc/fstab
 
 echo "📦 Installing Dependencies..."
+export DEBIAN_FRONTEND=noninteractive
 apt update -y -qq >/dev/null 2>&1
-apt install -y python3-venv python3-pip python3-psutil ufw >/dev/null 2>&1
+apt install -y python3-venv python3-pip python3-psutil ufw iptables-persistent >/dev/null 2>&1
 
-echo "🛡️ Configuring Firewall (Port 8080 Only)..."
+echo "🛡️ Configuring Firewalls (Bypassing Oracle Blocks)..."
 ufw allow 8080/tcp >/dev/null 2>&1
 ufw --force enable >/dev/null 2>&1
+sudo iptables -I INPUT 1 -p tcp --dport 8080 -j ACCEPT
+sudo netfilter-persistent save >/dev/null 2>&1
 
 echo "🐍 Setting up Python Engine..."
 python3 -m venv /root/venv
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ Writing the Seedbox Application..."
+echo "⚙️ Writing the Crash-Proof Seedbox Application..."
 cat > /root/proxy.py << 'PYTHON'
 import os, time, uuid, threading, requests, psutil, re
 from flask import Flask, jsonify, render_template_string, request, send_file, Response
@@ -35,24 +38,27 @@ from flask import Flask, jsonify, render_template_string, request, send_file, Re
 app = Flask(__name__)
 DL_DIR = "/root/downloads"
 os.makedirs(DL_DIR, exist_ok=True)
+
 db = {}
+db_lock = threading.Lock() # CRITICAL: Prevents dictionary crashes
 
 # 24-Hour Garbage Collector
 def cleaner():
     while True:
         time.sleep(3600)
         now = time.time()
-        for fid in list(db.keys()):
-            if now - db[fid]['start'] > 86400: # 24 Hours
-                try: os.remove(db[fid]['path'])
-                except: pass
-                if fid in db: del db[fid]
+        with db_lock:
+            for fid in list(db.keys()):
+                if now - db[fid].get('start', now) > 86400:
+                    try: os.remove(db[fid]['path'])
+                    except: pass
+                    del db[fid]
 threading.Thread(target=cleaner, daemon=True).start()
 
-HTML='''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Media Server</title><style>body{background:#121212;color:#eee;font-family:sans-serif;padding:20px;max-width:800px;margin:auto}input,button{padding:12px;margin:5px 0;width:100%;box-sizing:border-box;background:#222;color:#eee;border:1px solid #444;border-radius:4px;font-size:16px}button{background:#007bff;border:none;cursor:pointer;font-weight:bold;width:auto;padding:8px 15px;margin:2px}button:hover{background:#0056b3}.m{margin-top:20px;background:#1a1a1a;padding:20px;border-radius:8px;border:1px solid #333} .file-item{background:#222;padding:15px;margin-top:10px;border-radius:6px;border-left:4px solid #007bff} progress{width:100%;height:20px;margin:10px 0} .link-box {display: flex; gap: 5px; margin-top: 10px; align-items: center; background: #111; padding: 10px; border-radius: 6px; border: 1px solid #333;} .link-box input {margin: 0; flex: 1; border: 1px solid #555; background: #000; color: #00ffcc; font-family: monospace;} .link-box button {margin: 0; background: #444;}</style></head><body><h2>🚀 VPS Media & Download Server</h2>
-<div style="display:flex;"><input id="url" placeholder="Paste direct file URL here..."><button onclick="startDl()" style="width:120px;margin-left:5px">Download</button></div>
+HTML='''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Media Server</title><style>body{background:#121212;color:#eee;font-family:sans-serif;padding:20px;max-width:800px;margin:auto}input,button{padding:12px;margin:5px 0;width:100%;box-sizing:border-box;background:#222;color:#eee;border:1px solid #444;border-radius:4px;font-size:16px; outline:none;}button{background:#007bff;border:none;cursor:pointer;font-weight:bold;width:auto;padding:8px 15px;margin:2px; transition:0.2s;}button:hover{background:#0056b3}.m{margin-top:20px;background:#1a1a1a;padding:20px;border-radius:8px;border:1px solid #333} .file-item{background:#222;padding:15px;margin-top:10px;border-radius:6px;border-left:4px solid #007bff} progress{width:100%;height:20px;margin:10px 0} .link-box {display: flex; gap: 5px; margin-top: 10px; align-items: center; background: #111; padding: 10px; border-radius: 6px; border: 1px solid #333;} .link-box input {margin: 0; flex: 1; border: 1px solid #555; background: #000; color: #00ffcc; font-family: monospace;} .link-box button {margin: 0; background: #444;}</style></head><body><h2>🚀 VPS Media & Download Server</h2>
+<div style="display:flex;"><input id="url" placeholder="Paste direct file URL here..."><button id="dlBtn" onclick="startDl()" style="width:120px;margin-left:5px">Download</button></div>
 
-<div class="m"><h3>📂 Active & Completed Files</h3><div id="file-list"></div></div>
+<div class="m"><h3>📂 Active & Completed Files</h3><div id="file-list"><p style="color:#777; text-align:center;">Connecting to backend...</p></div></div>
 <div class="m" style="display:flex; justify-content:space-between; font-size:0.9em; color:#aaa">
     <div id="cpu">CPU: Loading...</div><div id="ram">RAM: Loading...</div><div id="disk">Disk: Loading...</div><div id="net">Net: Loading...</div>
 </div>
@@ -61,8 +67,12 @@ HTML='''<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" c
 function startDl() {
     let u = document.getElementById('url').value;
     if(!u) return;
-    document.getElementById('url').value = '';
-    fetch('/add?url=' + encodeURIComponent(u));
+    let btn = document.getElementById('dlBtn');
+    btn.innerText = "Processing...";
+    fetch('/add?url=' + encodeURIComponent(u)).then(() => {
+        document.getElementById('url').value = '';
+        btn.innerText = "Download";
+    });
 }
 
 function copyToBox(inputId) {
@@ -109,14 +119,16 @@ setInterval(()=> {
                 </div>
             </div>`;
         }
-        if(html === '') html = '<p style="color:#777">No active files. Paste a URL to begin.</p>';
+        if(html === '') html = '<p style="color:#777; text-align:center;">No active files. Paste a URL to begin.</p>';
         document.getElementById('file-list').innerHTML = html;
     }).catch(e=>{});
 }, 1000);
 </script></body></html>'''
 
 def dl_worker(fid):
-    f = db[fid]
+    with db_lock:
+        if fid not in db: return
+        f = db[fid]
     try:
         r = requests.get(f['url'], stream=True, timeout=15)
         f['total'] = int(r.headers.get('content-length', 0))
@@ -127,28 +139,40 @@ def dl_worker(fid):
             m = re.search(r'filename="?(.*?)"?(;|$)', cd)
             if m: 
                 f['name'] = m.group(1)
-                new_path = os.path.join(DL_DIR, f"{fid}_{f['name']}")
-                f['path'] = new_path
+                f['path'] = os.path.join(DL_DIR, f"{fid}_{f['name']}")
 
         with open(f['path'], 'wb') as out:
             for chunk in r.iter_content(65536):
-                if f['status'] == 'Stopped': break
+                with db_lock:
+                    if db[fid]['status'] == 'Stopped': break
                 if chunk:
                     out.write(chunk)
-                    f['down'] += len(chunk)
+                    with db_lock: db[fid]['down'] += len(chunk)
         
-        if f['status'] != 'Stopped':
-            f['status'] = 'Completed'
+        with db_lock:
+            if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Completed'
     except Exception as e:
-        f['status'] = f'Error: {str(e)[:20]}'
+        with db_lock: db[fid]['status'] = 'Error: Link Failed'
 
-p, pt = psutil.net_io_counters(), time.time()
+# CRITICAL: Crash-Proof Bandwidth Monitor
+p = None
+pt = time.time()
+try: p = psutil.net_io_counters()
+except: pass
+
 def bw():
-    global p, pt; n, t = psutil.net_io_counters(), time.time(); d = t - pt or 1
-    s = (n.bytes_sent - p.bytes_sent) / d; r = (n.bytes_recv - p.bytes_recv) / d
-    p, pt = n, t
-    f = lambda b: f"{b/1024:.2f} KB/s" if b < 1024*1024 else f"{b/(1024*1024):.2f} MB/s"
-    return f"↑ {f(s)} | ↓ {f(r)}"
+    global p, pt
+    try:
+        n = psutil.net_io_counters()
+        if not n or not p: return "N/A"
+        t = time.time()
+        d = t - pt or 1
+        s = (n.bytes_sent - p.bytes_sent) / d
+        r = (n.bytes_recv - p.bytes_recv) / d
+        p, pt = n, t
+        f = lambda b: f"{b/1024:.2f} KB/s" if b < 1024*1024 else f"{b/(1024*1024):.2f} MB/s"
+        return f"↑ {f(s)} | ↓ {f(r)}"
+    except: return "N/A"
 
 @app.route('/')
 def index(): return render_template_string(HTML)
@@ -159,37 +183,35 @@ def add():
     if not u: return "Err", 400
     fid = str(uuid.uuid4())[:8]
     name = os.path.basename(u.split('?')[0]) or f"file_{fid}"
-    db[fid] = {'id': fid, 'url': u, 'name': name, 'path': os.path.join(DL_DIR, f"{fid}_{name}"), 'down': 0, 'total': 0, 'status': 'Starting...', 'start': time.time()}
+    with db_lock:
+        db[fid] = {'id': fid, 'url': u, 'name': name, 'path': os.path.join(DL_DIR, f"{fid}_{name}"), 'down': 0, 'total': 0, 'status': 'Starting...', 'start': time.time()}
     threading.Thread(target=dl_worker, args=(fid,)).start()
     return "OK"
 
 @app.route('/action/<fid>/<act>')
 def action(fid, act):
-    if fid in db and act == 'stop':
-        db[fid]['status'] = 'Stopped'
-        try: os.remove(db[fid]['path'])
-        except: pass
-        del db[fid]
+    with db_lock:
+        if fid in db and act == 'stop':
+            db[fid]['status'] = 'Stopped'
+            try: os.remove(db[fid]['path'])
+            except: pass
+            del db[fid]
     return "OK"
 
-# ==========================================
-# ADVANCED TAILING DOWNLOAD ROUTE
-# ==========================================
 @app.route('/dl/<fid>')
 def download(fid):
-    if fid not in db or not os.path.exists(db[fid]['path']): 
-        return "File not found or deleted.", 404
-        
-    f = db[fid]
-    file_path = f['path']
-    file_name = f['name']
-    total_size = f.get('total', 0)
+    with db_lock:
+        if fid not in db or not os.path.exists(db[fid]['path']): 
+            return "File not found or deleted.", 404
+        f = db[fid]
+        file_path = f['path']
+        file_name = f['name']
+        total_size = f.get('total', 0)
+        status = f['status']
     
-    # If the file is 100% finished on the VPS, use standard high-speed send_file
-    if f['status'] == 'Completed':
+    if status == 'Completed':
         return send_file(file_path, as_attachment=True, download_name=file_name, conditional=True)
 
-    # If the file is actively downloading, spoof the headers so IDM sees the final size
     range_header = request.headers.get('Range', None)
     start_byte = 0
     end_byte = total_size - 1 if total_size else 0
@@ -207,19 +229,17 @@ def download(fid):
         with open(file_path, 'rb') as local_file:
             local_file.seek(start_byte)
             bytes_sent = 0
-            
             while bytes_sent < length:
                 chunk = local_file.read(65536)
                 if chunk:
                     yield chunk
                     bytes_sent += len(chunk)
                 else:
-                    # We hit the end of the physical disk file, but it's not finished yet!
-                    if db[fid]['status'] in ['Downloading', 'Starting...']:
-                        time.sleep(0.5) # Wait half a second for the VPS to write more data
-                        local_file.seek(start_byte + bytes_sent) # Re-orient the reader
-                    else:
-                        break # The file finished or errored out
+                    with db_lock: curr_status = db[fid]['status']
+                    if curr_status in ['Downloading', 'Starting...']:
+                        time.sleep(0.5)
+                        local_file.seek(start_byte + bytes_sent)
+                    else: break
 
     headers = {
         'Content-Type': 'application/octet-stream',
@@ -227,7 +247,6 @@ def download(fid):
         'Accept-Ranges': 'bytes'
     }
     
-    # Inject the true total file size
     if total_size:
         headers['Content-Length'] = str(length)
         headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{total_size}'
@@ -237,12 +256,24 @@ def download(fid):
 
 @app.route('/api/data')
 def api_data():
-    return jsonify({
-        'sys': {'cpu': psutil.cpu_percent(), 'ram': psutil.virtual_memory().percent, 'disk': psutil.disk_usage('/').percent, 'net': bw()},
-        'files': db
-    })
+    # CRITICAL: Safe hardware polling that will never crash the JSON
+    sys_data = {'cpu': 'N/A', 'ram': 'N/A', 'disk': 'N/A', 'net': bw()}
+    try: sys_data['cpu'] = psutil.cpu_percent()
+    except: pass
+    try: sys_data['ram'] = psutil.virtual_memory().percent
+    except: pass
+    try: sys_data['disk'] = psutil.disk_usage('/').percent
+    except: pass
 
-if __name__ == '__main__': app.run(host='0.0.0.0', port=8080)
+    # Safe dictionary copy prevents "changed size during iteration" crash
+    with db_lock:
+        safe_files = {k: v.copy() for k, v in db.items()}
+
+    return jsonify({'sys': sys_data, 'files': safe_files})
+
+if __name__ == '__main__': 
+    # threaded=True prevents the UI from freezing while a download starts
+    app.run(host='0.0.0.0', port=8080, threaded=True)
 PYTHON
 
 echo "📝 Creating Systemd Service..."
