@@ -1,22 +1,21 @@
-rm -f deploy_final_master_1gb.sh
-cat > deploy_final_master_1gb.sh << 'BASH_EOF'
+rm -f deploy_absolute_master_v15.sh
+cat > deploy_absolute_master_v15.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING FINAL MASTER SERVER (1GB SWAP)"
+echo "🚀 INITIATING SMART SWARM MASTER SERVER (V15)"
 echo "===================================================="
 
-echo "🛑 [1/8] Assassinating Zombie Processes..."
+echo "🛑 [1/8] Assassinating Blocked Processes..."
 sudo systemctl stop proxy >/dev/null 2>&1
 killall -9 python python3 ffmpeg cpulimit aria2c curl >/dev/null 2>&1
 fuser -k -9 8080/tcp >/dev/null 2>&1
 sleep 1
 
-echo "💾 [2/8] Forging 1GB Swap Memory (RAM Expansion)..."
+echo "💾 [2/8] Verifying 1GB Swap Memory..."
 sudo swapoff -a >/dev/null 2>&1
 sudo rm -f /swapfile
-# Adjusted count=1024 for exactly 1GB of Swap
 sudo dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile >/dev/null 2>&1
@@ -55,9 +54,9 @@ fi
 
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ [5/8] Compiling the 32-Thread Immortal Architecture..."
+echo "⚙️ [5/8] Compiling the Smart Swarm Architecture..."
 cat > /root/app.py << 'PYTHON_EOF'
-import os, time, uuid, threading, requests, subprocess, shutil, re
+import os, time, uuid, threading, requests, subprocess, shutil, re, queue
 import urllib.parse
 from flask import Flask, jsonify, render_template_string, request, send_file, Response
 import psutil
@@ -70,7 +69,7 @@ db = {}
 db_lock = threading.Lock()
 active_procs = {} 
 
-CHUNK_SIZE = 16777216 # Massive 16MB Chunk
+CHUNK_SIZE = 16777216 
 
 SPOOF_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 HEADERS = {
@@ -124,9 +123,6 @@ def update_telemetry():
 
 threading.Thread(target=update_telemetry, daemon=True).start()
 
-# ==========================================
-# ENGINE 1: SINGLE-CONNECTION HYPER-NATIVE
-# ==========================================
 def cleaner():
     while True:
         time.sleep(3600)
@@ -139,6 +135,9 @@ def cleaner():
                     del db[fid]
 threading.Thread(target=cleaner, daemon=True).start()
 
+# ==========================================
+# ENGINE 1: SINGLE-CONNECTION NATIVE
+# ==========================================
 def dl_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -189,7 +188,7 @@ def dl_worker(fid):
         with db_lock: db[fid]['status'] = f'Error: Connection Blocked/Timeout'
 
 # ==========================================
-# ENGINE 3: IMMORTAL 32x MULTI-THREADING 
+# ENGINE 3: SMART STAGGERED SWARM (V15)
 # ==========================================
 def multi_worker(fid):
     with db_lock:
@@ -206,7 +205,6 @@ def multi_worker(fid):
             r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
 
         total_size = int(r_ping.headers.get('content-length', 0))
-        
         if total_size == 0:
             with db_lock: db[fid]['status'] = 'Error: Source denies multi-threading.'
             return
@@ -227,12 +225,14 @@ def multi_worker(fid):
             db[fid]['total'] = total_size
             db[fid]['name'] = fname
             db[fid]['path'] = fpath
-            db[fid]['status'] = 'Downloading (32x Threads & Retrying)'
+            db[fid]['status'] = 'Downloading (16x Smart Swarm)'
 
+        # Pre-Allocate File for instant IDM linkage
         with open(fpath, 'wb') as f:
             f.truncate(total_size)
 
-        threads_count = 32
+        # 16x IDM-Standard Configuration
+        threads_count = 16
         chunk_size = total_size // threads_count
         ranges = []
         for i in range(threads_count):
@@ -244,7 +244,7 @@ def multi_worker(fid):
         active_procs[fid] = stop_event
 
         def download_chunk(start, end):
-            retries = 50 
+            retries = 25 
             bytes_downloaded = 0
             while bytes_downloaded < (end - start + 1) and retries > 0:
                 if stop_event.is_set(): return
@@ -252,27 +252,36 @@ def multi_worker(fid):
                 thread_headers = HEADERS.copy()
                 thread_headers['Range'] = f'bytes={current_start}-{end}'
                 try:
-                    with requests.get(url, headers=thread_headers, stream=True, timeout=15) as r:
+                    with requests.get(url, headers=thread_headers, stream=True, timeout=20) as r:
+                        # Smart Backoff: If CDN says "Too Many Requests", pause and cool down
+                        if r.status_code == 429:
+                            time.sleep(3)
+                            continue
+                            
                         r.raise_for_status()
                         with open(fpath, 'r+b') as f:
                             f.seek(current_start)
-                            for chunk in r.iter_content(chunk_size=1048576): 
+                            # 2MB chunks for efficient disk writing
+                            for chunk in r.iter_content(chunk_size=2097152):
                                 if stop_event.is_set(): return
-                                if chunk:
+                                if chunk: 
                                     f.write(chunk)
                                     bytes_downloaded += len(chunk)
                                     with db_lock: db[fid]['down'] += len(chunk)
-                except Exception as e:
+                except Exception:
                     retries -= 1
-                    time.sleep(2) 
+                    time.sleep(2) # Backoff before retry
+            
             if retries == 0:
-                stop_event.set()
+                stop_event.set() # Fatal block on this specific thread
 
         threads_list = []
         for r in ranges:
             t = threading.Thread(target=download_chunk, args=r)
             t.start()
             threads_list.append(t)
+            # CRITICAL FIX: Stagger thread creation by 0.4 seconds to evade DDoS WAF triggers
+            time.sleep(0.4) 
 
         while any(t.is_alive() for t in threads_list):
             if stop_event.is_set(): break
@@ -284,7 +293,7 @@ def multi_worker(fid):
                 db[fid]['status'] = 'Completed'
         else:
             with db_lock:
-                if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Error: Forced Disconnect'
+                if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Error: CDN Hard Block'
                     
     except Exception as e:
         with db_lock: db[fid]['status'] = f'Error: Connection Blocked'
@@ -327,7 +336,7 @@ def web_forge_worker(fid):
         with db_lock: db[fid]['status'] = 'Web Forge Failed'
 
 # ==========================================
-# FRONTEND HTML
+# FRONTEND HTML 
 # ==========================================
 HTML=r'''<!DOCTYPE html>
 <html lang="en">
@@ -399,9 +408,9 @@ HTML=r'''<!DOCTYPE html>
 </div>
 
 <div class="engine-box">
-    <div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Heavy MKVs / Non-Resumables - Single Conn)</span></div>
+    <div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For VLC Live Stream / Non-Resumables)</span></div>
     <div class="input-group">
-        <input type="text" id="url_disk" placeholder="Paste link to download to server disk...">
+        <input type="text" id="url_disk" placeholder="Paste link to download sequentially...">
         <button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button>
     </div>
 </div>
@@ -415,7 +424,7 @@ HTML=r'''<!DOCTYPE html>
 </div>
 
 <div class="engine-box">
-    <div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Resumable Links ONLY - 32x Max Speed)</span></div>
+    <div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Fast IDM Downloading ONLY - 16x Smart Swarm)</span></div>
     <div class="input-group">
         <input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk...">
         <button onclick="addFile('multi')" style="background:var(--multi); color:#000;">Multi-Thread DL</button>
@@ -558,7 +567,7 @@ setInterval(() => {
                         controls = `<button class="btn-green" onclick="playVid('/stream/${f.id}', '${f.id}')">▶️ Play Standard</button>`;
                     }
                 } else if (f.type == 'multi') {
-                    controls = `<div class="warning-text">⚠️ Threads downloading in separate parts. Wait for completion to stream.</div>`;
+                    controls = `<div class="warning-text">⚠️ Threads downloading in separate parts. Paste link in IDM to download now.</div>`;
                 } else {
                     if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
                         controls = `
@@ -875,15 +884,15 @@ User=root
 WantedBy=multi-user.target
 SERVICE_EOF
 
-echo "🚀 [7/8] Booting Tri-Core Engine..."
+echo "🚀 [7/8] Booting Smart Swarm Engine..."
 systemctl daemon-reload
 systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [8/8] 1GB SWAP MASTER DEPLOYMENT COMPLETE."
+echo "✅ [8/8] SMART SWARM DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash deploy_final_master_1gb.sh
+bash deploy_absolute_master_v15.sh
