@@ -1,18 +1,25 @@
-rm -f deploy_absolute_master_v29.sh
-cat > deploy_absolute_master_v29.sh << 'BASH_EOF'
+rm -f deploy_factory_reset_v29.sh
+cat > deploy_factory_reset_v29.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING DARK-MODE RBI SERVER (V29)"
+echo "🚀 INITIATING FACTORY RESET & V29 DARK-MODE SERVER"
 echo "===================================================="
 
-echo "🛑 [1/9] Assassinating Zombie Processes..."
-sudo systemctl stop proxy vnc-stack xvfb vnc novnc fluxbox openbox >/dev/null 2>&1
-killall -9 python python3 ffmpeg cpulimit aria2c curl chrome google-chrome-stable chromium-browser Xvfb x11vnc websockify fluxbox openbox autocutsel Xvnc >/dev/null 2>&1
+echo "🛑 [1/9] SCORCHED EARTH: Purging All Old Systems..."
+sudo systemctl stop proxy vnc-desktop cloudflare-tunnel nginx novnc ultraviolet >/dev/null 2>&1
+sudo systemctl disable proxy vnc-desktop cloudflare-tunnel nginx novnc ultraviolet >/dev/null 2>&1
+sudo apt purge -y nginx nginx-common nginx-core cloudflared nodejs npm apache2 >/dev/null 2>&1
+sudo apt autoremove -y >/dev/null 2>&1
+killall -9 python python3 node npm nginx cloudflared chrome google-chrome-stable chromium-browser Xvnc x11vnc websockify fluxbox openbox autocutsel >/dev/null 2>&1
+rm -rf /root/Ultraviolet-App /opt/novnc /etc/nginx /root/app.py /root/start_*.sh /etc/systemd/system/proxy.service /etc/systemd/system/novnc.service /etc/systemd/system/vnc-desktop.service
 fuser -k -9 8080/tcp >/dev/null 2>&1
 fuser -k -9 8081/tcp >/dev/null 2>&1
-sleep 1
+fuser -k -9 80/tcp >/dev/null 2>&1
+fuser -k -9 443/tcp >/dev/null 2>&1
+fuser -k -9 5900/tcp >/dev/null 2>&1
+sleep 2
 
 echo "💾 [2/9] Verifying 1GB Swap Memory..."
 sudo swapoff -a >/dev/null 2>&1
@@ -25,7 +32,7 @@ sudo sed -i '/swapfile/d' /etc/fstab
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
 sudo sysctl vm.swappiness=10
 
-echo "🛡️ [3/9] Securing Ports (8080 & 8081)..."
+echo "🛡️ [3/9] Securing Raw HTTP Ports (8080, 8081)..."
 export DEBIAN_FRONTEND=noninteractive
 apt update -y -qq >/dev/null 2>&1
 
@@ -34,7 +41,6 @@ apt install -y python3 python3-pip python3-venv python3-full python3-psutil ffmp
 apt install -y $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv >/dev/null 2>&1
 
 ufw allow 22/tcp >/dev/null 2>&1
-ufw allow OpenSSH >/dev/null 2>&1
 ufw allow 8080/tcp >/dev/null 2>&1
 ufw allow 8081/tcp >/dev/null 2>&1
 ufw --force enable >/dev/null 2>&1
@@ -43,8 +49,7 @@ sudo iptables -I INPUT 1 -p tcp --dport 8080 -j ACCEPT
 sudo iptables -I INPUT 1 -p tcp --dport 8081 -j ACCEPT
 sudo netfilter-persistent save >/dev/null 2>&1
 
-echo "🖥️ [4/9] Installing Openbox Kiosk, Clipboard Sync & Chrome..."
-apt remove -y fluxbox novnc websockify >/dev/null 2>&1 
+echo "🖥️ [4/9] Installing High-Speed TigerVNC & Chrome..."
 apt install -y tigervnc-standalone-server openbox autocutsel >/dev/null 2>&1
 
 wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
@@ -81,7 +86,7 @@ if [ ! -f "/root/venv/bin/pip" ]; then
 fi
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ [7/9] Compiling the Quad-Core Python Architecture..."
+echo "⚙️ [7/9] Compiling the Quad-Core Engine..."
 cat > /root/app.py << 'PYTHON_EOF'
 import os, time, uuid, threading, requests, subprocess, shutil, re, queue
 import urllib.parse
@@ -99,11 +104,7 @@ active_procs = {}
 CHUNK_SIZE = 16777216 
 
 SPOOF_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-HEADERS = {
-    'User-Agent': SPOOF_AGENT,
-    'Accept': '*/*',
-    'Connection': 'keep-alive'
-}
+HEADERS = {'User-Agent': SPOOF_AGENT, 'Accept': '*/*', 'Connection': 'keep-alive'}
 
 # ==========================================
 # ADVANCED SYSTEM TELEMETRY
@@ -121,7 +122,6 @@ def update_telemetry():
     global sys_data, net_p, net_pt
     try: net_p = psutil.net_io_counters()
     except: pass
-    
     while True:
         time.sleep(1)
         try:
@@ -132,7 +132,6 @@ def update_telemetry():
             swap_str = f"{fmt_bytes(smem.used)} / {fmt_bytes(smem.free)} / {fmt_bytes(smem.total)}"
             du = shutil.disk_usage("/")
             disk_str = f"{fmt_bytes(du.used)} / {fmt_bytes(du.free)} / {fmt_bytes(du.total)}"
-            
             net_str = "N/A"
             try:
                 n = psutil.net_io_counters()
@@ -162,22 +161,14 @@ def cleaner():
                     del db[fid]
 threading.Thread(target=cleaner, daemon=True).start()
 
-# ==========================================
-# ENGINE 1: SINGLE-CONNECTION NATIVE
-# ==========================================
 def dl_worker(fid):
     with db_lock:
         if fid not in db: return
         f = db[fid]
         url = f['url']
     try:
-        try:
-            r_ping = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=10)
-            if r_ping.status_code >= 400 or not r_ping.headers.get('content-length'):
-                r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
-        except:
-            r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
-
+        r_ping = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=10)
+        if r_ping.status_code >= 400 or not r_ping.headers.get('content-length'): r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
         total_size = int(r_ping.headers.get('content-length', 0))
         fname = f"video_{fid}.mp4"
         cd = r_ping.headers.get('content-disposition')
@@ -188,7 +179,6 @@ def dl_worker(fid):
             base = os.path.basename(urllib.parse.urlparse(url).path)
             if base: fname = base
         if hasattr(r_ping, 'close'): r_ping.close()
-        
         fpath = os.path.join(DL_DIR, f"{fid}_{fname}")
         with db_lock:
             db[fid]['total'] = total_size
@@ -209,27 +199,18 @@ def dl_worker(fid):
     except Exception:
         with db_lock: db[fid]['status'] = f'Error: Connection Blocked/Timeout'
 
-# ==========================================
-# ENGINE 3: SEQUENTIAL SWARM
-# ==========================================
 def multi_worker(fid):
     with db_lock:
         if fid not in db: return
         f = db[fid]
         url = f['url']
     try:
-        try:
-            r_ping = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=10)
-            if r_ping.status_code >= 400 or not r_ping.headers.get('content-length'):
-                r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
-        except:
-            r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
-
+        r_ping = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=10)
+        if r_ping.status_code >= 400 or not r_ping.headers.get('content-length'): r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
         total_size = int(r_ping.headers.get('content-length', 0))
         if total_size == 0:
             with db_lock: db[fid]['status'] = 'Error: Source denies multi-threading.'
             return
-
         fname = f"video_{fid}.mp4"
         cd = r_ping.headers.get('content-disposition')
         if cd and 'filename=' in cd:
@@ -239,32 +220,25 @@ def multi_worker(fid):
             base = os.path.basename(urllib.parse.urlparse(url).path)
             if base: fname = base
         if hasattr(r_ping, 'close'): r_ping.close()
-        
         fpath = os.path.join(DL_DIR, f"{fid}_{fname}")
-
         with db_lock:
             db[fid]['total'] = total_size
             db[fid]['name'] = fname
             db[fid]['path'] = fpath
             db[fid]['status'] = 'Downloading (16x Sequential Swarm)'
-
         with open(fpath, 'wb') as f: f.truncate(total_size)
-
         q = queue.PriorityQueue()
         end_chunk_size = 5242880 
         last_chunk_start = max(0, total_size - end_chunk_size)
         q.put((0, last_chunk_start, total_size - 1))
-
         micro_chunk = 10485760 
         priority_index = 1
         for i in range(0, last_chunk_start, micro_chunk):
             end = min(i + micro_chunk - 1, last_chunk_start - 1)
             q.put((priority_index, i, end))
             priority_index += 1
-
         stop_event = threading.Event()
         active_procs[fid] = stop_event
-
         def worker():
             while not q.empty() and not stop_event.is_set():
                 try: priority, start, end = q.get_nowait()
@@ -295,18 +269,15 @@ def multi_worker(fid):
                 else:
                     q.put((priority, start, end))
                     time.sleep(3)
-
         threads_list = []
         for _ in range(16):
             t = threading.Thread(target=worker)
             t.start()
             threads_list.append(t)
             time.sleep(0.5) 
-
         while any(t.is_alive() for t in threads_list):
             if stop_event.is_set(): break
             time.sleep(0.5)
-
         if not stop_event.is_set():
             with db_lock:
                 db[fid]['down'] = total_size
@@ -317,9 +288,6 @@ def multi_worker(fid):
     except Exception:
         with db_lock: db[fid]['status'] = f'Error: Connection Blocked'
 
-# ==========================================
-# OFFLINE WEB FORGE
-# ==========================================
 def web_forge_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -343,9 +311,6 @@ def web_forge_worker(fid):
     except:
         with db_lock: db[fid]['status'] = 'Web Forge Failed'
 
-# ==========================================
-# FRONTEND HTML 
-# ==========================================
 HTML=r'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -404,7 +369,7 @@ HTML=r'''<!DOCTYPE html>
 <body>
 
 <h2>
-    <span>🚀 Quad-Core Media Engine (V29)</span>
+    <span>🚀 Quad-Core Media Engine (V29 Dark Mode)</span>
     <span style="font-size: 14px; color: #888;">API <span class="status-dot" id="dot"></span></span>
 </h2>
 
@@ -441,7 +406,7 @@ HTML=r'''<!DOCTYPE html>
 </div>
 
 <div class="engine-box">
-    <div class="engine-title"><span style="color:var(--vnc); text-shadow: 0 0 5px rgba(234, 179, 8, 0.4);">🖥️ Engine 4: Live TigerVNC Desktop (Browserling Mode)</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(Boots native Dark Mode remote browser perfectly scaled to your tab)</span></div>
+    <div class="engine-title"><span style="color:var(--vnc); text-shadow: 0 0 5px rgba(234, 179, 8, 0.4);">🖥️ Engine 4: Live TigerVNC Desktop (Dark Mode)</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(Persistent Engine. Zero Disconnects.)</span></div>
     <div class="input-group">
         <input type="text" id="url_vnc" placeholder="Type URL to surf securely via Zero-Lag remote desktop...">
         <select id="res_vnc" class="select-box">
@@ -452,7 +417,7 @@ HTML=r'''<!DOCTYPE html>
         </select>
         <button onclick="surfVNC()" style="background:var(--vnc); color:#000;">Launch Chrome</button>
     </div>
-    <div style="margin-top: 10px; font-size: 0.85em; color: #aaa;">⚠️ <b>Direct Clipboard Sync:</b> Requires HTTPS or Google Chrome's "Insecure Origin" bypass flag.</div>
+    <div style="margin-top: 10px; font-size: 0.85em; color: #aaa;">💡 <b>Clipboard Sync:</b> Use the grey tab on the left edge of the Chrome screen to paste text! <br>(For direct Ctrl+C/V without the tab, you must enable <b>chrome://flags/#unsafely-treat-insecure-origin-as-secure</b> for your IP:8081).</div>
 </div>
 
 <div class="file-grid" id="files" style="margin-top:20px;"></div>
@@ -492,14 +457,14 @@ function addFile(type) {
     fetch('/api/add?type=' + type + '&url=' + encodeURIComponent(u));
 }
 
-// ENGINE 4 BRIDGE 
 function surfVNC() {
     let u = document.getElementById('url_vnc').value;
     let res = document.getElementById('res_vnc').value;
     if(!u) return;
-    document.getElementById('url_vnc').value = 'Booting Zero-Lag Remote Browser... Redirecting...';
+    document.getElementById('url_vnc').value = 'Connecting to Persistent Display Engine...';
     
     fetch('/api/surf?url=' + encodeURIComponent(u) + '&res=' + res).then(() => {
+        // Raw IP redirect on Port 8081 for absolute reliability
         window.location.href = 'http://' + window.location.hostname + ':8081/vnc.html?autoconnect=true&resize=scale';
     });
 }
@@ -627,7 +592,6 @@ setInterval(() => {
                 </div>`;
             }
         });
-        
         if(html === '') html = '<div style="text-align:center; color:#555; padding:20px;">No active engines. Paste a URL to begin.</div>';
         document.getElementById('files').innerHTML = html;
     }).catch(e => {
@@ -639,9 +603,6 @@ setInterval(() => {
 </body>
 </html>'''
 
-# ==========================================
-# SECURE API ROUTES 
-# ==========================================
 @app.route('/')
 def index(): return render_template_string(HTML)
 
@@ -650,12 +611,7 @@ def api_data():
     safe_files = []
     with db_lock:
         for fid, f in db.items():
-            safe_files.append({
-                'id': str(fid), 'name': str(f.get('name', 'Unknown')),
-                'status': str(f.get('status', 'Pending')),
-                'down': int(f.get('down', 0)), 'total': int(f.get('total', 0)),
-                'type': str(f.get('type', 'disk'))
-            })
+            safe_files.append({'id': str(fid), 'name': str(f.get('name', 'Unknown')), 'status': str(f.get('status', 'Pending')), 'down': int(f.get('down', 0)), 'total': int(f.get('total', 0)), 'type': str(f.get('type', 'disk'))})
     return jsonify({"sys": sys_data, "files": safe_files})
 
 @app.route('/api/add')
@@ -665,14 +621,9 @@ def add():
     if not u: return "Err", 400
     fid = str(uuid.uuid4())[:8]
     name = os.path.basename(u.split('?')[0]) or f"file_{fid}.mp4"
-    
-    with db_lock:
-        db[fid] = {'id': fid, 'url': str(u), 'name': name, 'path': '', 'down': 0, 'total': 0, 'status': 'Starting...', 'start': time.time(), 'type': t}
-    
-    if t == 'disk':
-        threading.Thread(target=dl_worker, args=(fid,)).start()
-    elif t == 'multi':
-        threading.Thread(target=multi_worker, args=(fid,)).start()
+    with db_lock: db[fid] = {'id': fid, 'url': str(u), 'name': name, 'path': '', 'down': 0, 'total': 0, 'status': 'Starting...', 'start': time.time(), 'type': t}
+    if t == 'disk': threading.Thread(target=dl_worker, args=(fid,)).start()
+    elif t == 'multi': threading.Thread(target=multi_worker, args=(fid,)).start()
     return "OK"
 
 @app.route('/api/action/<fid>/<act>')
@@ -691,8 +642,7 @@ def action(fid, act):
                 try: os.remove(db[fid]['path'])
                 except: pass
             del db[fid]
-        elif act == 'forge' and db[fid]['type'] in ['disk', 'multi']:
-            threading.Thread(target=web_forge_worker, args=(fid,)).start()
+        elif act == 'forge' and db[fid]['type'] in ['disk', 'multi']: threading.Thread(target=web_forge_worker, args=(fid,)).start()
     return "OK"
 
 # ==========================================
@@ -705,44 +655,34 @@ def surf():
     if not url: return "Err", 400
     if not url.startswith('http'): url = 'https://' + url
     
-    # 1. Clean Slate
-    os.system("killall -9 Xvnc openbox autocutsel chrome google-chrome-stable >/dev/null 2>&1")
-    os.system("rm -rf /tmp/cr_prof_* /tmp/.X99-lock /tmp/.X11-unix/X99 >/dev/null 2>&1")
-    time.sleep(0.5)
+    # Kill ONLY Chrome. The TigerVNC desktop is permanent and bulletproof.
+    os.system("killall -9 chrome google-chrome-stable chromium-browser >/dev/null 2>&1")
+    os.system("rm -rf /tmp/cr_prof_* >/dev/null 2>&1")
+    time.sleep(0.3)
     
-    # 2. Boot TigerVNC with Aggressive Clipboard Sync Enabled (-AcceptCutText -SendCutText)
-    os.system(f"Xvnc :99 -geometry {res} -depth 24 -SecurityTypes None -localhost no -rfbport 5900 -AcceptCutText -SendCutText >/dev/null 2>&1 &")
-    time.sleep(1)
+    # Resizes the live display via xrandr without dropping the connection
+    os.system(f"DISPLAY=:99 xrandr -s {res} >/dev/null 2>&1")
     
-    # 3. Openbox Borderless window manager
-    os.system("DISPLAY=:99 openbox-session >/dev/null 2>&1 &")
-    
-    # 4. Aggressive DUAL Clipboard Sync 
-    os.system("DISPLAY=:99 autocutsel -fork >/dev/null 2>&1")
-    os.system("DISPLAY=:99 autocutsel -selection PRIMARY -fork >/dev/null 2>&1")
-    
-    # 5. Boot Chrome (DARK MODE ENABLED)
+    # Boot Dark Mode Chrome safely into the pre-existing desktop
     prof_id = str(uuid.uuid4().hex)[:8]
     prof_dir = f"/tmp/cr_prof_{prof_id}"
     os.system(f"mkdir -p {prof_dir}")
-    
     w, h = res.split('x')
     
-    # Injected Dark Mode Arguments
     cmd = f"DISPLAY=:99 google-chrome-stable --force-dark-mode --enable-features=WebUIDarkMode --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-software-rasterizer --start-maximized --window-size={w},{h} --window-position=0,0 --user-data-dir={prof_dir} --no-first-run --no-default-browser-check '{url}' >/dev/null 2>&1 &"
     os.system(cmd)
     
+    time.sleep(0.5)
     return "OK"
 
 # ==========================================
-# ENGINE 2: RAM PROXY STREAM & LIVE OTF
+# OTHER ROUTES
 # ==========================================
 @app.route('/proxy_stream_live/<fid>')
 def proxy_stream_live(fid):
     with db_lock:
         if fid not in db or db[fid]['type'] != 'ram': return "404", 404
         url = db[fid]['url']
-        
     audio_track = request.args.get('audio', '0')
     def generate():
         cmd = ['nice', '-n', '19', 'ffmpeg', '-probesize', '50M', '-analyzeduration', '50M', '-user_agent', SPOOF_AGENT, '-i', url, '-map', '0:v:0?', '-map', f'0:a:{audio_track}?', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-threads', '2', '-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1']
@@ -760,13 +700,9 @@ def proxy_stream_live(fid):
             try: process.kill()
             except: pass
             if fid in active_procs: del active_procs[fid]
-
     headers = {'Content-Type': 'video/mp4', 'Cache-Control': 'no-cache'}
     return Response(generate(), mimetype='video/mp4', headers=headers)
 
-# ==========================================
-# ENGINE 1 & 3: DISK ROUTES & LIVE OTF
-# ==========================================
 @app.route('/stream/<fid>')
 def stream(fid):
     with db_lock:
@@ -780,12 +716,10 @@ def stream_live(fid):
         if fid not in db or not os.path.exists(db[fid]['path']): return "404", 404
         fpath = db[fid]['path']
     audio_track = request.args.get('audio', '0')
-
     while os.path.getsize(fpath) < 2000000:
         with db_lock:
             if db[fid]['status'] == 'Stopped': return "404", 404
         time.sleep(0.5)
-
     def generate():
         cmd = ['nice', '-n', '19', 'ffmpeg', '-probesize', '50M', '-analyzeduration', '50M', '-i', fpath, '-map', '0:v:0?', '-map', f'0:a:{audio_track}?', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-threads', '2', '-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1']
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -802,7 +736,6 @@ def stream_live(fid):
             try: process.kill()
             except: pass
             if fid in active_procs: del active_procs[fid]
-
     headers = {'Content-Type': 'video/mp4', 'Cache-Control': 'no-cache'}
     return Response(generate(), mimetype='video/mp4', headers=headers)
 
@@ -815,22 +748,16 @@ def download(fid, filename):
         fname = f['name']
         total_size = f.get('total', 0)
         status = f['status']
-        
-    if status == 'Completed':
-        return send_file(fpath, as_attachment=True, download_name=fname, conditional=True)
-
+    if status == 'Completed': return send_file(fpath, as_attachment=True, download_name=fname, conditional=True)
     range_header = request.headers.get('Range', None)
     start_byte = 0
     end_byte = total_size - 1 if total_size else 0
-
     if range_header and total_size:
         match = re.search(r'bytes=(\d+)-(\d*)', range_header)
         if match:
             start_byte = int(match.group(1))
             if match.group(2): end_byte = int(match.group(2))
-
     length = end_byte - start_byte + 1
-
     def generate():
         with open(fpath, 'rb') as local_file:
             local_file.seek(start_byte)
@@ -846,17 +773,10 @@ def download(fid, filename):
                         time.sleep(0.5)
                         local_file.seek(start_byte + bytes_sent)
                     else: break
-
-    headers = {
-        'Content-Type': 'application/octet-stream',
-        'Content-Disposition': f'attachment; filename="{fname}"',
-        'Accept-Ranges': 'bytes'
-    }
-    
+    headers = {'Content-Type': 'application/octet-stream', 'Content-Disposition': f'attachment; filename="{fname}"', 'Accept-Ranges': 'bytes'}
     if total_size:
         headers['Content-Length'] = str(length)
         headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{total_size}'
-
     status_code = 206 if range_header else 200
     return Response(generate(), status=status_code, headers=headers)
 
@@ -875,170 +795,62 @@ def proxy_stream(fid):
         return Response(generate(), status=r.status_code, headers={k: v for k, v in r.headers.items() if k.lower() in ['content-length', 'content-range', 'content-type', 'accept-ranges']})
     except: return "Error", 500
 
-# BACKGROUND WORKERS
-def dl_worker(fid):
+@app.route('/proxy_dl/<fid>/<path:filename>')
+def proxy_dl(fid, filename):
     with db_lock:
-        if fid not in db: return
-        f = db[fid]
-        url = f['url']
+        if fid not in db or db[fid]['type'] != 'ram': return "404", 404
+        url = db[fid]['url']
+        name = db[fid]['name']
+    req_headers = {k: v for k, v in request.headers.items() if k.lower() == 'range'}
+    req_headers['User-Agent'] = SPOOF_AGENT
     try:
-        r_ping = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=10)
-        if r_ping.status_code >= 400 or not r_ping.headers.get('content-length'): r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
-        total_size = int(r_ping.headers.get('content-length', 0))
-        fname = f"video_{fid}.mp4"
-        cd = r_ping.headers.get('content-disposition')
-        if cd and 'filename=' in cd:
-            extracted = cd.split('filename=')[-1].strip('"\'')
-            if extracted: fname = extracted
-        else:
-            base = os.path.basename(urllib.parse.urlparse(url).path)
-            if base: fname = base
-        if hasattr(r_ping, 'close'): r_ping.close()
-        
-        fpath = os.path.join(DL_DIR, f"{fid}_{fname}")
-        with db_lock:
-            db[fid]['total'] = total_size
-            db[fid]['name'] = fname
-            db[fid]['path'] = fpath
-            db[fid]['status'] = 'Downloading (Single-Conn Native)'
-        with requests.get(url, headers=HEADERS, stream=True, timeout=15) as r:
-            r.raise_for_status()
-            with open(fpath, 'wb') as out:
-                for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
-                    with db_lock:
-                        if db[fid]['status'] == 'Stopped': break
-                    if chunk:
-                        out.write(chunk)
-                        with db_lock: db[fid]['down'] += len(chunk)
-        with db_lock:
-            if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Completed'
-    except Exception:
-        with db_lock: db[fid]['status'] = f'Error: Connection Blocked/Timeout'
-
-def multi_worker(fid):
-    with db_lock:
-        if fid not in db: return
-        f = db[fid]
-        url = f['url']
-    try:
-        r_ping = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=10)
-        if r_ping.status_code >= 400 or not r_ping.headers.get('content-length'): r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
-        total_size = int(r_ping.headers.get('content-length', 0))
-        if total_size == 0:
-            with db_lock: db[fid]['status'] = 'Error: Source denies multi-threading.'
-            return
-        fname = f"video_{fid}.mp4"
-        cd = r_ping.headers.get('content-disposition')
-        if cd and 'filename=' in cd:
-            extracted = cd.split('filename=')[-1].strip('"\'')
-            if extracted: fname = extracted
-        else:
-            base = os.path.basename(urllib.parse.urlparse(url).path)
-            if base: fname = base
-        if hasattr(r_ping, 'close'): r_ping.close()
-        
-        fpath = os.path.join(DL_DIR, f"{fid}_{fname}")
-        with db_lock:
-            db[fid]['total'] = total_size
-            db[fid]['name'] = fname
-            db[fid]['path'] = fpath
-            db[fid]['status'] = 'Downloading (16x Sequential Swarm)'
-
-        with open(fpath, 'wb') as f: f.truncate(total_size)
-        q = queue.PriorityQueue()
-        end_chunk_size = 5242880 
-        last_chunk_start = max(0, total_size - end_chunk_size)
-        q.put((0, last_chunk_start, total_size - 1))
-        micro_chunk = 10485760 
-        priority_index = 1
-        for i in range(0, last_chunk_start, micro_chunk):
-            end = min(i + micro_chunk - 1, last_chunk_start - 1)
-            q.put((priority_index, i, end))
-            priority_index += 1
-
-        stop_event = threading.Event()
-        active_procs[fid] = stop_event
-
-        def worker():
-            while not q.empty() and not stop_event.is_set():
-                try: priority, start, end = q.get_nowait()
-                except queue.Empty: break
-                success = False
-                retries = 10 
-                chunk_length = end - start + 1
-                while not success and retries > 0 and not stop_event.is_set():
-                    try:
-                        thread_headers = HEADERS.copy()
-                        thread_headers['Range'] = f'bytes={start}-{end}'
-                        with requests.get(url, headers=thread_headers, stream=True, timeout=10) as r:
-                            if r.status_code == 429:
-                                time.sleep(3)
-                                continue
-                            r.raise_for_status()
-                            with open(fpath, 'r+b') as f:
-                                f.seek(start)
-                                for chunk in r.iter_content(chunk_size=1048576):
-                                    if stop_event.is_set(): return
-                                    if chunk: f.write(chunk)
-                        success = True
-                    except Exception:
-                        retries -= 1
-                        time.sleep(2)
-                if success:
-                    with db_lock: db[fid]['down'] += chunk_length
-                else:
-                    q.put((priority, start, end))
-                    time.sleep(3)
-
-        threads_list = []
-        for _ in range(16):
-            t = threading.Thread(target=worker)
-            t.start()
-            threads_list.append(t)
-            time.sleep(0.5) 
-
-        while any(t.is_alive() for t in threads_list):
-            if stop_event.is_set(): break
-            time.sleep(0.5)
-
-        if not stop_event.is_set():
-            with db_lock:
-                db[fid]['down'] = total_size
-                db[fid]['status'] = 'Completed'
-        else:
-            with db_lock:
-                if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Error: CDN Hard Block'
-    except Exception:
-        with db_lock: db[fid]['status'] = f'Error: Connection Blocked'
-
-def web_forge_worker(fid):
-    with db_lock:
-        if fid not in db: return
-        f = db[fid]
-        old_path = f['path']
-        old_name = f['name']
-    with db_lock: db[fid]['status'] = 'Forging (Fixing Audio & Timeline Maps)...'
-    new_name = old_name.rsplit('.', 1)[0] + "_WebReady.mp4"
-    new_path = os.path.join(DL_DIR, f"{fid}_{new_name}")
-    cmd = ['nice', '-n', '19', 'ffmpeg', '-y', '-i', old_path, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '256k', '-ac', '2', '-movflags', '+faststart', new_path]
-    try:
-        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        active_procs[fid] = process
-        process.wait()
-        with db_lock:
-            if db[fid]['status'] != 'Stopped':
-                os.remove(old_path)
-                db[fid]['name'] = new_name
-                db[fid]['path'] = new_path
-                db[fid]['status'] = 'Completed'
-    except:
-        with db_lock: db[fid]['status'] = 'Web Forge Failed'
+        r = requests.get(url, headers=req_headers, stream=True, timeout=10)
+        def generate():
+            for chunk in r.iter_content(CHUNK_SIZE):
+                if chunk: yield chunk
+        resp = Response(generate(), status=r.status_code, headers={k: v for k, v in r.headers.items() if k.lower() in ['content-length', 'content-range', 'content-type', 'accept-ranges']})
+        resp.headers['Content-Disposition'] = f'attachment; filename="{name}"'
+        return resp
+    except: return "Error", 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, threaded=True)
 PYTHON_EOF
 
-echo "📝 [8/9] Registering Services..."
+echo "📝 [8/9] Registering the Immortal Desktop Engine..."
+
+cat > /root/start_desktop.sh << 'EOF'
+#!/bin/bash
+export DISPLAY=:99
+rm -rf /tmp/.X11-unix/X99
+
+# Boot TigerVNC permanently with Aggressive Clipboard Sync
+Xvnc :99 -geometry 1920x1080 -depth 24 -SecurityTypes None -localhost no -rfbport 5900 -AcceptCutText -SendCutText &
+sleep 2
+
+# Boot Openbox (Borderless window manager)
+openbox-session &
+
+# Boot DUAL Clipboard Sync tunnels permanently
+autocutsel -fork &
+autocutsel -selection PRIMARY -fork &
+
+# Keep script alive by tailing null
+tail -f /dev/null
+EOF
+chmod +x /root/start_desktop.sh
+
+cat > /etc/systemd/system/vnc-desktop.service << 'EOF'
+[Unit]
+Description=Persistent Virtual Desktop
+After=network.target
+[Service]
+ExecStart=/root/start_desktop.sh
+Restart=always
+User=root
+[Install]
+WantedBy=multi-user.target
+EOF
 
 cat > /etc/systemd/system/novnc.service << 'EOF'
 [Unit]
@@ -1060,15 +872,19 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-echo "🚀 [9/9] Booting the V29 Architecture..."
+echo "🚀 [9/9] Booting the Final Core..."
 systemctl daemon-reload
-systemctl enable novnc proxy >/dev/null 2>&1
-systemctl restart novnc proxy >/dev/null 2>&1
+systemctl enable vnc-desktop novnc proxy >/dev/null 2>&1
+systemctl restart vnc-desktop novnc proxy >/dev/null 2>&1
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [SUCCESS] V29 DEPLOYMENT COMPLETE."
-echo -e "\n===================================================="
+echo "✅ [SUCCESS] PERFECTED V29 DEPLOYMENT COMPLETE."
+echo "===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
+echo "⚠️ CRITICAL BROWSER CACHE WARNING:"
+echo "If you still see the old Ultraviolet page, you MUST open an"
+echo "Incognito/Private window or clear your browser cache!"
+echo "===================================================="
 BASH_EOF
-bash deploy_absolute_master_v29.sh
+bash deploy_factory_reset_v29.sh
