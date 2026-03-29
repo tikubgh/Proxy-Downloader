@@ -1,20 +1,19 @@
-rm -f master_assassin_server.sh
-cat > master_assassin_server.sh << 'BASH_EOF'
+rm -f deploy_absolute_master.sh
+cat > deploy_absolute_master.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING ZOMBIE-PROOF MASTER SERVER"
+echo "🚀 INITIATING ABSOLUTE MASTER SERVER DEPLOYMENT"
 echo "===================================================="
 
 echo "🛑 [1/8] Assassinating Zombie Processes..."
 sudo systemctl stop proxy >/dev/null 2>&1
-# This ruthless killall ensures NO old FFmpeg processes survive the upgrade
 killall -9 python python3 ffmpeg cpulimit >/dev/null 2>&1
 fuser -k -9 8080/tcp >/dev/null 2>&1
-sleep 2
+sleep 1
 
-echo "💾 [2/8] Verifying 4GB Swap Memory..."
+echo "💾 [2/8] Forging 4GB Swap Memory (RAM Expansion)..."
 sudo swapoff -a >/dev/null 2>&1
 sudo rm -f /swapfile
 sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
@@ -25,10 +24,14 @@ sudo sed -i '/swapfile/d' /etc/fstab
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
 sudo sysctl vm.swappiness=10
 
-echo "🛡️ [3/8] Securing Ports & Firewalls..."
+echo "🛡️ [3/8] Securing Ports & Piercing Firewalls..."
 export DEBIAN_FRONTEND=noninteractive
 apt update -y -qq >/dev/null 2>&1
-apt install -y python3-venv python3-pip python3-psutil ffmpeg ufw cpulimit iptables-persistent >/dev/null 2>&1
+
+# Brute-force install all standard python requirements
+apt install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw cpulimit iptables-persistent >/dev/null 2>&1
+# Blanket install the specific venv versions to bypass Ubuntu's missing packages
+apt install -y python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv >/dev/null 2>&1
 
 ufw allow 22/tcp >/dev/null 2>&1
 ufw allow OpenSSH >/dev/null 2>&1
@@ -38,10 +41,22 @@ ufw --force enable >/dev/null 2>&1
 sudo iptables -I INPUT 1 -p tcp --dport 8080 -j ACCEPT
 sudo netfilter-persistent save >/dev/null 2>&1
 
-echo "🐍 [4/8] Building Python Environment..."
+echo "🐍 [4/8] Building Ironclad Python Environment..."
 mkdir -p /root/downloads
 rm -rf /root/venv
-python3 -m venv /root/venv
+
+# Attempt standard creation
+python3 -m venv /root/venv >/dev/null 2>&1
+
+# IRONCLAD FALLBACK: If standard creation failed because of 'ensurepip', bypass Ubuntu and build manually
+if [ ! -f "/root/venv/bin/pip" ]; then
+    echo "   ⚠️ Ubuntu missing ensurepip. Engaging manual PIP injection..."
+    rm -rf /root/venv
+    python3 -m venv --without-pip /root/venv
+    curl -sS https://bootstrap.pypa.io/get-pip.py | /root/venv/bin/python >/dev/null 2>&1
+fi
+
+# Install dependencies into the now-guaranteed environment
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
 echo "⚙️ [5/8] Compiling the Assassin Architecture..."
@@ -171,7 +186,6 @@ def web_forge_worker(fid):
         active_procs[fid] = process
         process.wait()
         
-        # Only complete if it wasn't assassinated
         with db_lock:
             if db[fid]['status'] != 'Stopped':
                 os.remove(old_path)
@@ -478,7 +492,6 @@ def action(fid, act):
         if act == 'stop':
             db[fid]['status'] = 'Stopped'
             
-            # THE ASSASSIN: Kills the FFmpeg process immediately
             if fid in active_procs:
                 try: 
                     active_procs[fid].kill()
@@ -526,7 +539,6 @@ def proxy_stream_live(fid):
                 if not chunk: break
                 yield chunk
         except GeneratorExit:
-            # DISCONNECT CATCHER: Kills FFmpeg the exact millisecond you close the player
             try: process.kill()
             except: pass
         finally:
@@ -582,7 +594,6 @@ def stream_live(fid):
                 if not chunk: break
                 yield chunk
         except GeneratorExit:
-            # DISCONNECT CATCHER: Instantly kills FFmpeg to free up CPU & RAM
             try: process.kill()
             except: pass
         finally:
@@ -703,9 +714,9 @@ systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [8/8] ZOMBIE-PROOF DEPLOYMENT COMPLETE."
+echo "✅ [8/8] ABSOLUTE BULLETPROOF DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash master_assassin_server.sh
+bash deploy_absolute_master.sh
