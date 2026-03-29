@@ -1,10 +1,10 @@
-rm -f deploy_hyper_native_v10.sh
-cat > deploy_hyper_native_v10.sh << 'BASH_EOF'
+rm -f deploy_absolute_master_v13.sh
+cat > deploy_absolute_master_v13.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING HYPER-NATIVE MASTER SERVER (V10)"
+echo "🚀 INITIATING IMMORTAL MASTER SERVER (V13)"
 echo "===================================================="
 
 echo "🛑 [1/8] Assassinating Zombie Processes..."
@@ -54,7 +54,7 @@ fi
 
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ [5/8] Compiling the Hyper-Native Architecture..."
+echo "⚙️ [5/8] Compiling the 32-Thread Immortal Architecture..."
 cat > /root/app.py << 'PYTHON_EOF'
 import os, time, uuid, threading, requests, subprocess, shutil, re
 import urllib.parse
@@ -69,8 +69,7 @@ db = {}
 db_lock = threading.Lock()
 active_procs = {} 
 
-# MASSIVE 16MB TCP Window for Hyper-Native Speed
-CHUNK_SIZE = 16777216 
+CHUNK_SIZE = 16777216 # Massive 16MB Chunk
 
 SPOOF_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 HEADERS = {
@@ -80,7 +79,7 @@ HEADERS = {
 }
 
 # ==========================================
-# ADVANCED SYSTEM TELEMETRY (PERFECTED)
+# ADVANCED SYSTEM TELEMETRY
 # ==========================================
 sys_data = {"cpu": "Booting...", "ram": "Booting...", "swap": "Booting...", "disk": "Booting...", "net": "Booting..."}
 net_p = None
@@ -100,13 +99,10 @@ def update_telemetry():
         time.sleep(1)
         try:
             cpu_str = f"{psutil.cpu_percent()}%"
-            
             vmem = psutil.virtual_memory()
             ram_str = f"{fmt_bytes(vmem.used)} / {fmt_bytes(vmem.available)} / {fmt_bytes(vmem.total)}"
-            
             smem = psutil.swap_memory()
             swap_str = f"{fmt_bytes(smem.used)} / {fmt_bytes(smem.free)} / {fmt_bytes(smem.total)}"
-            
             du = shutil.disk_usage("/")
             disk_str = f"{fmt_bytes(du.used)} / {fmt_bytes(du.free)} / {fmt_bytes(du.total)}"
             
@@ -120,17 +116,15 @@ def update_telemetry():
                     r = (n.bytes_recv - net_p.bytes_recv) / d
                     net_p, net_pt = n, t
                     fmt_spd = lambda b: f"{b/1024:.1f} KB/s" if b < 1024**2 else f"{b/(1024**2):.1f} MB/s"
-                    
                     net_str = f"Live: ↑ {fmt_spd(s)} Up ↓ {fmt_spd(r)} Down &nbsp;|&nbsp; Total: {fmt_bytes(n.bytes_sent)} Up / {fmt_bytes(n.bytes_recv)} Down"
             except: pass
-            
             sys_data = {"cpu": cpu_str, "ram": ram_str, "swap": swap_str, "disk": disk_str, "net": net_str}
         except: pass
 
 threading.Thread(target=update_telemetry, daemon=True).start()
 
 # ==========================================
-# ENGINE 1: HYPER-NATIVE 16MB DOWNLOADER
+# ENGINE 1: SINGLE-CONNECTION HYPER-NATIVE
 # ==========================================
 def cleaner():
     while True:
@@ -151,7 +145,6 @@ def dl_worker(fid):
         url = f['url']
         
     try:
-        # Phase 1: Stealth HEAD Ping to prevent CDN token burning
         try:
             r_ping = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=10)
             if r_ping.status_code >= 400 or not r_ping.headers.get('content-length'):
@@ -161,7 +154,6 @@ def dl_worker(fid):
 
         total_size = int(r_ping.headers.get('content-length', 0))
         fname = f"video_{fid}.mp4"
-        
         cd = r_ping.headers.get('content-disposition')
         if cd and 'filename=' in cd:
             extracted = cd.split('filename=')[-1].strip('"\'')
@@ -169,17 +161,16 @@ def dl_worker(fid):
         else:
             base = os.path.basename(urllib.parse.urlparse(url).path)
             if base: fname = base
-            
         if hasattr(r_ping, 'close'): r_ping.close()
+        
         fpath = os.path.join(DL_DIR, f"{fid}_{fname}")
 
         with db_lock:
             db[fid]['total'] = total_size
             db[fid]['name'] = fname
             db[fid]['path'] = fpath
-            db[fid]['status'] = 'Downloading (Hyper-Native C-Socket)'
+            db[fid]['status'] = 'Downloading (Single-Conn Native)'
 
-        # Phase 2: Hyper-Native C-Socket Download (16MB Chunks)
         with requests.get(url, headers=HEADERS, stream=True, timeout=15) as r:
             r.raise_for_status()
             with open(fpath, 'wb') as out:
@@ -196,6 +187,112 @@ def dl_worker(fid):
     except Exception as e:
         with db_lock: db[fid]['status'] = f'Error: Connection Blocked/Timeout'
 
+# ==========================================
+# ENGINE 3: IMMORTAL 32x MULTI-THREADING (V13)
+# ==========================================
+def multi_worker(fid):
+    with db_lock:
+        if fid not in db: return
+        f = db[fid]
+        url = f['url']
+        
+    try:
+        try:
+            r_ping = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=10)
+            if r_ping.status_code >= 400 or not r_ping.headers.get('content-length'):
+                r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
+        except:
+            r_ping = requests.get(url, headers=HEADERS, stream=True, timeout=10)
+
+        total_size = int(r_ping.headers.get('content-length', 0))
+        
+        if total_size == 0:
+            with db_lock: db[fid]['status'] = 'Error: Source denies multi-threading.'
+            return
+
+        fname = f"video_{fid}.mp4"
+        cd = r_ping.headers.get('content-disposition')
+        if cd and 'filename=' in cd:
+            extracted = cd.split('filename=')[-1].strip('"\'')
+            if extracted: fname = extracted
+        else:
+            base = os.path.basename(urllib.parse.urlparse(url).path)
+            if base: fname = base
+        if hasattr(r_ping, 'close'): r_ping.close()
+        
+        fpath = os.path.join(DL_DIR, f"{fid}_{fname}")
+
+        with db_lock:
+            db[fid]['total'] = total_size
+            db[fid]['name'] = fname
+            db[fid]['path'] = fpath
+            db[fid]['status'] = 'Downloading (32x Threads & Retrying)'
+
+        # PRE-ALLOCATION: Instantly creates full-sized file so IDM/Streaming links work immediately
+        with open(fpath, 'wb') as f:
+            f.truncate(total_size)
+
+        threads_count = 32
+        chunk_size = total_size // threads_count
+        ranges = []
+        for i in range(threads_count):
+            start = i * chunk_size
+            end = start + chunk_size - 1 if i < threads_count - 1 else total_size - 1
+            ranges.append((start, end))
+
+        stop_event = threading.Event()
+        active_procs[fid] = stop_event
+
+        def download_chunk(start, end):
+            retries = 50 # IMMORTAL MODE: Will retry dropped connections 50 times
+            bytes_downloaded = 0
+            while bytes_downloaded < (end - start + 1) and retries > 0:
+                if stop_event.is_set(): return
+                current_start = start + bytes_downloaded
+                thread_headers = HEADERS.copy()
+                thread_headers['Range'] = f'bytes={current_start}-{end}'
+                try:
+                    with requests.get(url, headers=thread_headers, stream=True, timeout=15) as r:
+                        r.raise_for_status()
+                        # Direct sector write into the pre-allocated file
+                        with open(fpath, 'r+b') as f:
+                            f.seek(current_start)
+                            for chunk in r.iter_content(chunk_size=1048576): # 1MB blocks
+                                if stop_event.is_set(): return
+                                if chunk:
+                                    f.write(chunk)
+                                    bytes_downloaded += len(chunk)
+                                    with db_lock: db[fid]['down'] += len(chunk)
+                except Exception as e:
+                    retries -= 1
+                    time.sleep(2) # Backoff timer before hammering the CDN again
+            if retries == 0:
+                stop_event.set()
+
+        threads_list = []
+        for r in ranges:
+            t = threading.Thread(target=download_chunk, args=r)
+            t.start()
+            threads_list.append(t)
+
+        while any(t.is_alive() for t in threads_list):
+            if stop_event.is_set(): break
+            time.sleep(0.5)
+
+        if not stop_event.is_set():
+            with db_lock:
+                db[fid]['down'] = total_size
+                db[fid]['status'] = 'Completed'
+        else:
+            with db_lock:
+                if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Error: Forced Disconnect'
+                    
+    except Exception as e:
+        with db_lock: db[fid]['status'] = f'Error: Connection Blocked'
+
+# ==========================================
+# OFFLINE WEB FORGE
+# ==========================================
 def web_forge_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -231,17 +328,17 @@ def web_forge_worker(fid):
         with db_lock: db[fid]['status'] = 'Web Forge Failed'
 
 # ==========================================
-# FRONTEND HTML 
+# FRONTEND HTML
 # ==========================================
 HTML=r'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dual-Core Media Engine</title>
+    <title>Tri-Core Media Engine</title>
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <style>
-        :root { --bg: #0a0c10; --card: #14171f; --text: #e2e8f0; --accent: #00b3ff; --success: #10b981; --danger: #ef4444; --warn: #f59e0b; --purple: #8b5cf6; --ram: #06b6d4; --swap: #ec4899;}
+        :root { --bg: #0a0c10; --card: #14171f; --text: #e2e8f0; --accent: #00b3ff; --success: #10b981; --danger: #ef4444; --warn: #f59e0b; --purple: #8b5cf6; --ram: #06b6d4; --multi: #f97316;}
         body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; padding: 20px; max-width: 1200px; margin: auto; }
         h2 { border-bottom: 2px solid #333; padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
         .status-dot { height: 12px; width: 12px; background: var(--success); border-radius: 50%; display: inline-block; box-shadow: 0 0 8px var(--success); }
@@ -262,6 +359,8 @@ HTML=r'''<!DOCTYPE html>
         .file-card { background: var(--card); padding: 20px; border-radius: 8px; position:relative; }
         .type-disk { border-left: 5px solid var(--purple); }
         .type-ram { border-left: 5px solid var(--ram); }
+        .type-multi { border-left: 5px solid var(--multi); }
+        
         .file-name { font-weight: bold; font-size: 1.1em; word-break: break-all; margin-bottom: 10px; }
         .file-status { color: var(--warn); font-size: 0.9em; margin-bottom: 10px; }
         progress { width: 100%; height: 10px; border-radius: 5px; margin-bottom: 10px; accent-color: var(--success); }
@@ -273,6 +372,7 @@ HTML=r'''<!DOCTYPE html>
         .btn-green { background: var(--success); }
         .btn-purple { background: var(--purple); }
         .btn-ram { background: var(--ram); color: #000;}
+        .btn-multi { background: var(--multi); color: #000;}
         .btn-red { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
         .btn-red:hover { background: var(--danger); color: white; }
         
@@ -287,7 +387,7 @@ HTML=r'''<!DOCTYPE html>
 <body>
 
 <h2>
-    <span>🚀 Dual-Core Media Engine</span>
+    <span>🚀 Tri-Core Media Engine</span>
     <span style="font-size: 14px; color: #888;">API <span class="status-dot" id="dot"></span></span>
 </h2>
 
@@ -300,7 +400,7 @@ HTML=r'''<!DOCTYPE html>
 </div>
 
 <div class="engine-box">
-    <div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Heavy MKVs / Non-Resumables)</span></div>
+    <div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Heavy MKVs / Non-Resumables - Single Conn)</span></div>
     <div class="input-group">
         <input type="text" id="url_disk" placeholder="Paste link to download to server disk...">
         <button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button>
@@ -312,6 +412,14 @@ HTML=r'''<!DOCTYPE html>
     <div class="input-group">
         <input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM...">
         <button onclick="addFile('ram')" style="background:var(--ram); color:#000;">Start RAM Proxy</button>
+    </div>
+</div>
+
+<div class="engine-box">
+    <div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Resumable Links ONLY - 32x Max Speed)</span></div>
+    <div class="input-group">
+        <input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk...">
+        <button onclick="addFile('multi')" style="background:var(--multi); color:#000;">Multi-Thread DL</button>
     </div>
 </div>
 
@@ -436,6 +544,10 @@ setInterval(() => {
                 </div>`;
             } else {
                 let dlLink = window.location.origin + '/dl/' + f.id + '/' + encodeURIComponent(f.name);
+                let typeLabel = f.type === 'multi' ? '🚀 [MULTI-THREAD]' : '💿 [DISK]';
+                let cardClass = f.type === 'multi' ? 'type-multi' : 'type-disk';
+                
+                // Because Engine 3 uses Pre-Allocation, IDM and Play links are available instantly
                 let controls = '';
                 if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
                     controls = `
@@ -450,8 +562,8 @@ setInterval(() => {
                 }
 
                 html += `
-                <div class="file-card type-disk">
-                    <div class="file-name">💿 [DISK] ${f.name}</div>
+                <div class="file-card ${cardClass}">
+                    <div class="file-name">${typeLabel} ${f.name}</div>
                     <div class="file-status">[${f.status}] - ${pct}% (${mb} MB / ${tot} MB)</div>
                     <progress value="${f.down}" max="${f.total||100}"></progress>
                     
@@ -511,6 +623,8 @@ def add():
     
     if t == 'disk':
         threading.Thread(target=dl_worker, args=(fid,)).start()
+    elif t == 'multi':
+        threading.Thread(target=multi_worker, args=(fid,)).start()
     else:
         try:
             r = requests.head(u, headers=HEADERS, timeout=5)
@@ -533,15 +647,18 @@ def action(fid, act):
             
             if fid in active_procs:
                 try: 
-                    active_procs[fid].kill()
+                    if hasattr(active_procs[fid], 'kill'):
+                        active_procs[fid].kill()
+                    else:
+                        active_procs[fid].set()
                     del active_procs[fid]
                 except: pass
                 
-            if db[fid]['type'] == 'disk':
+            if db[fid]['type'] in ['disk', 'multi']:
                 try: os.remove(db[fid]['path'])
                 except: pass
             del db[fid]
-        elif act == 'forge' and db[fid]['type'] == 'disk':
+        elif act == 'forge' and db[fid]['type'] in ['disk', 'multi']:
             threading.Thread(target=web_forge_worker, args=(fid,)).start()
     return "OK"
 
@@ -590,7 +707,7 @@ def proxy_stream_live(fid):
     return Response(generate(), mimetype='video/mp4', headers=headers)
 
 # ==========================================
-# ENGINE 1: DISK ROUTES & LIVE OTF
+# ENGINE 1 & 3: DISK ROUTES & LIVE OTF
 # ==========================================
 @app.route('/stream/<fid>')
 def stream(fid):
@@ -680,7 +797,7 @@ def download(fid, filename):
                     bytes_sent += len(chunk)
                 else:
                     with db_lock: curr_status = db[fid]['status']
-                    if curr_status in ['Downloading', 'Starting...'] or 'Hyper-Native' in curr_status:
+                    if curr_status not in ['Completed', 'Stopped'] and 'Error' not in curr_status:
                         time.sleep(0.5)
                         local_file.seek(start_byte + bytes_sent)
                     else: break
@@ -750,15 +867,15 @@ User=root
 WantedBy=multi-user.target
 SERVICE_EOF
 
-echo "🚀 [7/8] Booting Stealth Engine..."
+echo "🚀 [7/8] Booting Tri-Core Engine..."
 systemctl daemon-reload
 systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [8/8] HYPER-NATIVE DEPLOYMENT COMPLETE."
+echo "✅ [8/8] IMMORTAL DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash deploy_hyper_native_v10.sh
+bash deploy_absolute_master_v13.sh
