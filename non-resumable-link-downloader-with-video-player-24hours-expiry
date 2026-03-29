@@ -1,13 +1,13 @@
-rm -f deploy_absolute_master_v15.sh
-cat > deploy_absolute_master_v15.sh << 'BASH_EOF'
+rm -f deploy_absolute_master_v16.sh
+cat > deploy_absolute_master_v16.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING SMART SWARM MASTER SERVER (V15)"
+echo "🚀 INITIATING SEQUENTIAL SWARM SERVER (V16)"
 echo "===================================================="
 
-echo "🛑 [1/8] Assassinating Blocked Processes..."
+echo "🛑 [1/8] Assassinating Zombie Processes..."
 sudo systemctl stop proxy >/dev/null 2>&1
 killall -9 python python3 ffmpeg cpulimit aria2c curl >/dev/null 2>&1
 fuser -k -9 8080/tcp >/dev/null 2>&1
@@ -54,7 +54,7 @@ fi
 
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ [5/8] Compiling the Smart Swarm Architecture..."
+echo "⚙️ [5/8] Compiling the V16 Sequential Architecture..."
 cat > /root/app.py << 'PYTHON_EOF'
 import os, time, uuid, threading, requests, subprocess, shutil, re, queue
 import urllib.parse
@@ -188,7 +188,7 @@ def dl_worker(fid):
         with db_lock: db[fid]['status'] = f'Error: Connection Blocked/Timeout'
 
 # ==========================================
-# ENGINE 3: SMART STAGGERED SWARM (V15)
+# ENGINE 3: SEQUENTIAL PRIORITY SWARM (V16)
 # ==========================================
 def multi_worker(fid):
     with db_lock:
@@ -225,63 +225,77 @@ def multi_worker(fid):
             db[fid]['total'] = total_size
             db[fid]['name'] = fname
             db[fid]['path'] = fpath
-            db[fid]['status'] = 'Downloading (16x Smart Swarm)'
+            db[fid]['status'] = 'Downloading (16x Sequential Swarm)'
 
-        # Pre-Allocate File for instant IDM linkage
+        # Pre-Allocate File for instant IDM/VLC linkage
         with open(fpath, 'wb') as f:
             f.truncate(total_size)
 
-        # 16x IDM-Standard Configuration
-        threads_count = 16
-        chunk_size = total_size // threads_count
-        ranges = []
-        for i in range(threads_count):
-            start = i * chunk_size
-            end = start + chunk_size - 1 if i < threads_count - 1 else total_size - 1
-            ranges.append((start, end))
+        # Build PRIORITY Queue for strict Left-to-Right filling
+        q = queue.PriorityQueue()
+        
+        # PRIORITY 0: The very last 5MB of the file (Crucial for MP4/VLC headers)
+        end_chunk_size = 5242880 # 5MB
+        last_chunk_start = max(0, total_size - end_chunk_size)
+        q.put((0, last_chunk_start, total_size - 1))
+
+        # PRIORITY 1+: Strict Sequential Chunks (10MB) from the beginning
+        micro_chunk = 10485760 # 10MB
+        priority_index = 1
+        for i in range(0, last_chunk_start, micro_chunk):
+            end = min(i + micro_chunk - 1, last_chunk_start - 1)
+            q.put((priority_index, i, end))
+            priority_index += 1
 
         stop_event = threading.Event()
         active_procs[fid] = stop_event
 
-        def download_chunk(start, end):
-            retries = 25 
-            bytes_downloaded = 0
-            while bytes_downloaded < (end - start + 1) and retries > 0:
-                if stop_event.is_set(): return
-                current_start = start + bytes_downloaded
-                thread_headers = HEADERS.copy()
-                thread_headers['Range'] = f'bytes={current_start}-{end}'
+        def worker():
+            while not q.empty() and not stop_event.is_set():
                 try:
-                    with requests.get(url, headers=thread_headers, stream=True, timeout=20) as r:
-                        # Smart Backoff: If CDN says "Too Many Requests", pause and cool down
-                        if r.status_code == 429:
-                            time.sleep(3)
-                            continue
-                            
-                        r.raise_for_status()
-                        with open(fpath, 'r+b') as f:
-                            f.seek(current_start)
-                            # 2MB chunks for efficient disk writing
-                            for chunk in r.iter_content(chunk_size=2097152):
-                                if stop_event.is_set(): return
-                                if chunk: 
-                                    f.write(chunk)
-                                    bytes_downloaded += len(chunk)
-                                    with db_lock: db[fid]['down'] += len(chunk)
-                except Exception:
-                    retries -= 1
-                    time.sleep(2) # Backoff before retry
-            
-            if retries == 0:
-                stop_event.set() # Fatal block on this specific thread
+                    priority, start, end = q.get_nowait()
+                except queue.Empty:
+                    break
+                
+                success = False
+                retries = 10 # 10 attempts per chunk
+                chunk_length = end - start + 1
+                
+                while not success and retries > 0 and not stop_event.is_set():
+                    try:
+                        thread_headers = HEADERS.copy()
+                        thread_headers['Range'] = f'bytes={start}-{end}'
+                        with requests.get(url, headers=thread_headers, stream=True, timeout=10) as r:
+                            # Smart Backoff for CDN Firewalls
+                            if r.status_code == 429:
+                                time.sleep(3)
+                                continue
+                                
+                            r.raise_for_status()
+                            with open(fpath, 'r+b') as f:
+                                f.seek(start)
+                                for chunk in r.iter_content(chunk_size=1048576):
+                                    if stop_event.is_set(): return
+                                    if chunk: f.write(chunk)
+                        success = True
+                    except Exception:
+                        retries -= 1
+                        time.sleep(2)
+                
+                if success:
+                    with db_lock: db[fid]['down'] += chunk_length
+                else:
+                    # If it fails, put it EXACTLY back in its priority slot so no holes are left behind
+                    q.put((priority, start, end))
+                    time.sleep(3)
 
+        # Release 16 Sequential Threads staggered to evade firewalls
         threads_list = []
-        for r in ranges:
-            t = threading.Thread(target=download_chunk, args=r)
+        for _ in range(16):
+            t = threading.Thread(target=worker)
             t.start()
             threads_list.append(t)
-            # CRITICAL FIX: Stagger thread creation by 0.4 seconds to evade DDoS WAF triggers
-            time.sleep(0.4) 
+            time.sleep(0.5) 
 
         while any(t.is_alive() for t in threads_list):
             if stop_event.is_set(): break
@@ -424,7 +438,7 @@ HTML=r'''<!DOCTYPE html>
 </div>
 
 <div class="engine-box">
-    <div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Fast IDM Downloading ONLY - 16x Smart Swarm)</span></div>
+    <div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For Fast IDM & VLC Streaming - 16x Sequential Swarm)</span></div>
     <div class="input-group">
         <input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk...">
         <button onclick="addFile('multi')" style="background:var(--multi); color:#000;">Multi-Thread DL</button>
@@ -472,7 +486,7 @@ function copyToBox(inputId) {
     let copyText = document.getElementById(inputId);
     copyText.select();
     copyText.setSelectionRange(0, 99999);
-    try { document.execCommand("copy"); alert("✅ Link Copied! Paste in IDM or VLC Media Player."); } 
+    try { document.execCommand("copy"); alert("✅ Link Copied! Paste directly into IDM or VLC Media Player."); } 
     catch(err) { alert("Please manually copy from the box."); }
 }
 
@@ -567,7 +581,7 @@ setInterval(() => {
                         controls = `<button class="btn-green" onclick="playVid('/stream/${f.id}', '${f.id}')">▶️ Play Standard</button>`;
                     }
                 } else if (f.type == 'multi') {
-                    controls = `<div class="warning-text">⚠️ Threads downloading in separate parts. Paste link in IDM to download now.</div>`;
+                    controls = `<div class="warning-text">⚠️ Sequential Swarm Active. You may safely paste the link above into VLC to begin streaming.</div>`;
                 } else {
                     if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
                         controls = `
@@ -586,7 +600,7 @@ setInterval(() => {
                     
                     <div class="link-box">
                         <input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()">
-                        <button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy IDM Link</button>
+                        <button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy IDM / VLC Link</button>
                     </div>
 
                     <div class="btn-group">
@@ -884,15 +898,15 @@ User=root
 WantedBy=multi-user.target
 SERVICE_EOF
 
-echo "🚀 [7/8] Booting Smart Swarm Engine..."
+echo "🚀 [7/8] Booting Sequential Swarm Engine..."
 systemctl daemon-reload
 systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [8/8] SMART SWARM DEPLOYMENT COMPLETE."
+echo "✅ [8/8] V16 SEQUENTIAL DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash deploy_absolute_master_v15.sh
+bash deploy_absolute_master_v16.sh
