@@ -1,10 +1,10 @@
-rm -f deploy_absolute_master_v13.sh
-cat > deploy_absolute_master_v13.sh << 'BASH_EOF'
+rm -f deploy_final_master_1gb.sh
+cat > deploy_final_master_1gb.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING IMMORTAL MASTER SERVER (V13)"
+echo "🚀 INITIATING FINAL MASTER SERVER (1GB SWAP)"
 echo "===================================================="
 
 echo "🛑 [1/8] Assassinating Zombie Processes..."
@@ -13,10 +13,11 @@ killall -9 python python3 ffmpeg cpulimit aria2c curl >/dev/null 2>&1
 fuser -k -9 8080/tcp >/dev/null 2>&1
 sleep 1
 
-echo "💾 [2/8] Forging 4GB Swap Memory (RAM Expansion)..."
+echo "💾 [2/8] Forging 1GB Swap Memory (RAM Expansion)..."
 sudo swapoff -a >/dev/null 2>&1
 sudo rm -f /swapfile
-sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
+# Adjusted count=1024 for exactly 1GB of Swap
+sudo dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile >/dev/null 2>&1
 sudo swapon /swapfile
@@ -188,7 +189,7 @@ def dl_worker(fid):
         with db_lock: db[fid]['status'] = f'Error: Connection Blocked/Timeout'
 
 # ==========================================
-# ENGINE 3: IMMORTAL 32x MULTI-THREADING (V13)
+# ENGINE 3: IMMORTAL 32x MULTI-THREADING 
 # ==========================================
 def multi_worker(fid):
     with db_lock:
@@ -228,7 +229,6 @@ def multi_worker(fid):
             db[fid]['path'] = fpath
             db[fid]['status'] = 'Downloading (32x Threads & Retrying)'
 
-        # PRE-ALLOCATION: Instantly creates full-sized file so IDM/Streaming links work immediately
         with open(fpath, 'wb') as f:
             f.truncate(total_size)
 
@@ -244,7 +244,7 @@ def multi_worker(fid):
         active_procs[fid] = stop_event
 
         def download_chunk(start, end):
-            retries = 50 # IMMORTAL MODE: Will retry dropped connections 50 times
+            retries = 50 
             bytes_downloaded = 0
             while bytes_downloaded < (end - start + 1) and retries > 0:
                 if stop_event.is_set(): return
@@ -254,10 +254,9 @@ def multi_worker(fid):
                 try:
                     with requests.get(url, headers=thread_headers, stream=True, timeout=15) as r:
                         r.raise_for_status()
-                        # Direct sector write into the pre-allocated file
                         with open(fpath, 'r+b') as f:
                             f.seek(current_start)
-                            for chunk in r.iter_content(chunk_size=1048576): # 1MB blocks
+                            for chunk in r.iter_content(chunk_size=1048576): 
                                 if stop_event.is_set(): return
                                 if chunk:
                                     f.write(chunk)
@@ -265,7 +264,7 @@ def multi_worker(fid):
                                     with db_lock: db[fid]['down'] += len(chunk)
                 except Exception as e:
                     retries -= 1
-                    time.sleep(2) # Backoff timer before hammering the CDN again
+                    time.sleep(2) 
             if retries == 0:
                 stop_event.set()
 
@@ -547,18 +546,27 @@ setInterval(() => {
                 let typeLabel = f.type === 'multi' ? '🚀 [MULTI-THREAD]' : '💿 [DISK]';
                 let cardClass = f.type === 'multi' ? 'type-multi' : 'type-disk';
                 
-                // Because Engine 3 uses Pre-Allocation, IDM and Play links are available instantly
                 let controls = '';
-                if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
-                    controls = `
-                    ${audioSelector}
-                    <button class="btn-purple" onclick="playLiveFix('${f.id}', 'disk')">⚡ Play Live Audio Fix</button>
-                    `;
-                    if (f.status === 'Completed') {
-                        controls += `<button class="btn-warn" onclick="triggerAction('${f.id}', 'forge')">🎧 Offline Web Forge (Enable Seeking)</button>`;
+                
+                if (f.status === 'Completed') {
+                    if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
+                        controls = `
+                        ${audioSelector}
+                        <button class="btn-purple" onclick="playLiveFix('${f.id}', 'disk')">⚡ Play Live Audio Fix</button>
+                        <button class="btn-warn" onclick="triggerAction('${f.id}', 'forge')">🎧 Offline Web Forge (Enable Seeking)</button>`;
+                    } else {
+                        controls = `<button class="btn-green" onclick="playVid('/stream/${f.id}', '${f.id}')">▶️ Play Standard</button>`;
                     }
+                } else if (f.type == 'multi') {
+                    controls = `<div class="warning-text">⚠️ Threads downloading in separate parts. Wait for completion to stream.</div>`;
                 } else {
-                    controls = `<button class="btn-green" onclick="playVid('/stream/${f.id}', '${f.id}')">▶️ Play Standard</button>`;
+                    if (f.name.toLowerCase().includes('.mkv') || f.name.toLowerCase().includes('ddp')) {
+                        controls = `
+                        ${audioSelector}
+                        <button class="btn-purple" onclick="playLiveFix('${f.id}', 'disk')">⚡ Play Live Audio Fix</button>`;
+                    } else {
+                        controls = `<button class="btn-green" onclick="playVid('/stream/${f.id}', '${f.id}')">▶️ Play Standard</button>`;
+                    }
                 }
 
                 html += `
@@ -873,9 +881,9 @@ systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [8/8] IMMORTAL DEPLOYMENT COMPLETE."
+echo "✅ [8/8] 1GB SWAP MASTER DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash deploy_absolute_master_v13.sh
+bash deploy_final_master_1gb.sh
