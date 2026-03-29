@@ -1,10 +1,10 @@
-rm -f deploy_absolute_master.sh
-cat > deploy_absolute_master.sh << 'BASH_EOF'
+rm -f deploy_absolute_master_v5.sh
+cat > deploy_absolute_master_v5.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING ABSOLUTE MASTER SERVER DEPLOYMENT"
+echo "🚀 INITIATING PERFECT UI MASTER SERVER (V5)"
 echo "===================================================="
 
 echo "🛑 [1/8] Assassinating Zombie Processes..."
@@ -28,10 +28,9 @@ echo "🛡️ [3/8] Securing Ports & Piercing Firewalls..."
 export DEBIAN_FRONTEND=noninteractive
 apt update -y -qq >/dev/null 2>&1
 
-# Brute-force install all standard python requirements
+PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")')
 apt install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw cpulimit iptables-persistent >/dev/null 2>&1
-# Blanket install the specific venv versions to bypass Ubuntu's missing packages
-apt install -y python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv >/dev/null 2>&1
+apt install -y $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv >/dev/null 2>&1
 
 ufw allow 22/tcp >/dev/null 2>&1
 ufw allow OpenSSH >/dev/null 2>&1
@@ -45,10 +44,7 @@ echo "🐍 [4/8] Building Ironclad Python Environment..."
 mkdir -p /root/downloads
 rm -rf /root/venv
 
-# Attempt standard creation
 python3 -m venv /root/venv >/dev/null 2>&1
-
-# IRONCLAD FALLBACK: If standard creation failed because of 'ensurepip', bypass Ubuntu and build manually
 if [ ! -f "/root/venv/bin/pip" ]; then
     echo "   ⚠️ Ubuntu missing ensurepip. Engaging manual PIP injection..."
     rm -rf /root/venv
@@ -56,10 +52,9 @@ if [ ! -f "/root/venv/bin/pip" ]; then
     curl -sS https://bootstrap.pypa.io/get-pip.py | /root/venv/bin/python >/dev/null 2>&1
 fi
 
-# Install dependencies into the now-guaranteed environment
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ [5/8] Compiling the Assassin Architecture..."
+echo "⚙️ [5/8] Compiling the Perfected UI Architecture..."
 cat > /root/app.py << 'PYTHON_EOF'
 import os, time, uuid, threading, requests, subprocess, shutil, re
 from flask import Flask, jsonify, render_template_string, request, send_file, Response
@@ -71,16 +66,21 @@ os.makedirs(DL_DIR, exist_ok=True)
 
 db = {}
 db_lock = threading.Lock()
-active_procs = {} # THE REGISTRY: Tracks all active FFmpeg PIDs
+active_procs = {} 
 
 CHUNK_SIZE = 6291456 # 6MB Chunks
 
 # ==========================================
-# SYSTEM TELEMETRY
+# ADVANCED SYSTEM TELEMETRY
 # ==========================================
-sys_data = {"cpu": 0, "ram": 0, "free_gb": 0, "net": "Booting..."}
+sys_data = {"cpu": "Booting...", "ram": "Booting...", "swap": "Booting...", "disk": "Booting...", "net": "Booting..."}
 net_p = None
 net_pt = time.time()
+
+def fmt_bytes(b):
+    if b >= 1024**3: return f"{b/(1024**3):.2f} GB"
+    elif b >= 1024**2: return f"{b/(1024**2):.0f} MB"
+    else: return f"{b/1024:.0f} KB"
 
 def update_telemetry():
     global sys_data, net_p, net_pt
@@ -90,10 +90,22 @@ def update_telemetry():
     while True:
         time.sleep(1)
         try:
-            cpu = psutil.cpu_percent()
-            ram = psutil.virtual_memory().percent
-            free_gb = round(shutil.disk_usage("/").free / (1024**3), 2)
+            # CPU
+            cpu_str = f"{psutil.cpu_percent()}%"
             
+            # RAM (Used / Free / Total)
+            vmem = psutil.virtual_memory()
+            ram_str = f"{fmt_bytes(vmem.used)} / {fmt_bytes(vmem.available)} / {fmt_bytes(vmem.total)}"
+            
+            # SWAP (Used / Free / Total)
+            smem = psutil.swap_memory()
+            swap_str = f"{fmt_bytes(smem.used)} / {fmt_bytes(smem.free)} / {fmt_bytes(smem.total)}"
+            
+            # Disk (Used / Free / Total)
+            du = shutil.disk_usage("/")
+            disk_str = f"{fmt_bytes(du.used)} / {fmt_bytes(du.free)} / {fmt_bytes(du.total)}"
+            
+            # Network (Live + Total)
             net_str = "N/A"
             try:
                 n = psutil.net_io_counters()
@@ -103,11 +115,12 @@ def update_telemetry():
                     s = (n.bytes_sent - net_p.bytes_sent) / d
                     r = (n.bytes_recv - net_p.bytes_recv) / d
                     net_p, net_pt = n, t
-                    fmt = lambda b: f"{b/1024:.2f} KB/s" if b < 1024*1024 else f"{b/(1024*1024):.2f} MB/s"
-                    net_str = f"↑ {fmt(s)} | ↓ {fmt(r)}"
+                    fmt_spd = lambda b: f"{b/1024:.1f} KB/s" if b < 1024**2 else f"{b/(1024**2):.1f} MB/s"
+                    
+                    net_str = f"Live: ↑ {fmt_spd(s)} Up ↓ {fmt_spd(r)} Down &nbsp;|&nbsp; Total: {fmt_bytes(n.bytes_sent)} Up / {fmt_bytes(n.bytes_recv)} Down"
             except: pass
             
-            sys_data = {"cpu": cpu, "ram": ram, "free_gb": free_gb, "net": net_str}
+            sys_data = {"cpu": cpu_str, "ram": ram_str, "swap": swap_str, "disk": disk_str, "net": net_str}
         except: pass
 
 threading.Thread(target=update_telemetry, daemon=True).start()
@@ -196,7 +209,7 @@ def web_forge_worker(fid):
         with db_lock: db[fid]['status'] = 'Web Forge Failed'
 
 # ==========================================
-# FRONTEND HTML
+# FRONTEND HTML (PERFECT SINGLE-LINE UI)
 # ==========================================
 HTML=r'''<!DOCTYPE html>
 <html lang="en">
@@ -206,20 +219,25 @@ HTML=r'''<!DOCTYPE html>
     <title>Dual-Core Media Engine</title>
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <style>
-        :root { --bg: #0a0c10; --card: #14171f; --text: #e2e8f0; --accent: #00b3ff; --success: #10b981; --danger: #ef4444; --warn: #f59e0b; --purple: #8b5cf6; --ram: #06b6d4;}
-        body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; padding: 20px; max-width: 950px; margin: auto; }
+        :root { --bg: #0a0c10; --card: #14171f; --text: #e2e8f0; --accent: #00b3ff; --success: #10b981; --danger: #ef4444; --warn: #f59e0b; --purple: #8b5cf6; --ram: #06b6d4; --swap: #ec4899;}
+        /* Expanded max-width so boxes have room to breathe */
+        body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; padding: 20px; max-width: 1200px; margin: auto; }
         h2 { border-bottom: 2px solid #333; padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
         .status-dot { height: 12px; width: 12px; background: var(--success); border-radius: 50%; display: inline-block; box-shadow: 0 0 8px var(--success); }
         .engine-box { background: var(--card); padding: 20px; border-radius: 10px; border: 1px solid #2d3748; margin-bottom: 20px; }
         .engine-title { font-weight: bold; font-size: 1.2em; margin-bottom: 15px; display:flex; align-items:center; gap:8px;}
         .input-group { display: flex; gap: 10px; }
         input { flex: 1; padding: 15px; border-radius: 8px; border: 1px solid #333; background: #000; color: white; font-size: 16px; outline: none; }
-        button { padding: 12px 18px; border-radius: 8px; border: none; background: var(--accent); color: white; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button { padding: 12px 18px; border-radius: 8px; border: none; background: var(--accent); color: white; font-weight: bold; cursor: pointer; transition: 0.2s; white-space: nowrap; }
         button:hover { opacity: 0.8; }
         
-        .monitors { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 25px; }
-        .monitor-card { background: var(--card); padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #2d3748; }
-        .monitor-value { font-size: 18px; font-weight: bold; margin-top: 5px; color: var(--accent); }
+        /* Adjusted grid to keep top 4 cards in one row on desktop */
+        .monitors { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 15px; margin-bottom: 25px; }
+        .monitor-card { background: var(--card); padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #2d3748; overflow: hidden; }
+        /* CRITICAL UI FIX: white-space: nowrap prevents text wrapping to next line */
+        .monitor-value { font-size: 15px; font-weight: bold; margin-top: 8px; color: var(--accent); white-space: nowrap; }
+        .monitor-card div:first-child { font-size: 14px; color: #aaa; white-space: nowrap; }
+        .network-card { grid-column: 1 / -1; } 
         
         .file-grid { display: grid; gap: 15px; }
         .file-card { background: var(--card); padding: 20px; border-radius: 8px; position:relative; }
@@ -255,10 +273,11 @@ HTML=r'''<!DOCTYPE html>
 </h2>
 
 <div class="monitors">
-    <div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--%</div></div>
-    <div class="monitor-card"><div>RAM Usage</div><div class="monitor-value" id="ram">--%</div></div>
-    <div class="monitor-card"><div>Free Disk</div><div class="monitor-value" id="disk" style="color:var(--success);">-- GB</div></div>
-    <div class="monitor-card" style="grid-column: span 3;"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div>
+    <div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div>
+    <div class="monitor-card"><div>RAM (Used / Free / Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div>
+    <div class="monitor-card"><div>Swap (Used / Free / Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div>
+    <div class="monitor-card"><div>Disk (Used / Free / Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div>
+    <div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div>
 </div>
 
 <div class="engine-box">
@@ -356,10 +375,11 @@ setInterval(() => {
     fetch('/api/data').then(r => r.json()).then(data => {
         document.getElementById('dot').style.background = 'var(--success)';
         document.getElementById('dot').style.boxShadow = '0 0 8px var(--success)';
-        document.getElementById('cpu').innerText = data.sys.cpu + '%';
-        document.getElementById('ram').innerText = data.sys.ram + '%';
-        document.getElementById('disk').innerText = data.sys.free_gb + ' GB';
-        document.getElementById('net').innerText = data.sys.net;
+        document.getElementById('cpu').innerText = data.sys.cpu;
+        document.getElementById('ram').innerText = data.sys.ram;
+        document.getElementById('swap').innerText = data.sys.swap;
+        document.getElementById('disk').innerText = data.sys.disk;
+        document.getElementById('net').innerHTML = data.sys.net;
         
         let html = '';
         data.files.forEach(f => {
@@ -714,9 +734,9 @@ systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [8/8] ABSOLUTE BULLETPROOF DEPLOYMENT COMPLETE."
+echo "✅ [8/8] PERFECT UI DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash deploy_absolute_master.sh
+bash deploy_absolute_master_v5.sh
