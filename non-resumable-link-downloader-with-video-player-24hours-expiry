@@ -1,15 +1,14 @@
-rm -f deploy_absolute_master_v28.sh
-cat > deploy_absolute_master_v28.sh << 'BASH_EOF'
+rm -f deploy_absolute_master_v29.sh
+cat > deploy_absolute_master_v29.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING TIGERVNC MASTER SERVER (V28)"
+echo "🚀 INITIATING DARK-MODE RBI SERVER (V29)"
 echo "===================================================="
 
-echo "🛑 [1/9] Assassinating Laggy VNC Processes..."
-sudo systemctl stop proxy vnc-stack xvfb vnc novnc fluxbox >/dev/null 2>&1
-sudo rm -f /etc/systemd/system/vnc-stack.service /etc/systemd/system/xvfb.service /etc/systemd/system/vnc.service
+echo "🛑 [1/9] Assassinating Zombie Processes..."
+sudo systemctl stop proxy vnc-stack xvfb vnc novnc fluxbox openbox >/dev/null 2>&1
 killall -9 python python3 ffmpeg cpulimit aria2c curl chrome google-chrome-stable chromium-browser Xvfb x11vnc websockify fluxbox openbox autocutsel Xvnc >/dev/null 2>&1
 fuser -k -9 8080/tcp >/dev/null 2>&1
 fuser -k -9 8081/tcp >/dev/null 2>&1
@@ -31,7 +30,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt update -y -qq >/dev/null 2>&1
 
 PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")')
-apt install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent git wget curl >/dev/null 2>&1
+apt install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent git wget curl x11-xserver-utils >/dev/null 2>&1
 apt install -y $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv >/dev/null 2>&1
 
 ufw allow 22/tcp >/dev/null 2>&1
@@ -44,12 +43,10 @@ sudo iptables -I INPUT 1 -p tcp --dport 8080 -j ACCEPT
 sudo iptables -I INPUT 1 -p tcp --dport 8081 -j ACCEPT
 sudo netfilter-persistent save >/dev/null 2>&1
 
-echo "🖥️ [4/9] Installing TigerVNC, Openbox & Chrome..."
-# Ripping out the laggy Xvfb and x11vnc, replacing with TigerVNC
-apt remove -y xvfb x11vnc fluxbox novnc websockify >/dev/null 2>&1 
+echo "🖥️ [4/9] Installing Openbox Kiosk, Clipboard Sync & Chrome..."
+apt remove -y fluxbox novnc websockify >/dev/null 2>&1 
 apt install -y tigervnc-standalone-server openbox autocutsel >/dev/null 2>&1
 
-# Installing Google Chrome directly from source
 wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
 apt install -y ./google-chrome-stable_current_amd64.deb >/dev/null 2>&1
 rm -f google-chrome-stable_current_amd64.deb
@@ -198,7 +195,6 @@ def dl_worker(fid):
             db[fid]['name'] = fname
             db[fid]['path'] = fpath
             db[fid]['status'] = 'Downloading (Single-Conn Native)'
-
         with requests.get(url, headers=HEADERS, stream=True, timeout=15) as r:
             r.raise_for_status()
             with open(fpath, 'wb') as out:
@@ -210,7 +206,7 @@ def dl_worker(fid):
                         with db_lock: db[fid]['down'] += len(chunk)
         with db_lock:
             if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Completed'
-    except Exception as e:
+    except Exception:
         with db_lock: db[fid]['status'] = f'Error: Connection Blocked/Timeout'
 
 # ==========================================
@@ -252,8 +248,7 @@ def multi_worker(fid):
             db[fid]['path'] = fpath
             db[fid]['status'] = 'Downloading (16x Sequential Swarm)'
 
-        with open(fpath, 'wb') as f:
-            f.truncate(total_size)
+        with open(fpath, 'wb') as f: f.truncate(total_size)
 
         q = queue.PriorityQueue()
         end_chunk_size = 5242880 
@@ -319,7 +314,7 @@ def multi_worker(fid):
         else:
             with db_lock:
                 if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Error: CDN Hard Block'
-    except Exception as e:
+    except Exception:
         with db_lock: db[fid]['status'] = f'Error: Connection Blocked'
 
 # ==========================================
@@ -409,7 +404,7 @@ HTML=r'''<!DOCTYPE html>
 <body>
 
 <h2>
-    <span>🚀 Quad-Core Media Engine</span>
+    <span>🚀 Quad-Core Media Engine (V29)</span>
     <span style="font-size: 14px; color: #888;">API <span class="status-dot" id="dot"></span></span>
 </h2>
 
@@ -446,20 +441,18 @@ HTML=r'''<!DOCTYPE html>
 </div>
 
 <div class="engine-box">
-    <div class="engine-title"><span style="color:var(--vnc); text-shadow: 0 0 5px rgba(234, 179, 8, 0.4);">🖥️ Engine 4: Live TigerVNC Desktop (Browserling Mode)</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(Boots high-speed remote browser perfectly scaled to your tab)</span></div>
+    <div class="engine-title"><span style="color:var(--vnc); text-shadow: 0 0 5px rgba(234, 179, 8, 0.4);">🖥️ Engine 4: Live TigerVNC Desktop (Browserling Mode)</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(Boots native Dark Mode remote browser perfectly scaled to your tab)</span></div>
     <div class="input-group">
         <input type="text" id="url_vnc" placeholder="Type URL to surf securely via Zero-Lag remote desktop...">
-        
         <select id="res_vnc" class="select-box">
             <option value="1920x1080">1920 x 1080</option>
             <option value="1366x768">1366 x 768</option>
             <option value="1280x1024">1280 x 1024</option>
             <option value="1280x768">1280 x 768</option>
         </select>
-
         <button onclick="surfVNC()" style="background:var(--vnc); color:#000;">Launch Chrome</button>
     </div>
-    <div style="margin-top: 10px; font-size: 0.85em; color: #aaa;">💡 <b>Direct Clipboard Sync Active:</b> Press Ctrl+C on your laptop and Ctrl+V inside Chrome directly. (Accept the browser permission prompt when asked).</div>
+    <div style="margin-top: 10px; font-size: 0.85em; color: #aaa;">⚠️ <b>Direct Clipboard Sync:</b> Requires HTTPS or Google Chrome's "Insecure Origin" bypass flag.</div>
 </div>
 
 <div class="file-grid" id="files" style="margin-top:20px;"></div>
@@ -499,7 +492,7 @@ function addFile(type) {
     fetch('/api/add?type=' + type + '&url=' + encodeURIComponent(u));
 }
 
-// ENGINE 4 BRIDGE - GRABS RESOLUTION & LAUNCHES TIGERVNC
+// ENGINE 4 BRIDGE 
 function surfVNC() {
     let u = document.getElementById('url_vnc').value;
     let res = document.getElementById('res_vnc').value;
@@ -712,30 +705,31 @@ def surf():
     if not url: return "Err", 400
     if not url.startswith('http'): url = 'https://' + url
     
-    # 1. Kill old TigerVNC, Openbox, Autocutsel, and Chrome sessions completely
+    # 1. Clean Slate
     os.system("killall -9 Xvnc openbox autocutsel chrome google-chrome-stable >/dev/null 2>&1")
     os.system("rm -rf /tmp/cr_prof_* /tmp/.X99-lock /tmp/.X11-unix/X99 >/dev/null 2>&1")
     time.sleep(0.5)
     
-    # 2. Boot TigerVNC natively with exact requested geometry. -rfbport 5900 bridges it perfectly to noVNC
-    os.system(f"Xvnc :99 -geometry {res} -depth 24 -SecurityTypes None -localhost no -rfbport 5900 >/dev/null 2>&1 &")
+    # 2. Boot TigerVNC with Aggressive Clipboard Sync Enabled (-AcceptCutText -SendCutText)
+    os.system(f"Xvnc :99 -geometry {res} -depth 24 -SecurityTypes None -localhost no -rfbport 5900 -AcceptCutText -SendCutText >/dev/null 2>&1 &")
     time.sleep(1)
     
-    # 3. Boot Openbox to remove window borders
+    # 3. Openbox Borderless window manager
     os.system("DISPLAY=:99 openbox-session >/dev/null 2>&1 &")
     
-    # 4. Boot DUAL Clipboard Sync (Native direct copy/paste bridge)
-    os.system("DISPLAY=:99 autocutsel -s CLIPBOARD -fork >/dev/null 2>&1")
-    os.system("DISPLAY=:99 autocutsel -s PRIMARY -fork >/dev/null 2>&1")
+    # 4. Aggressive DUAL Clipboard Sync 
+    os.system("DISPLAY=:99 autocutsel -fork >/dev/null 2>&1")
+    os.system("DISPLAY=:99 autocutsel -selection PRIMARY -fork >/dev/null 2>&1")
     
-    # 5. Boot Chrome safely
+    # 5. Boot Chrome (DARK MODE ENABLED)
     prof_id = str(uuid.uuid4().hex)[:8]
     prof_dir = f"/tmp/cr_prof_{prof_id}"
     os.system(f"mkdir -p {prof_dir}")
     
     w, h = res.split('x')
     
-    cmd = f"DISPLAY=:99 google-chrome-stable --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-software-rasterizer --start-maximized --window-size={w},{h} --window-position=0,0 --user-data-dir={prof_dir} --no-first-run --no-default-browser-check '{url}' >/dev/null 2>&1 &"
+    # Injected Dark Mode Arguments
+    cmd = f"DISPLAY=:99 google-chrome-stable --force-dark-mode --enable-features=WebUIDarkMode --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-software-rasterizer --start-maximized --window-size={w},{h} --window-position=0,0 --user-data-dir={prof_dir} --no-first-run --no-default-browser-check '{url}' >/dev/null 2>&1 &"
     os.system(cmd)
     
     return "OK"
@@ -881,25 +875,7 @@ def proxy_stream(fid):
         return Response(generate(), status=r.status_code, headers={k: v for k, v in r.headers.items() if k.lower() in ['content-length', 'content-range', 'content-type', 'accept-ranges']})
     except: return "Error", 500
 
-@app.route('/proxy_dl/<fid>/<path:filename>')
-def proxy_dl(fid, filename):
-    with db_lock:
-        if fid not in db or db[fid]['type'] != 'ram': return "404", 404
-        url = db[fid]['url']
-        name = db[fid]['name']
-    req_headers = {k: v for k, v in request.headers.items() if k.lower() == 'range'}
-    req_headers['User-Agent'] = SPOOF_AGENT
-    try:
-        r = requests.get(url, headers=req_headers, stream=True, timeout=10)
-        def generate():
-            for chunk in r.iter_content(CHUNK_SIZE):
-                if chunk: yield chunk
-        resp = Response(generate(), status=r.status_code, headers={k: v for k, v in r.headers.items() if k.lower() in ['content-length', 'content-range', 'content-type', 'accept-ranges']})
-        resp.headers['Content-Disposition'] = f'attachment; filename="{name}"'
-        return resp
-    except: return "Error", 500
-
-# BACKGROUND WORKERS (V16 CONTINUED)
+# BACKGROUND WORKERS
 def dl_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -1064,7 +1040,6 @@ PYTHON_EOF
 
 echo "📝 [8/9] Registering Services..."
 
-# noVNC Websockify explicitly mapping to TigerVNC's port (5900)
 cat > /etc/systemd/system/novnc.service << 'EOF'
 [Unit]
 Description=noVNC Web Interface
@@ -1085,15 +1060,15 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-echo "🚀 [9/9] Booting the V28 Architecture..."
+echo "🚀 [9/9] Booting the V29 Architecture..."
 systemctl daemon-reload
 systemctl enable novnc proxy >/dev/null 2>&1
 systemctl restart novnc proxy >/dev/null 2>&1
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [SUCCESS] TIGERVNC DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V29 DEPLOYMENT COMPLETE."
 echo -e "\n===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
 BASH_EOF
-bash deploy_absolute_master_v28.sh
+bash deploy_absolute_master_v29.sh
