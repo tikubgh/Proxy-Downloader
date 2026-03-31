@@ -1,25 +1,22 @@
-rm -f deploy_factory_reset_v29.sh
-cat > deploy_factory_reset_v29.sh << 'BASH_EOF'
+rm -f deploy_absolute_master_v38.sh
+cat > deploy_absolute_master_v38.sh << 'BASH_EOF'
 #!/bin/bash
 clear
 
 echo "===================================================="
-echo "🚀 INITIATING FACTORY RESET & V29 DARK-MODE SERVER"
+echo "🚀 INITIATING PERFECTED STREAMING SERVER (V38)"
 echo "===================================================="
 
-echo "🛑 [1/9] SCORCHED EARTH: Purging All Old Systems..."
-sudo systemctl stop proxy vnc-desktop cloudflare-tunnel nginx novnc ultraviolet >/dev/null 2>&1
-sudo systemctl disable proxy vnc-desktop cloudflare-tunnel nginx novnc ultraviolet >/dev/null 2>&1
-sudo apt purge -y nginx nginx-common nginx-core cloudflared nodejs npm apache2 >/dev/null 2>&1
-sudo apt autoremove -y >/dev/null 2>&1
-killall -9 python python3 node npm nginx cloudflared chrome google-chrome-stable chromium-browser Xvnc x11vnc websockify fluxbox openbox autocutsel >/dev/null 2>&1
-rm -rf /root/Ultraviolet-App /opt/novnc /etc/nginx /root/app.py /root/start_*.sh /etc/systemd/system/proxy.service /etc/systemd/system/novnc.service /etc/systemd/system/vnc-desktop.service
+echo "🛑 [1/9] Scrubbing Zombie Processes..."
+sudo systemctl stop proxy vnc-desktop cloudflare-tunnel nginx novnc >/dev/null 2>&1
+sudo systemctl disable cloudflare-tunnel nginx >/dev/null 2>&1
+sudo apt remove -y nginx cloudflared >/dev/null 2>&1
+sudo rm -rf /etc/nginx /etc/ssl/private/nginx* /etc/ssl/certs/nginx* /tmp/cf_tunnel.log
+killall -9 python python3 ffmpeg cpulimit aria2c curl chrome google-chrome-stable chromium-browser Xvnc x11vnc websockify fluxbox openbox autocutsel cloudflared nginx >/dev/null 2>&1
 fuser -k -9 8080/tcp >/dev/null 2>&1
 fuser -k -9 8081/tcp >/dev/null 2>&1
-fuser -k -9 80/tcp >/dev/null 2>&1
-fuser -k -9 443/tcp >/dev/null 2>&1
 fuser -k -9 5900/tcp >/dev/null 2>&1
-sleep 2
+sleep 1
 
 echo "💾 [2/9] Verifying 1GB Swap Memory..."
 sudo swapoff -a >/dev/null 2>&1
@@ -50,6 +47,7 @@ sudo iptables -I INPUT 1 -p tcp --dport 8081 -j ACCEPT
 sudo netfilter-persistent save >/dev/null 2>&1
 
 echo "🖥️ [4/9] Installing High-Speed TigerVNC & Chrome..."
+apt remove -y fluxbox novnc websockify >/dev/null 2>&1 
 apt install -y tigervnc-standalone-server openbox autocutsel >/dev/null 2>&1
 
 wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
@@ -86,9 +84,9 @@ if [ ! -f "/root/venv/bin/pip" ]; then
 fi
 /root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-echo "⚙️ [7/9] Compiling the Quad-Core Engine..."
+echo "⚙️ [7/9] Compiling the Quad-Core Engine (VLC Streaming Update)..."
 cat > /root/app.py << 'PYTHON_EOF'
-import os, time, uuid, threading, requests, subprocess, shutil, re, queue
+import os, time, uuid, threading, requests, subprocess, shutil, re, queue, mimetypes
 import urllib.parse
 from flask import Flask, jsonify, render_template_string, request, send_file, Response
 import psutil
@@ -101,7 +99,9 @@ db = {}
 db_lock = threading.Lock()
 active_procs = {} 
 
-CHUNK_SIZE = 16777216 
+# SEPARATED CHUNK SIZES FOR VLC STREAMING EFFICIENCY
+DISK_CHUNK_SIZE = 16777216 # 16MB for blazing fast hard drive writing
+STREAM_CHUNK_SIZE = 65536  # 64KB micro-chunks for instant VLC network streaming
 
 SPOOF_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 HEADERS = {'User-Agent': SPOOF_AGENT, 'Accept': '*/*', 'Connection': 'keep-alive'}
@@ -179,6 +179,7 @@ def dl_worker(fid):
             base = os.path.basename(urllib.parse.urlparse(url).path)
             if base: fname = base
         if hasattr(r_ping, 'close'): r_ping.close()
+        
         fpath = os.path.join(DL_DIR, f"{fid}_{fname}")
         with db_lock:
             db[fid]['total'] = total_size
@@ -188,7 +189,7 @@ def dl_worker(fid):
         with requests.get(url, headers=HEADERS, stream=True, timeout=15) as r:
             r.raise_for_status()
             with open(fpath, 'wb') as out:
-                for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                for chunk in r.iter_content(chunk_size=DISK_CHUNK_SIZE):
                     with db_lock:
                         if db[fid]['status'] == 'Stopped': break
                     if chunk:
@@ -220,12 +221,14 @@ def multi_worker(fid):
             base = os.path.basename(urllib.parse.urlparse(url).path)
             if base: fname = base
         if hasattr(r_ping, 'close'): r_ping.close()
+        
         fpath = os.path.join(DL_DIR, f"{fid}_{fname}")
         with db_lock:
             db[fid]['total'] = total_size
             db[fid]['name'] = fname
             db[fid]['path'] = fpath
             db[fid]['status'] = 'Downloading (16x Sequential Swarm)'
+
         with open(fpath, 'wb') as f: f.truncate(total_size)
         q = queue.PriorityQueue()
         end_chunk_size = 5242880 
@@ -237,8 +240,10 @@ def multi_worker(fid):
             end = min(i + micro_chunk - 1, last_chunk_start - 1)
             q.put((priority_index, i, end))
             priority_index += 1
+
         stop_event = threading.Event()
         active_procs[fid] = stop_event
+
         def worker():
             while not q.empty() and not stop_event.is_set():
                 try: priority, start, end = q.get_nowait()
@@ -269,15 +274,18 @@ def multi_worker(fid):
                 else:
                     q.put((priority, start, end))
                     time.sleep(3)
+
         threads_list = []
         for _ in range(16):
             t = threading.Thread(target=worker)
             t.start()
             threads_list.append(t)
             time.sleep(0.5) 
+
         while any(t.is_alive() for t in threads_list):
             if stop_event.is_set(): break
             time.sleep(0.5)
+
         if not stop_event.is_set():
             with db_lock:
                 db[fid]['down'] = total_size
@@ -369,7 +377,7 @@ HTML=r'''<!DOCTYPE html>
 <body>
 
 <h2>
-    <span>🚀 Quad-Core Media Engine (V29 Dark Mode)</span>
+    <span>🚀 Quad-Core Media Engine (V38 VLC Streaming Edition)</span>
     <span style="font-size: 14px; color: #888;">API <span class="status-dot" id="dot"></span></span>
 </h2>
 
@@ -382,7 +390,7 @@ HTML=r'''<!DOCTYPE html>
 </div>
 
 <div class="engine-box">
-    <div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(For VLC Live Stream / Non-Resumables)</span></div>
+    <div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span> <span style="font-size:0.8em; font-weight:normal; color:#aaa;">(Now Optimized for Live VLC Streaming)</span></div>
     <div class="input-group">
         <input type="text" id="url_disk" placeholder="Paste link to download sequentially...">
         <button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button>
@@ -464,7 +472,6 @@ function surfVNC() {
     document.getElementById('url_vnc').value = 'Connecting to Persistent Display Engine...';
     
     fetch('/api/surf?url=' + encodeURIComponent(u) + '&res=' + res).then(() => {
-        // Raw IP redirect on Port 8081 for absolute reliability
         window.location.href = 'http://' + window.location.hostname + ':8081/vnc.html?autoconnect=true&resize=scale';
     });
 }
@@ -645,9 +652,6 @@ def action(fid, act):
         elif act == 'forge' and db[fid]['type'] in ['disk', 'multi']: threading.Thread(target=web_forge_worker, args=(fid,)).start()
     return "OK"
 
-# ==========================================
-# ENGINE 4: DYNAMIC TIGERVNC CONTROLLER
-# ==========================================
 @app.route('/api/surf')
 def surf():
     url = request.args.get('url')
@@ -655,15 +659,12 @@ def surf():
     if not url: return "Err", 400
     if not url.startswith('http'): url = 'https://' + url
     
-    # Kill ONLY Chrome. The TigerVNC desktop is permanent and bulletproof.
     os.system("killall -9 chrome google-chrome-stable chromium-browser >/dev/null 2>&1")
     os.system("rm -rf /tmp/cr_prof_* >/dev/null 2>&1")
     time.sleep(0.3)
     
-    # Resizes the live display via xrandr without dropping the connection
     os.system(f"DISPLAY=:99 xrandr -s {res} >/dev/null 2>&1")
     
-    # Boot Dark Mode Chrome safely into the pre-existing desktop
     prof_id = str(uuid.uuid4().hex)[:8]
     prof_dir = f"/tmp/cr_prof_{prof_id}"
     os.system(f"mkdir -p {prof_dir}")
@@ -676,7 +677,7 @@ def surf():
     return "OK"
 
 # ==========================================
-# OTHER ROUTES
+# STREAMING & DL ROUTES (VLC FIXES APPLIED)
 # ==========================================
 @app.route('/proxy_stream_live/<fid>')
 def proxy_stream_live(fid):
@@ -690,7 +691,7 @@ def proxy_stream_live(fid):
         active_procs[fid] = process
         try:
             while True:
-                chunk = process.stdout.read(CHUNK_SIZE)
+                chunk = process.stdout.read(STREAM_CHUNK_SIZE)
                 if not chunk: break
                 yield chunk
         except GeneratorExit:
@@ -726,7 +727,7 @@ def stream_live(fid):
         active_procs[fid] = process
         try:
             while True:
-                chunk = process.stdout.read(CHUNK_SIZE)
+                chunk = process.stdout.read(STREAM_CHUNK_SIZE)
                 if not chunk: break
                 yield chunk
         except GeneratorExit:
@@ -748,32 +749,56 @@ def download(fid, filename):
         fname = f['name']
         total_size = f.get('total', 0)
         status = f['status']
-    if status == 'Completed': return send_file(fpath, as_attachment=True, download_name=fname, conditional=True)
+    
+    # CRITICAL VLC FIX 1: Explicitly tag the file as video so VLC streams it instantly
+    mime_type, _ = mimetypes.guess_type(fname)
+    if not mime_type: mime_type = 'video/mp4'
+
+    if status == 'Completed': return send_file(fpath, mimetype=mime_type, as_attachment=False, download_name=fname, conditional=True)
+    
     range_header = request.headers.get('Range', None)
     start_byte = 0
     end_byte = total_size - 1 if total_size else 0
+    
     if range_header and total_size:
         match = re.search(r'bytes=(\d+)-(\d*)', range_header)
         if match:
             start_byte = int(match.group(1))
             if match.group(2): end_byte = int(match.group(2))
+            
+    # CRITICAL VLC FIX 2: If VLC asks for the end of the video (moov atom) but we haven't downloaded it yet,
+    # cleanly reject the request so VLC doesn't hang in an infinite loop!
+    current_size = os.path.getsize(fpath)
+    if start_byte >= current_size and status != 'Completed':
+        resp = Response("Byte range not yet downloaded", status=416)
+        resp.headers['Content-Range'] = f'bytes */{total_size}'
+        return resp
+
     length = end_byte - start_byte + 1
+    
     def generate():
         with open(fpath, 'rb') as local_file:
             local_file.seek(start_byte)
             bytes_sent = 0
             while bytes_sent < length:
-                chunk = local_file.read(CHUNK_SIZE)
+                # CRITICAL VLC FIX 3: Read in 64KB micro-chunks instead of massive 16MB blocks!
+                chunk = local_file.read(STREAM_CHUNK_SIZE)
                 if chunk:
                     yield chunk
                     bytes_sent += len(chunk)
                 else:
                     with db_lock: curr_status = db[fid]['status']
                     if curr_status not in ['Completed', 'Stopped'] and 'Error' not in curr_status:
-                        time.sleep(0.5)
+                        time.sleep(0.1) # Faster polling for less latency
                         local_file.seek(start_byte + bytes_sent)
                     else: break
-    headers = {'Content-Type': 'application/octet-stream', 'Content-Disposition': f'attachment; filename="{fname}"', 'Accept-Ranges': 'bytes'}
+                    
+    headers = {
+        'Content-Type': mime_type,
+        'Content-Disposition': f'inline; filename="{fname}"', # Instructs the browser/player to stream
+        'Accept-Ranges': 'bytes'
+    }
+    
     if total_size:
         headers['Content-Length'] = str(length)
         headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{total_size}'
@@ -790,7 +815,7 @@ def proxy_stream(fid):
     try:
         r = requests.get(url, headers=req_headers, stream=True, timeout=10)
         def generate():
-            for chunk in r.iter_content(CHUNK_SIZE):
+            for chunk in r.iter_content(STREAM_CHUNK_SIZE):
                 if chunk: yield chunk
         return Response(generate(), status=r.status_code, headers={k: v for k, v in r.headers.items() if k.lower() in ['content-length', 'content-range', 'content-type', 'accept-ranges']})
     except: return "Error", 500
@@ -806,7 +831,7 @@ def proxy_dl(fid, filename):
     try:
         r = requests.get(url, headers=req_headers, stream=True, timeout=10)
         def generate():
-            for chunk in r.iter_content(CHUNK_SIZE):
+            for chunk in r.iter_content(STREAM_CHUNK_SIZE):
                 if chunk: yield chunk
         resp = Response(generate(), status=r.status_code, headers={k: v for k, v in r.headers.items() if k.lower() in ['content-length', 'content-range', 'content-type', 'accept-ranges']})
         resp.headers['Content-Disposition'] = f'attachment; filename="{name}"'
@@ -878,13 +903,9 @@ systemctl enable vnc-desktop novnc proxy >/dev/null 2>&1
 systemctl restart vnc-desktop novnc proxy >/dev/null 2>&1
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [SUCCESS] PERFECTED V29 DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] PERFECTED V38 (VLC STREAMING FIX) DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "🌐 Open your browser: http://$IP:8080"
 echo "===================================================="
-echo "⚠️ CRITICAL BROWSER CACHE WARNING:"
-echo "If you still see the old Ultraviolet page, you MUST open an"
-echo "Incognito/Private window or clear your browser cache!"
-echo "===================================================="
 BASH_EOF
-bash deploy_factory_reset_v29.sh
+bash deploy_absolute_master_v38.sh
