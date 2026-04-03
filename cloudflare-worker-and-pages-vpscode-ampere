@@ -1,7 +1,7 @@
-rm -f deploy_oracle_v73_core.sh
-cat > deploy_oracle_v73_core.sh << 'BASH_EOF'
+rm -f deploy_oracle_v73_master.sh
+cat > deploy_oracle_v73_master.sh << 'BASH_EOF'
 #!/bin/bash
-clear; echo "===================================================="; echo "🚀 INITIATING V73 MASTER (FULL UI + PORT 80 CORE)"; echo "===================================================="
+clear; echo "===================================================="; echo "🚀 INITIATING V73 MASTER (FULL UI + ALL ROUTES + PORT 80)"; echo "===================================================="
 
 echo "🛑 [1/4] Purging Dead Tunnels & Freeing Port 80..."
 sudo systemctl stop proxy caddy cloudflared nginx >/dev/null 2>&1
@@ -136,7 +136,7 @@ def multi_worker(fid):
   else: fname=urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(url).path)) or fname
   if hasattr(rp,'close'): rp.close()
   fpath=os.path.join(DL_DIR,f"{fid}_{fname}")
-  with db_lock: db[fid].update({'total':ts,'name':fname.replace('"', ''),'path':fpath,'status':'Downloading (16x Sequential)'})
+  with db_lock: db[fid].update({'total':ts,'name':fname.replace('"', ''),'path':fpath,'status':'Downloading (16x Sequential Swarm)'})
   with open(fpath,'wb') as f: f.truncate(ts)
   q=queue.PriorityQueue(); ecs=5242880; lcs=max(0,ts-ecs); q.put((0,lcs,ts-1)); mc=10485760; pi=1
   for i in range(0,lcs,mc): end=min(i+mc-1,lcs-1); q.put((pi,i,end)); pi+=1
@@ -273,6 +273,24 @@ def download(fid,fname):
  if ts: hdrs.update({'Content-Length':str(l),'Content-Range':f'bytes {sb}-{eb}/{ts}'})
  return Response(gen(),status=206 if rh else 200,headers=hdrs)
 
+@app.route('/proxy_stream/<fid>')
+def proxy_stream(fid):
+ with db_lock:
+  if fid not in db or db[fid]['type']!='ram': return "404",404
+  u=db[fid]['url']
+ rh={k:v for k,v in request.headers.items() if k.lower()=='range'}; rh['User-Agent']=SPOOF_AGENT
+ try: r=requests.get(u,headers=rh,stream=True,timeout=10); return Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c),status=r.status_code,headers={k:v for k,v in r.headers.items() if k.lower() in ['content-length','content-range','content-type','accept-ranges']})
+ except: return "Error",500
+
+@app.route('/proxy_dl/<fid>/<path:fname>')
+def proxy_dl(fid,fname):
+ with db_lock:
+  if fid not in db or db[fid]['type']!='ram': return "404",404
+  u=db[fid]['url']; n=db[fid]['name']
+ rh={k:v for k,v in request.headers.items() if k.lower()=='range'}; rh['User-Agent']=SPOOF_AGENT
+ try: r=requests.get(u,headers=rh,stream=True,timeout=10); resp=Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c),status=r.status_code,headers={k:v for k,v in r.headers.items() if k.lower() in ['content-length','content-range','content-type','accept-ranges']}); resp.headers['Content-Disposition']=f'attachment; filename="{n}"'; return resp
+ except: return "Error",500
+
 @app.route('/swarm_dl/<fid>/<path:fname>')
 def swarm_dl(fid,fname):
  with db_lock:
@@ -360,10 +378,10 @@ systemctl enable proxy >/dev/null 2>&1
 systemctl restart proxy >/dev/null 2>&1
 
 IP=$(curl -s ifconfig.me)
-echo "✅ [SUCCESS] V73 FULL UI BACKEND DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V73 MASTER DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
-echo "🌐 Verify it's working: http://$IP (Use Incognito if needed)"
+echo "🌐 Verify your dashboard directly (Use Incognito): http://$IP"
 echo "===================================================="
 BASH_EOF
-bash deploy_oracle_v73_core.sh
+bash deploy_oracle_v73_master.sh
