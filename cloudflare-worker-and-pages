@@ -1,0 +1,27 @@
+export default {
+  async fetch(request) {
+    // 1. Put your exact Oracle Public IP Address here
+    const ORACLE_IP = "123.45.67.89"; 
+    
+    // 2. The Loophole: We use nip.io to convert your raw IP into a valid domain name!
+    // This completely bypasses Cloudflare Error 1003.
+    const TARGET_DOMAIN = `${ORACLE_IP}.nip.io`;
+    
+    const url = new URL(request.url);
+    
+    // Notice we DO NOT use a custom port here, because it defaults to Port 80.
+    const targetUrl = `http://${TARGET_DOMAIN}${url.pathname}${url.search}`;
+    
+    // 3. Clone headers but DELETE the original 'Host' header
+    // If we leave the original Host header, Cloudflare's firewall will crash the fetch.
+    const newHeaders = new Headers(request.headers);
+    newHeaders.delete("Host");
+    
+    // 4. Send the request
+    return fetch(targetUrl, {
+      method: request.method,
+      headers: newHeaders,
+      body: request.body
+    });
+  }
+}
