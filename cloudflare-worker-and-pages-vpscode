@@ -1,0 +1,369 @@
+rm -f deploy_oracle_v73_core.sh
+cat > deploy_oracle_v73_core.sh << 'BASH_EOF'
+#!/bin/bash
+clear; echo "===================================================="; echo "🚀 INITIATING V73 MASTER (FULL UI + PORT 80 CORE)"; echo "===================================================="
+
+echo "🛑 [1/4] Purging Dead Tunnels & Freeing Port 80..."
+sudo systemctl stop proxy caddy cloudflared nginx >/dev/null 2>&1
+sudo systemctl disable proxy caddy cloudflared nginx >/dev/null 2>&1
+sudo apt purge -y caddy cloudflared nginx apache2 >/dev/null 2>&1; sudo apt autoremove -y >/dev/null 2>&1
+killall -9 python python3 node npm nginx caddy cloudflared >/dev/null 2>&1
+rm -rf /etc/nginx /etc/Caddyfile /root/app.py /root/start_*.sh /etc/systemd/system/proxy.service >/dev/null 2>&1
+for p in 80 443 8080; do fuser -k -9 $p/tcp >/dev/null 2>&1; done; sleep 1
+
+echo "🛡️ [2/4] Installing Dependencies & Opening Port 80..."
+export DEBIAN_FRONTEND=noninteractive; apt update -y -qq >/dev/null 2>&1
+PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")')
+apt install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv >/dev/null 2>&1
+
+ufw --force reset >/dev/null 2>&1; ufw default deny incoming >/dev/null 2>&1; ufw default allow outgoing >/dev/null 2>&1
+for p in 22 80; do ufw allow $p/tcp >/dev/null 2>&1; sudo iptables -I INPUT 1 -p tcp --dport $p -j ACCEPT; done
+ufw --force enable >/dev/null 2>&1; sudo netfilter-persistent save >/dev/null 2>&1
+
+echo "🖥️ [3/4] Setting up Python Environment..."
+mkdir -p /root/downloads; rm -rf /root/venv; python3 -m venv /root/venv >/dev/null 2>&1 || { python3 -m venv --without-pip /root/venv && curl -sS https://bootstrap.pypa.io/get-pip.py | /root/venv/bin/python >/dev/null 2>&1; }
+/root/venv/bin/pip install flask requests psutil >/dev/null 2>&1
+
+echo "⚙️ [4/4] Writing V73 Port-80 Swarm Engine..."
+cat > /root/app.py << 'PYTHON_EOF'
+import os,time,uuid,threading,requests,subprocess,shutil,re,queue,mimetypes,concurrent.futures; from flask import Flask,jsonify,render_template_string,request,send_file,Response; import psutil; import urllib.parse
+app=Flask(__name__); DL_DIR="/root/downloads"; os.makedirs(DL_DIR,exist_ok=True)
+db={}; db_lock=threading.Lock(); active_procs={}
+CHUNK_SIZE=16777216; STREAM_CHUNK_SIZE=65536; SPOOF_AGENT='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'; HEADERS={'User-Agent':SPOOF_AGENT,'Accept':'*/*','Connection':'keep-alive'}
+sys_data={"cpu":"Booting...","ram":"Booting...","swap":"Booting...","disk":"Booting...","net":"Booting..."}; net_p=None; net_pt=time.time()
+def fmt_bytes(b): return f"{b/(1024**3):.2f} GB" if b>=1024**3 else f"{b/(1024**2):.2f} MB" if b>=1024**2 else f"{b/1024:.2f} KB"
+def update_telemetry():
+ global sys_data,net_p,net_pt
+ try: net_p=psutil.net_io_counters()
+ except: pass
+ while True:
+  time.sleep(1)
+  try:
+   cpu=f"{psutil.cpu_percent()}%"; vm=psutil.virtual_memory(); ram=f"{fmt_bytes(vm.used)} / {fmt_bytes(vm.available)} / {fmt_bytes(vm.total)}"
+   sm=psutil.swap_memory(); swap=f"{fmt_bytes(sm.used)} / {fmt_bytes(sm.free)} / {fmt_bytes(sm.total)}"
+   du=shutil.disk_usage("/"); disk=f"{fmt_bytes(du.used)} / {fmt_bytes(du.free)} / {fmt_bytes(du.total)}"; ns="N/A"
+   try:
+    n=psutil.net_io_counters()
+    if n and net_p:
+     t=time.time(); d=t-net_pt or 1; s=(n.bytes_sent-net_p.bytes_sent)/d; r=(n.bytes_recv-net_p.bytes_recv)/d; net_p,net_pt=n,t
+     spd=lambda b: f"{b/1024:.1f} KB/s" if b<1024**2 else f"{b/(1024**2):.1f} MB/s"
+     ns=f"Live: ↑ {spd(s)} Up ↓ {spd(r)} Down &nbsp;|&nbsp; Total: {fmt_bytes(n.bytes_sent)} Up / {fmt_bytes(n.bytes_recv)} Down"
+   except: pass
+   sys_data={"cpu":cpu,"ram":ram,"swap":swap,"disk":disk,"net":ns}
+  except: pass
+threading.Thread(target=update_telemetry,daemon=True).start()
+def cleaner():
+ while True:
+  time.sleep(3600); now=time.time()
+  with db_lock:
+   for fid in list(db.keys()):
+    if now-db[fid].get('start',now)>86400:
+     try: os.remove(db[fid]['path'])
+     except: pass
+     del db[fid]
+threading.Thread(target=cleaner,daemon=True).start()
+
+def ram_worker(fid):
+ with db_lock:
+  if fid not in db: return
+  u=db[fid]['url']
+ try:
+  r=requests.head(u,headers=HEADERS,allow_redirects=True,timeout=5)
+  if r.status_code>=400 or not r.headers.get('content-length'): r=requests.get(u,headers=HEADERS,stream=True,timeout=5)
+  ts=int(r.headers.get('content-length',0)); fn=f"video_{fid}.mp4"; cd=r.headers.get('content-disposition')
+  if cd and 'filename=' in cd: fn=cd.split('filename=')[-1].strip('"\'') or fn
+  else: fn=urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(u).path)) or fn
+  if hasattr(r,'close'): r.close()
+  with db_lock: db[fid].update({'total':ts,'name':fn.replace('"', ''),'status':'Proxy Active'})
+ except:
+  with db_lock: db[fid]['status']='Proxy Active (Name Fetch Failed)'
+
+def dl_worker(fid):
+ with db_lock:
+  if fid not in db: return
+  url=db[fid]['url']
+ try:
+  rp=requests.head(url,headers=HEADERS,allow_redirects=True,timeout=10)
+  if rp.status_code>=400 or not rp.headers.get('content-length'): rp=requests.get(url,headers=HEADERS,stream=True,timeout=10)
+  ts=int(rp.headers.get('content-length',0)); fname=f"video_{fid}.mp4"; cd=rp.headers.get('content-disposition')
+  if cd and 'filename=' in cd: fname=cd.split('filename=')[-1].strip('"\'') or fname
+  else: fname=urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(url).path)) or fname
+  if hasattr(rp,'close'): rp.close()
+  fpath=os.path.join(DL_DIR,f"{fid}_{fname}")
+  with db_lock: db[fid].update({'total':ts,'name':fname.replace('"', ''),'path':fpath,'status':'Downloading (Single-Conn Native)'})
+  
+  retries = 5
+  while retries > 0:
+   with db_lock:
+    if db[fid]['status'] == 'Stopped': break
+    dwn = db[fid]['down']
+    tot = db[fid]['total']
+   if tot > 0 and dwn >= tot: break 
+   
+   th = HEADERS.copy(); th['Range'] = f'bytes={dwn}-'
+   try:
+    with requests.get(url, headers=th, stream=True, timeout=(15, 120)) as r2:
+     if r2.status_code in [416, 404, 403]: break
+     r2.raise_for_status()
+     with open(fpath, 'ab') as out:
+      for chunk in r2.iter_content(chunk_size=CHUNK_SIZE):
+       with db_lock:
+        if db[fid]['status']=='Stopped': break
+       if chunk:
+        out.write(chunk)
+        with db_lock: db[fid]['down']+=len(chunk)
+     break
+   except requests.exceptions.RequestException:
+    retries -= 1; time.sleep(3)
+  with db_lock:
+   if db[fid]['status']!='Stopped': db[fid]['status']='Completed'
+ except Exception as e:
+  with db_lock: db[fid]['status']=f'Error: Connection Blocked/Timeout'
+
+def multi_worker(fid):
+ with db_lock:
+  if fid not in db: return
+  url=db[fid]['url']
+ try:
+  rp=requests.head(url,headers=HEADERS,allow_redirects=True,timeout=10)
+  if rp.status_code>=400 or not rp.headers.get('content-length'): rp=requests.get(url,headers=HEADERS,stream=True,timeout=10)
+  ts=int(rp.headers.get('content-length',0))
+  if ts==0:
+   with db_lock: db[fid]['status']='Error: Source denies multi-threading.'
+   return
+  fname=f"video_{fid}.mp4"; cd=rp.headers.get('content-disposition')
+  if cd and 'filename=' in cd: fname=cd.split('filename=')[-1].strip('"\'') or fname
+  else: fname=urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(url).path)) or fname
+  if hasattr(rp,'close'): rp.close()
+  fpath=os.path.join(DL_DIR,f"{fid}_{fname}")
+  with db_lock: db[fid].update({'total':ts,'name':fname.replace('"', ''),'path':fpath,'status':'Downloading (16x Sequential)'})
+  with open(fpath,'wb') as f: f.truncate(ts)
+  q=queue.PriorityQueue(); ecs=5242880; lcs=max(0,ts-ecs); q.put((0,lcs,ts-1)); mc=10485760; pi=1
+  for i in range(0,lcs,mc): end=min(i+mc-1,lcs-1); q.put((pi,i,end)); pi+=1
+  se=threading.Event(); active_procs[fid]=se
+  def worker():
+   while not q.empty() and not se.is_set():
+    try: pri,start,end=q.get_nowait()
+    except: break
+    succ=False; retries=10; clen=end-start+1
+    while not succ and retries>0 and not se.is_set():
+     try:
+      th=HEADERS.copy(); th['Range']=f'bytes={start}-{end}'
+      with requests.get(url,headers=th,stream=True,timeout=10) as r:
+       if r.status_code==429: time.sleep(3); continue
+       r.raise_for_status()
+       with open(fpath,'r+b') as f:
+        f.seek(start)
+        for chunk in r.iter_content(chunk_size=1048576):
+         if se.is_set(): return
+         if chunk: f.write(chunk)
+      succ=True
+     except:
+      retries-=1; time.sleep(2)
+    if succ:
+     with db_lock: db[fid]['down']+=clen
+    else: q.put((pri,start,end)); time.sleep(3)
+  tl=[threading.Thread(target=worker) for _ in range(16)]
+  for t in tl: t.start(); time.sleep(0.5)
+  while any(t.is_alive() for t in tl):
+   if se.is_set(): break
+   time.sleep(0.5)
+  with db_lock:
+   if not se.is_set(): db[fid].update({'down':ts,'status':'Completed'})
+   elif db[fid]['status']!='Stopped': db[fid]['status']='Error: CDN Hard Block'
+ except:
+  with db_lock: db[fid]['status']='Error: Connection Blocked'
+
+def swarm_worker(fid):
+ with db_lock:
+  if fid not in db: return
+  u=db[fid]['url']
+ try:
+  r=requests.head(u,headers=HEADERS,allow_redirects=True,timeout=5)
+  if r.status_code>=400 or not r.headers.get('content-length'): r=requests.get(u,headers=HEADERS,stream=True,timeout=5)
+  ts=int(r.headers.get('content-length',0)); fn=f"video_{fid}.mp4"; cd=r.headers.get('content-disposition')
+  if cd and 'filename=' in cd: fn=cd.split('filename=')[-1].strip('"\'') or fn
+  else: fn=urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(u).path)) or fn
+  if hasattr(r,'close'): r.close()
+  with db_lock: db[fid].update({'total':ts,'name':fn.replace('"', ''),'status':'Swarm Proxy Ready (Cloudflare Worker)'})
+ except:
+  with db_lock: db[fid]['status']='Swarm Proxy Ready (Name Fetch Failed)'
+
+HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Quad-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--success)}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px}input{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}</style></head><body><h2><span>🚀 Cloudflare Worker Backend</span><span style="font-size:14px;color:#888;">Port 80 <span class="status-dot" id="dot"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
+
+<div class="engine-box"><div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span></div><div class="input-group"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button></div></div>
+<div class="engine-box"><div class="engine-title"><span style="color:var(--ram);">⚡ Engine 2: RAM Proxy</span></div><div class="input-group"><input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000;">Start RAM Proxy</button></div></div>
+<div class="engine-box"><div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge</span></div><div class="input-group"><input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000;">Multi-Thread DL</button></div></div>
+<div class="engine-box"><div class="engine-title"><span style="color:var(--swarm);text-shadow:0 0 5px rgba(236,72,153,0.4);">🌪️ Engine 4: 32x RAM Swarm (Cloudflare Ready)</span></div><div class="input-group"><input type="text" id="url_swarm" placeholder="Paste throttled link to aggregate speed smoothly via RAM..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff;">Initialize Swarm</button></div><div style="margin-top:10px;font-size:0.85em;color:#aaa;">💡 <b>Worker Tech:</b> This generates the backend link. To bypass your 5G ISP, replace the IP address in the link below with your new Cloudflare Worker Domain!</div></div>
+
+<div class="file-grid" id="files" style="margin-top:20px;"></div><script>function addFile(type){let u=document.getElementById('url_'+type).value;if(!u)return;document.getElementById('url_'+type).value='';fetch('/api/add?type='+type+'&url='+encodeURIComponent(u));}function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('dot').style.background='var(--success)';document.getElementById('dot').style.boxShadow='0 0 8px var(--success)';document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';data.files.forEach(f=>{let pctStr=f.total?Math.round((f.down/f.total)*100)+'%':'Live';let mb=(f.down/(1024*1024)).toFixed(1);let totStr=f.total?(f.total/(1024*1024)).toFixed(1):'∞';let progBar=f.total?`<progress value="${f.down}" max="${f.total}"></progress>`:`<progress></progress>`;if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Stop</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Stop</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Stop</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Stop</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{document.getElementById('dot').style.background='var(--danger)';document.getElementById('dot').style.boxShadow='0 0 8px var(--danger)';});},1000);</script></body></html>"""
+
+@app.route('/')
+def index(): return render_template_string(HTML)
+@app.route('/api/data')
+def api_data():
+ sf=[{'id':str(k),'name':str(v.get('name','Unknown')),'status':str(v.get('status','Pending')),'down':int(v.get('down',0)),'total':int(v.get('total',0)),'type':str(v.get('type','disk'))} for k,v in db.items() if db_lock.acquire() and (db_lock.release() or True)]
+ return jsonify({"sys":sys_data,"files":sf})
+@app.route('/api/add')
+def add():
+ u=request.args.get('url'); t=request.args.get('type','disk')
+ if not u: return "Err",400
+ fid=str(uuid.uuid4())[:8]; name=urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(u).path)) or f"file_{fid}.mp4"
+ with db_lock: db[fid]={'id':fid,'url':str(u),'name':name.replace('"', ''),'path':'','down':0,'total':0,'status':'Starting...','start':time.time(),'type':t}
+ if t=='disk': threading.Thread(target=dl_worker,args=(fid,)).start()
+ elif t=='multi': threading.Thread(target=multi_worker,args=(fid,)).start()
+ elif t=='ram': threading.Thread(target=ram_worker,args=(fid,)).start()
+ elif t=='swarm': threading.Thread(target=swarm_worker,args=(fid,)).start()
+ return "OK"
+@app.route('/api/action/<fid>/<act>')
+def action(fid,act):
+ with db_lock:
+  if fid not in db: return "OK"
+  if act=='stop':
+   db[fid]['status']='Stopped'
+   if fid in active_procs:
+    try: active_procs[fid].kill() if hasattr(active_procs[fid],'kill') else active_procs[fid].set(); del active_procs[fid]
+    except: pass
+   if db[fid]['type'] in ['disk','multi']:
+    try: os.remove(db[fid]['path'])
+    except: pass
+   del db[fid]
+ return "OK"
+
+@app.route('/dl/<fid>/<path:fname>')
+def download(fid,fname):
+ with db_lock:
+  if fid not in db or not os.path.exists(db[fid]['path']): return "404",404
+  f=db[fid]; fp=f['path']; ts=f.get('total',0); st=f['status']; nm=f['name']
+ mt,_=mimetypes.guess_type(nm); mt=mt or 'video/mp4'
+ if st=='Completed' and ts==0:
+  ts=os.path.getsize(fp)
+  with db_lock: db[fid]['total']=ts
+ if ts==0:
+  def gen_unk():
+   with open(fp,'rb') as lf:
+    while True:
+     c=lf.read(STREAM_CHUNK_SIZE)
+     if c: yield c
+     else:
+      with db_lock: cst=db[fid]['status']
+      if cst not in ['Completed','Stopped'] and 'Error' not in cst: time.sleep(0.1)
+      else: break
+  return Response(gen_unk(),status=200,headers={'Content-Type':mt,'Content-Disposition':f'inline; filename="{nm}"'})
+ rh=request.headers.get('Range',None); sb=0; eb=ts-1 if ts else 0
+ if rh and ts:
+  m=re.search(r'bytes=(\d+)-(\d*)',rh)
+  if m: sb=int(m.group(1)); eb=int(m.group(2)) if m.group(2) else eb
+ cs=os.path.getsize(fp); l=eb-sb+1
+ def gen():
+  with open(fp,'rb') as lf:
+   while os.path.getsize(fp) <= sb:
+    with db_lock: cst=db[fid]['status']
+    if cst in ['Completed','Stopped'] or 'Error' in cst: break
+    time.sleep(0.5)
+   lf.seek(sb); bs=0
+   while bs<l:
+    c=lf.read(STREAM_CHUNK_SIZE)
+    if c: yield c; bs+=len(c)
+    else:
+     with db_lock: cst=db[fid]['status']
+     if cst not in ['Completed','Stopped'] and 'Error' not in cst: time.sleep(0.1); lf.seek(sb+bs)
+     else: break
+ hdrs={'Content-Type':mt,'Content-Disposition':f'attachment; filename="{nm}"','Accept-Ranges':'bytes'}
+ if ts: hdrs.update({'Content-Length':str(l),'Content-Range':f'bytes {sb}-{eb}/{ts}'})
+ return Response(gen(),status=206 if rh else 200,headers=hdrs)
+
+@app.route('/swarm_dl/<fid>/<path:fname>')
+def swarm_dl(fid,fname):
+ with db_lock:
+  if fid not in db or db[fid]['type']!='swarm': return "404",404
+  u=db[fid]['url']; ts=db[fid].get('total',0); nm=db[fid]['name']
+ mt = 'application/octet-stream' 
+ rh=request.headers.get('Range',None); user_start=0; user_end=ts-1 if ts else None
+ if rh and ts:
+  m=re.search(r'bytes=(\d+)-(\d*)',rh)
+  if m:
+   user_start=int(m.group(1))
+   if m.group(2): user_end=int(m.group(2))
+ if ts == 0:
+  try: 
+   r=requests.get(u,headers=HEADERS,stream=True,timeout=10)
+   return Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c),status=200,headers={'Content-Type':mt})
+  except: return "Error",500
+
+ def generate_swarm():
+  chunk_size = 1024 * 1024 
+  max_workers = 32
+  session = requests.Session()
+  adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers*2, pool_maxsize=max_workers*2)
+  session.mount('http://', adapter); session.mount('https://', adapter)
+  buffer = {}; cv = threading.Condition(); stop_event = threading.Event()
+  start_idx = user_start // chunk_size
+  end_idx = user_end // chunk_size if user_end else (ts - 1) // chunk_size
+
+  def fetch(idx):
+   if stop_event.is_set(): return
+   sb = idx * chunk_size
+   eb = min(sb + chunk_size - 1, user_end if user_end else ts - 1)
+   th = HEADERS.copy(); th['Range'] = f'bytes={sb}-{eb}'
+   for _ in range(5):
+    try:
+     r = session.get(u, headers=th, timeout=(3, 10))
+     if r.status_code in [200, 206]:
+      with cv: buffer[idx] = r.content; cv.notify_all()
+      return
+    except: time.sleep(0.2)
+   with cv: buffer[idx] = b'ERR'; cv.notify_all()
+
+  executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+  for i in range(start_idx, min(start_idx + max_workers, end_idx + 1)): executor.submit(fetch, i)
+      
+  curr = start_idx
+  try:
+   while curr <= end_idx:
+    with cv:
+     while curr not in buffer:
+      with db_lock:
+       if db[fid]['status'] == 'Stopped': stop_event.set(); return
+      cv.wait(0.5)
+     data = buffer.pop(curr)
+    if data == b'ERR': break
+    next_fetch = curr + max_workers
+    if next_fetch <= end_idx: executor.submit(fetch, next_fetch)
+    if curr == start_idx and user_start % chunk_size != 0: yield data[user_start % chunk_size:]
+    else: yield data
+    curr += 1
+  finally:
+   stop_event.set(); executor.shutdown(wait=False, cancel_futures=True)
+
+ hdrs={'Content-Type':mt,'Accept-Ranges':'bytes','Cache-Control': 'no-store'}
+ if ts: hdrs.update({'Content-Length':str(user_end-user_start+1),'Content-Range':f'bytes {user_start}-{user_end}/{ts}'})
+ return Response(generate_swarm(),status=206 if rh else 200,headers=hdrs)
+
+if __name__=='__main__': app.run(host='0.0.0.0',port=80,threaded=True)
+PYTHON_EOF
+
+cat > /etc/systemd/system/proxy.service << 'EOF'
+[Unit]
+Description=Ultimate Media Engine (Port 80 Core)
+After=network.target
+[Service]
+ExecStart=/root/venv/bin/python /root/app.py
+Restart=always
+User=root
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable proxy >/dev/null 2>&1
+systemctl restart proxy >/dev/null 2>&1
+
+IP=$(curl -s ifconfig.me)
+echo "✅ [SUCCESS] V73 FULL UI BACKEND DEPLOYMENT COMPLETE."
+echo "===================================================="
+echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
+echo "🌐 Verify it's working: http://$IP (Use Incognito if needed)"
+echo "===================================================="
+BASH_EOF
+bash deploy_oracle_v73_core.sh
