@@ -1,7 +1,7 @@
-rm -f deploy_oracle_v88_master.sh
-cat > deploy_oracle_v88_master.sh << 'BASH_EOF'
+rm -f deploy_oracle_v90_master.sh
+cat > deploy_oracle_v90_master.sh << 'BASH_EOF'
 #!/bin/bash
-clear; echo "===================================================="; echo "🚀 INITIATING V88 MASTER (DYNAMIC LOADING ENGINE)"; echo "===================================================="
+clear; echo "===================================================="; echo "🚀 INITIATING V90 MASTER (TAB INJECTION + DARK MODE)"; echo "===================================================="
 
 echo "🛑 [1/6] Aggressive Purge of Old Systems..."
 sudo systemctl stop proxy desktop nginx >/dev/null 2>&1
@@ -76,7 +76,6 @@ rm -rf /home/ubuntu/venv
 python3 -m venv /home/ubuntu/venv >/dev/null 2>&1 || { python3 -m venv --without-pip /home/ubuntu/venv && curl -sS https://bootstrap.pypa.io/get-pip.py | /home/ubuntu/venv/bin/python >/dev/null 2>&1; }
 /home/ubuntu/venv/bin/pip install flask requests psutil >/dev/null 2>&1
 
-# CRITICAL: Grant the Python script permission to silently restart the desktop without crashing
 echo "ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart desktop, /usr/bin/systemctl restart desktop" | sudo tee /etc/sudoers.d/desktop-restart >/dev/null
 
 cat > /home/ubuntu/app.py << 'PYTHON_EOF'
@@ -241,7 +240,7 @@ def swarm_worker(fid):
  except:
   with db_lock: db[fid]['status']='Swarm Proxy Ready (Name Fetch Failed)'
 
-HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Quad-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--success)}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}</style></head><body><h2><span>🚀 Unified 5-Engine Master (V88)</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot" id="dot"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
+HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Quad-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--success)}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}</style></head><body><h2><span>🚀 Unified 5-Engine Master (V90)</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot" id="dot"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
 
 <div class="engine-box"><div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span></div><div class="input-group"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button></div></div>
 <div class="engine-box"><div class="engine-title"><span style="color:var(--ram);">⚡ Engine 2: RAM Proxy</span></div><div class="input-group"><input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000;">Start RAM Proxy</button></div></div>
@@ -249,7 +248,10 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
 <div class="engine-box"><div class="engine-title"><span style="color:var(--swarm);text-shadow:0 0 5px rgba(236,72,153,0.4);">🌪️ Engine 4: 32x RAM Swarm (Cloudflare Ready)</span></div><div class="input-group"><input type="text" id="url_swarm" placeholder="Paste throttled link to aggregate speed smoothly via RAM..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff;">Initialize Swarm</button></div><div style="margin-top:10px;font-size:0.85em;color:#aaa;">💡 <b>Worker Tech:</b> This generates the backend link. To bypass your 5G ISP, replace the IP address in the link below with your new Cloudflare Worker Domain!</div></div>
 
 <div class="engine-box" style="border-color:var(--desktop);">
-    <div class="engine-title"><span style="color:var(--desktop);">🖥️ Engine 5: Dynamic Resolution Desktop</span></div>
+    <div class="engine-title"><span style="color:var(--desktop);">🖥️ Engine 5: Dynamic Desktop (Dark Mode + Tab Injection)</span></div>
+    <div class="input-group" style="margin-bottom:10px;">
+        <input type="text" id="desktop_url" placeholder="Paste link to open in new Desktop tab (preserves existing work)...">
+    </div>
     <div class="input-group">
         <select id="desk_res" style="max-width: 250px;">
             <option value="1366x768" selected>1366 x 768 (Default)</option>
@@ -259,13 +261,13 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
             <option value="1680x1050">1680 x 1050</option>
             <option value="1920x1080">1920 x 1080</option>
         </select>
-        <button onclick="launchDynamicDesktop()" style="background:var(--desktop);color:#000;flex:1;">Launch Browser Desktop</button>
+        <button onclick="launchDynamicDesktop()" style="background:var(--desktop);color:#000;flex:1;">Launch / Open Link</button>
     </div>
-    <div style="margin-top:10px;font-size:0.85em;color:#aaa;">💡 <b>Visual Hub:</b> Select your resolution and click Launch. The server will dynamically adjust hardware to match your exact screen.</div>
+    <div style="margin-top:10px;font-size:0.85em;color:#aaa;">💡 <b>Visual Hub:</b> If desktop is running, pasting a link seamlessly opens a new tab. If off, it boots the hardware to your selected resolution.</div>
 </div>
 
 <div class="file-grid" id="files" style="margin-top:20px;"></div><script>
-function launchDynamicDesktop(){ let r=document.getElementById('desk_res').value; window.open('/launch_desktop?res='+r, '_blank'); }
+function launchDynamicDesktop(){ let r=document.getElementById('desk_res').value; let u=document.getElementById('desktop_url').value; window.open('/launch_desktop?res='+r+'&url='+encodeURIComponent(u), '_blank'); document.getElementById('desktop_url').value=''; }
 function addFile(type){let u=document.getElementById('url_'+type).value;if(!u)return;document.getElementById('url_'+type).value='';fetch('/api/add?type='+type+'&url='+encodeURIComponent(u));}function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('dot').style.background='var(--success)';document.getElementById('dot').style.boxShadow='0 0 8px var(--success)';document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';data.files.forEach(f=>{let pctStr=f.total?Math.round((f.down/f.total)*100)+'%':'Live';let mb=(f.down/(1024*1024)).toFixed(1);let totStr=f.total?(f.total/(1024*1024)).toFixed(1):'∞';let progBar=f.total?`<progress value="${f.down}" max="${f.total}"></progress>`:`<progress></progress>`;if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Stop</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Stop</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Stop</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🗑️ Stop</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{document.getElementById('dot').style.background='var(--danger)';document.getElementById('dot').style.boxShadow='0 0 8px var(--danger)';});},1000);</script></body></html>"""
 
 @app.route('/')
@@ -274,11 +276,25 @@ def index(): return render_template_string(HTML)
 @app.route('/launch_desktop')
 def launch_desktop():
     res = request.args.get('res', '1366x768')
+    target_url = request.args.get('url', '').strip()
     try: w, h = res.split('x')
     except: w, h = '1366', '768'
     
-    script = f"""#!/bin/bash
+    # Check if the desktop is already running
+    is_active = subprocess.run("systemctl is-active desktop", shell=True, capture_output=True).stdout.decode().strip() == "active"
+    
+    # MAGIC INJECTION: If desktop is ON and URL is provided, open a new tab instantly without rebooting!
+    if target_url and is_active:
+        cmd = f'DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000 /usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --user-data-dir=/home/ubuntu/brave-data "{target_url}" &'
+        subprocess.Popen(cmd, shell=True)
+        return redirect("/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote")
+
+    # Otherwise, perform a full boot sequence
+    start_url = target_url if target_url else "https://www.google.com"
+    
+    script = f'''#!/bin/bash
 export DISPLAY=:0
+export XDG_RUNTIME_DIR=/run/user/1000
 Xvfb :0 -screen 0 {w}x{h}x24 -ac -nolisten tcp &
 sleep 1
 xhost +
@@ -287,19 +303,18 @@ x11vnc -display :0 -nopw -listen localhost -xkb -ncache 10 -ncache_cr -forever -
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 sleep 1
 mkdir -p /home/ubuntu/brave-data
-/usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --disable-software-rasterizer --disable-gpu --user-data-dir=/home/ubuntu/brave-data --window-size={w},{h} --start-maximized "https://www.google.com" &
+# INJECTED --force-dark-mode & --enable-features=WebUIDarkMode
+/usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --disable-software-rasterizer --disable-gpu --force-dark-mode --enable-features=WebUIDarkMode --user-data-dir=/home/ubuntu/brave-data --window-size={w},{h} --start-maximized "{start_url}" &
 wait
-"""
+'''
     with open('/home/ubuntu/start_desktop.sh', 'w') as f: f.write(script)
     os.chmod('/home/ubuntu/start_desktop.sh', 0o755)
     
-    # Run the system restart in a background thread so Nginx doesn't timeout!
     def restart_bg():
         subprocess.run("sudo systemctl restart desktop", shell=True)
     threading.Thread(target=restart_bg).start()
     
-    # Serve a beautiful loading screen that auto-redirects AFTER the background task finishes
-    html = f"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Booting Engine...</title><style>body {{ background: #0a0c10; color: #00b3ff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; }} .loader {{ border: 6px solid #14171f; border-top: 6px solid #00b3ff; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin-bottom: 20px; }} @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}</style></head><body><div class="loader"></div><h2>Allocating {w}x{h} Hardware...</h2><p style="color:#888;">Booting secure Brave Engine. Automatically connecting in 4 seconds...</p><script>setTimeout(() => {{ window.location.href = "/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote"; }}, 4000);</script></body></html>"""
+    html = f"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Booting Engine...</title><style>body {{ background: #0a0c10; color: #00b3ff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; }} .loader {{ border: 6px solid #14171f; border-top: 6px solid #00b3ff; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin-bottom: 20px; }} @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}</style></head><body><div class="loader"></div><h2>Allocating {w}x{h} Hardware...</h2><p style="color:#888;">Booting secure Brave Engine in Dark Mode. Automatically connecting in 4 seconds...</p><script>setTimeout(() => {{ window.location.href = "/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote"; }}, 4000);</script></body></html>"""
     return html
 
 @app.route('/api/data')
@@ -463,12 +478,11 @@ def swarm_dl(fid,fname):
 if __name__=='__main__': app.run(host='127.0.0.1',port=8080,threaded=True)
 PYTHON_EOF
 
-echo "⚙️ [6/6] Writing Default Desktop Bootloader..."
+echo "⚙️ [6/6] Writing Default Bootloader..."
 cat > /home/ubuntu/start_desktop.sh << 'EOF'
 #!/bin/bash
 export DISPLAY=:0
 
-# Initial default boot
 Xvfb :0 -screen 0 1366x768x24 -ac -nolisten tcp &
 sleep 2
 
@@ -479,7 +493,7 @@ websockify --web /usr/share/novnc 6080 localhost:5900 &
 sleep 2
 
 mkdir -p /home/ubuntu/brave-data
-/usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --disable-software-rasterizer --disable-gpu --user-data-dir=/home/ubuntu/brave-data --window-size=1366,768 --start-maximized "https://www.google.com" &
+/usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --disable-software-rasterizer --disable-gpu --force-dark-mode --enable-features=WebUIDarkMode --user-data-dir=/home/ubuntu/brave-data --window-size=1366,768 --start-maximized "https://www.google.com" &
 wait
 EOF
 chmod +x /home/ubuntu/start_desktop.sh
@@ -521,11 +535,11 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 IP=$(curl -s -m 5 -4 icanhazip.com || curl -s -m 5 -4 ifconfig.me || curl -s -m 5 -4 api.ipify.org || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V88 MASTER DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V90 MASTER DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
 echo "🌐 2. Direct VPS Local Access: http://$IP"
 echo "===================================================="
 BASH_EOF
-bash deploy_oracle_v88_master.sh
+bash deploy_oracle_v90_master.sh
