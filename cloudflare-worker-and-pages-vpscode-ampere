@@ -1,7 +1,7 @@
-rm -f deploy_oracle_v90_master.sh
-cat > deploy_oracle_v90_master.sh << 'BASH_EOF'
+rm -f deploy_oracle_v91_master.sh
+cat > deploy_oracle_v91_master.sh << 'BASH_EOF'
 #!/bin/bash
-clear; echo "===================================================="; echo "🚀 INITIATING V90 MASTER (TAB INJECTION + DARK MODE)"; echo "===================================================="
+clear; echo "===================================================="; echo "🚀 INITIATING V91 MASTER (EXPANDED RESOLUTION MATRIX)"; echo "===================================================="
 
 echo "🛑 [1/6] Aggressive Purge of Old Systems..."
 sudo systemctl stop proxy desktop nginx >/dev/null 2>&1
@@ -240,7 +240,7 @@ def swarm_worker(fid):
  except:
   with db_lock: db[fid]['status']='Swarm Proxy Ready (Name Fetch Failed)'
 
-HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Quad-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--success)}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}</style></head><body><h2><span>🚀 Unified 5-Engine Master (V90)</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot" id="dot"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
+HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Quad-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--success)}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}</style></head><body><h2><span>🚀 Unified 5-Engine Master (V91)</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot" id="dot"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
 
 <div class="engine-box"><div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span></div><div class="input-group"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button></div></div>
 <div class="engine-box"><div class="engine-title"><span style="color:var(--ram);">⚡ Engine 2: RAM Proxy</span></div><div class="input-group"><input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000;">Start RAM Proxy</button></div></div>
@@ -258,7 +258,12 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
             <option value="1280x768">1280 x 768</option>
             <option value="1280x1024">1280 x 1024</option>
             <option value="1400x1050">1400 x 1050</option>
+            <option value="1440x768">1440 x 768</option>
+            <option value="1440x900">1440 x 900</option>
+            <option value="1600x900">1600 x 900</option>
+            <option value="1680x768">1680 x 768</option>
             <option value="1680x1050">1680 x 1050</option>
+            <option value="1920x768">1920 x 768</option>
             <option value="1920x1080">1920 x 1080</option>
         </select>
         <button onclick="launchDynamicDesktop()" style="background:var(--desktop);color:#000;flex:1;">Launch / Open Link</button>
@@ -280,16 +285,13 @@ def launch_desktop():
     try: w, h = res.split('x')
     except: w, h = '1366', '768'
     
-    # Check if the desktop is already running
     is_active = subprocess.run("systemctl is-active desktop", shell=True, capture_output=True).stdout.decode().strip() == "active"
     
-    # MAGIC INJECTION: If desktop is ON and URL is provided, open a new tab instantly without rebooting!
     if target_url and is_active:
         cmd = f'DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000 /usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --user-data-dir=/home/ubuntu/brave-data "{target_url}" &'
         subprocess.Popen(cmd, shell=True)
         return redirect("/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote")
 
-    # Otherwise, perform a full boot sequence
     start_url = target_url if target_url else "https://www.google.com"
     
     script = f'''#!/bin/bash
@@ -303,7 +305,6 @@ x11vnc -display :0 -nopw -listen localhost -xkb -ncache 10 -ncache_cr -forever -
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 sleep 1
 mkdir -p /home/ubuntu/brave-data
-# INJECTED --force-dark-mode & --enable-features=WebUIDarkMode
 /usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --disable-software-rasterizer --disable-gpu --force-dark-mode --enable-features=WebUIDarkMode --user-data-dir=/home/ubuntu/brave-data --window-size={w},{h} --start-maximized "{start_url}" &
 wait
 '''
@@ -535,11 +536,11 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 IP=$(curl -s -m 5 -4 icanhazip.com || curl -s -m 5 -4 ifconfig.me || curl -s -m 5 -4 api.ipify.org || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V90 MASTER DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V91 MASTER DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
 echo "🌐 2. Direct VPS Local Access: http://$IP"
 echo "===================================================="
 BASH_EOF
-bash deploy_oracle_v90_master.sh
+bash deploy_oracle_v91_master.sh
