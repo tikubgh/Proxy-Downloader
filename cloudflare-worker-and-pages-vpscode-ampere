@@ -1,7 +1,7 @@
-rm -f deploy_oracle_v101_master.sh
-cat > deploy_oracle_v101_master.sh << 'BASH_EOF'
+rm -f deploy_oracle_v107_master.sh
+cat > deploy_oracle_v107_master.sh << 'BASH_EOF'
 #!/bin/bash
-clear; echo "===================================================="; echo "🚀 INITIATING V101 MASTER (DRIVE PIPELINE OPTIMIZED)"; echo "===================================================="
+clear; echo "===================================================="; echo "🚀 INITIATING V107 MASTER (256MB ZERO-COPY PIPELINE)"; echo "===================================================="
 
 echo "🛑 [1/6] Aggressive Purge of Old Systems..."
 sudo systemctl stop proxy desktop nginx >/dev/null 2>&1
@@ -120,17 +120,42 @@ def cleaner():
      del db[fid]
 threading.Thread(target=cleaner,daemon=True).start()
 
+def drive_token_refresher():
+ while True:
+  time.sleep(3480) 
+  try:
+   if os.path.exists(DRIVE_CREDS_FILE):
+    with open(DRIVE_CREDS_FILE, 'r') as f: creds = json.load(f)
+    if 'client_id' in creds and 'refresh_token' in creds:
+     r = requests.post('https://oauth2.googleapis.com/token', data={
+         'client_id': creds['client_id'], 'client_secret': creds['client_secret'],
+         'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'
+     }, timeout=15)
+     if r.status_code == 200:
+      creds['access_token'] = r.json()['access_token']
+      creds['expires_at'] = time.time() + 3500
+      with db_lock:
+       with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(creds, f)
+  except: pass
+threading.Thread(target=drive_token_refresher, daemon=True).start()
+
 def get_drive_auth():
  if not os.path.exists(DRIVE_CREDS_FILE): return None, "Vault Empty"
  try:
   with open(DRIVE_CREDS_FILE, 'r') as f: creds = json.load(f)
+  now = time.time()
+  if 'access_token' in creds and 'expires_at' in creds and now < creds['expires_at']:
+      return creds['access_token'], None
   r = requests.post('https://oauth2.googleapis.com/token', data={
       'client_id': creds['client_id'], 'client_secret': creds['client_secret'],
       'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'
   }, timeout=10)
-  if r.status_code != 200: return None, "Google rejected Refresh Token"
-  access_token = r.json()['access_token']
-  return access_token, None
+  if r.status_code != 200: return None, "Google rejected Refresh Token. Please generate a new one."
+  new_token = r.json()['access_token']
+  creds['access_token'] = new_token
+  creds['expires_at'] = now + 3500 
+  with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(creds, f)
+  return new_token, None
  except Exception as e: return None, str(e)
 
 def ram_worker(fid):
@@ -257,6 +282,8 @@ def swarm_worker(fid):
  except:
   with db_lock: db[fid]['status']='Swarm Proxy Ready (Name Fetch Failed)'
 
+
+# THE V107 FIX: 1x UPLOAD - 256MB ZERO-COPY BUFFER ASSEMBLY
 def drive_worker(fid):
  with db_lock:
   if fid not in db: return
@@ -270,7 +297,6 @@ def drive_worker(fid):
   session.mount('http://', adapter)
   session.mount('https://', adapter)
 
-  # Step 1: Initialize source stream
   src_req = session.get(u, stream=True, headers=HEADERS, timeout=(15, 60))
   src_req.raise_for_status()
   ts = int(src_req.headers.get('content-length', 0))
@@ -279,98 +305,214 @@ def drive_worker(fid):
   if 'filename=' in cd: fname = cd.split('filename=')[-1].strip('"\'')
   else: fname = urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(u).path)) or fname
   
-  with db_lock: db[fid].update({'total': ts, 'name': fname.replace('"', ''), 'status': 'Uploading via RAM Pipeline...'})
+  with db_lock: db[fid].update({'total': ts, 'name': fname.replace('"', ''), 'status': 'Starting Single-Thread RAM Pipeline...'})
 
-  # Step 2: Open Resumable Session with Google Drive
   auth_head = {'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'}
   init_res = session.post('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', headers=auth_head, json={'name': fname}, timeout=30)
   if init_res.status_code != 200: raise Exception("Drive API Rejected Upload Request")
   upload_url = init_res.headers['Location']
 
-  # V101: BUFFERED CHUNKING ALGORITHM + ABORT LOGIC
-  buffer = b""
+  buffer_list = []
+  buffer_size = 0
   start_byte = 0
   file_id = None
-  chunk_target = 16777216 # Exactly 16MB 
+  chunk_target = 268435456 # Exactly 256MB
 
   for raw_chunk in src_req.iter_content(chunk_size=1048576):
-   # ABORT LOGIC INSTALLED HERE: Safely breaks loop and kills memory footprint
    with db_lock:
     if db[fid]['status'] == 'Stopped': return
-   buffer += raw_chunk
    
-   while len(buffer) >= chunk_target:
-    upload_data = buffer[:chunk_target]
-    buffer = buffer[chunk_target:]
+   buffer_list.append(raw_chunk)
+   buffer_size += len(raw_chunk)
+   
+   while buffer_size >= chunk_target:
+    full_buf = b"".join(buffer_list)
+    upload_data = full_buf[:chunk_target]
+    leftover = full_buf[chunk_target:]
+    
+    buffer_list = [leftover] if leftover else []
+    buffer_size = len(leftover)
+    
     end_byte = start_byte + len(upload_data) - 1
     total_str = str(ts) if ts else '*'
-    
-    chunk_headers = {
-        'Content-Length': str(len(upload_data)),
-        'Content-Range': f'bytes {start_byte}-{end_byte}/{total_str}'
-    }
+    chunk_headers = {'Content-Length': str(len(upload_data)), 'Content-Range': f'bytes {start_byte}-{end_byte}/{total_str}'}
     
     success = False
     for attempt in range(5):
      try:
-      put_res = session.put(upload_url, headers=chunk_headers, data=upload_data, timeout=(30, 120))
+      put_res = session.put(upload_url, headers=chunk_headers, data=upload_data, timeout=(30, 240))
       if put_res.status_code in [200, 201]:
-       file_id = put_res.json()['id']
-       success = True; break
-      elif put_res.status_code == 308: 
-       success = True; break
-     except Exception as e:
-      time.sleep(2) 
+       file_id = put_res.json()['id']; success = True; break
+      elif put_res.status_code == 308: success = True; break
+     except: time.sleep(2) 
     
-    if not success: raise Exception("Google Drive rejected data chunk after 5 retries.")
-    
+    if not success: raise Exception("Google Drive rejected 256MB data chunk.")
     start_byte += len(upload_data)
     with db_lock: 
      db[fid]['down'] = start_byte
-     db[fid]['status'] = 'Piping to Google Drive...'
+     db[fid]['status'] = 'Piping 256MB Chunk to Google Drive (1x)...'
 
-  # Flush any remaining data in the buffer
-  if len(buffer) > 0:
+  if buffer_size > 0:
    with db_lock:
     if db[fid]['status'] == 'Stopped': return
-   end_byte = start_byte + len(buffer) - 1
-   total_str = str(start_byte + len(buffer)) if not ts else str(ts)
-   chunk_headers = {
-       'Content-Length': str(len(buffer)),
-       'Content-Range': f'bytes {start_byte}-{end_byte}/{total_str}'
-   }
+   upload_data = b"".join(buffer_list)
+   end_byte = start_byte + len(upload_data) - 1
+   total_str = str(start_byte + len(upload_data)) if not ts else str(ts)
+   chunk_headers = {'Content-Length': str(len(upload_data)), 'Content-Range': f'bytes {start_byte}-{end_byte}/{total_str}'}
    for attempt in range(5):
     try:
-     put_res = session.put(upload_url, headers=chunk_headers, data=buffer, timeout=(30, 120))
-     if put_res.status_code in [200, 201]:
-      file_id = put_res.json()['id']; break
+     put_res = session.put(upload_url, headers=chunk_headers, data=upload_data, timeout=(30, 240))
+     if put_res.status_code in [200, 201]: file_id = put_res.json()['id']; break
     except: time.sleep(2)
-   with db_lock: db[fid]['down'] = start_byte + len(buffer)
+   with db_lock: db[fid]['down'] = start_byte + len(upload_data)
 
   if file_id:
    session.post(f'https://www.googleapis.com/drive/v3/files/{file_id}/permissions', headers=auth_head, json={'role': 'reader', 'type': 'anyone'}, timeout=15)
-   with db_lock: db[fid].update({'status': '✅ Saved to Drive - Output Link Ready', 'drive_id': file_id, 'down': ts if ts else start_byte + len(buffer)})
+   with db_lock: db[fid].update({'status': '✅ Saved to Drive - Output Link Ready', 'drive_id': file_id, 'down': ts if ts else start_byte + len(upload_data)})
   else: raise Exception("Drive finalized but no ID returned.")
  except Exception as e:
   with db_lock: db[fid]['status'] = f'Error: {str(e)[:45]}'
 
 
-# V101: HTML Upgrades. Added dynamic progress bar injection for Drive Engine and "Abort Transfer" buttons.
-HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Hexa-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15;--drive:#10b981;}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:0.3s;}.status-dot-main{background:var(--success);box-shadow:0 0 8px var(--success);}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.type-drive{border-left:5px solid var(--drive)}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}</style></head><body><h2><span>🚀 Unified 6-Engine Master (V101)</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot status-dot-main" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success);"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
+# THE V107 FIX: 32x SWARM UPLOAD - 256MB ZERO-COPY BUFFER ASSEMBLY
+def drive_swarm_worker(fid):
+ with db_lock:
+  if fid not in db: return
+  u = db[fid]['url']
+ try:
+  access_token, err = get_drive_auth()
+  if err: raise Exception(err)
 
-<div class="engine-box"><div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span></div><div class="input-group"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button></div></div>
-<div class="engine-box"><div class="engine-title"><span style="color:var(--ram);">⚡ Engine 2: RAM Proxy</span></div><div class="input-group"><input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000;">Start RAM Proxy</button></div></div>
-<div class="engine-box"><div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge</span></div><div class="input-group"><input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000;">Multi-Thread DL</button></div></div>
-<div class="engine-box"><div class="engine-title"><span style="color:var(--swarm);text-shadow:0 0 5px rgba(236,72,153,0.4);">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group"><input type="text" id="url_swarm" placeholder="Paste throttled link to aggregate speed smoothly via RAM..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff;">Initialize Swarm</button></div></div>
+  session = requests.Session()
+  adapter = requests.adapters.HTTPAdapter(max_retries=5, pool_connections=64, pool_maxsize=64)
+  session.mount('http://', adapter); session.mount('https://', adapter)
+
+  src_req = session.head(u, headers=HEADERS, allow_redirects=True, timeout=10)
+  if src_req.status_code >= 400 or not src_req.headers.get('content-length'):
+      src_req = session.get(u, stream=True, headers=HEADERS, timeout=10)
+  
+  ts = int(src_req.headers.get('content-length', 0))
+  if ts == 0: raise Exception("Source denies multi-threading. Use 1x Engine instead.")
+  
+  cd = src_req.headers.get('content-disposition', '')
+  fname = f"drive_swarm_{fid}.mp4"
+  if 'filename=' in cd: fname = cd.split('filename=')[-1].strip('"\'')
+  else: fname = urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(u).path)) or fname
+  
+  with db_lock: db[fid].update({'total': ts, 'name': fname.replace('"', ''), 'status': 'Initializing Gigabit Swarm...'})
+
+  auth_head = {'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'}
+  init_res = session.post('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', headers=auth_head, json={'name': fname}, timeout=30)
+  if init_res.status_code != 200: raise Exception("Drive API Rejected Upload Request")
+  upload_url = init_res.headers['Location']
+
+  dl_chunk_size = 16777216 # 16MB blocks
+  up_chunk_target = 268435456 # Uploader fires only when 256MB is assembled
+  total_chunks = (ts + dl_chunk_size - 1) // dl_chunk_size
+  
+  buffer = {}
+  cv = threading.Condition()
+  stop_event = threading.Event()
+  
+  def fetch(idx):
+      if stop_event.is_set(): return
+      sb = idx * dl_chunk_size
+      eb = min(sb + dl_chunk_size - 1, ts - 1)
+      th = HEADERS.copy(); th['Range'] = f'bytes={sb}-{eb}'
+      for _ in range(5):
+          try:
+              r = session.get(u, headers=th, timeout=(5, 30))
+              if r.status_code in [200, 206]:
+                  with cv: buffer[idx] = r.content; cv.notify_all()
+                  return
+          except: time.sleep(1)
+      with cv: buffer[idx] = b'ERR'; cv.notify_all()
+
+  executor = concurrent.futures.ThreadPoolExecutor(max_workers=32)
+  
+  curr_idx = 0
+  submitted = 0
+  file_id = None
+  
+  ram_buffer_list = []
+  current_buffer_size = 0
+  start_byte = 0
+  
+  while curr_idx < total_chunks:
+      with db_lock:
+          if db[fid]['status'] == 'Stopped': stop_event.set(); break
+      
+      while submitted < min(curr_idx + 32, total_chunks):
+          executor.submit(fetch, submitted)
+          submitted += 1
+          
+      with cv:
+          while curr_idx not in buffer and not stop_event.is_set(): cv.wait(0.5)
+              
+      if stop_event.is_set(): break
+      data = buffer.pop(curr_idx)
+      if data == b'ERR': raise Exception("Source server disconnected mid-swarm.")
+      
+      ram_buffer_list.append(data)
+      current_buffer_size += len(data)
+      curr_idx += 1
+      
+      # When RAM buffer hits exactly 256MB (16 pieces) OR it's the final piece
+      if current_buffer_size >= up_chunk_target or curr_idx == total_chunks:
+          upload_data = b"".join(ram_buffer_list)
+          end_byte = start_byte + len(upload_data) - 1
+          chunk_headers = {'Content-Length': str(len(upload_data)), 'Content-Range': f'bytes {start_byte}-{end_byte}/{ts}'}
+          
+          success = False
+          for _ in range(5):
+              try:
+                  put_res = session.put(upload_url, headers=chunk_headers, data=upload_data, timeout=(30, 300))
+                  if put_res.status_code in [200, 201]:
+                      file_id = put_res.json()['id']
+                      success = True; break
+                  elif put_res.status_code == 308:
+                      success = True; break
+              except: time.sleep(2)
+              
+          if not success: raise Exception("Google Drive rejected massive 256MB chunk.")
+          
+          start_byte += len(upload_data)
+          ram_buffer_list = []
+          current_buffer_size = 0
+          
+          with db_lock:
+              db[fid]['down'] = start_byte
+              db[fid]['status'] = f'Saturating Drive TCP (256MB Blocks) ({curr_idx}/{total_chunks})...'
+          
+  executor.shutdown(wait=False, cancel_futures=True)
+  
+  if curr_idx == total_chunks and file_id:
+      session.post(f'https://www.googleapis.com/drive/v3/files/{file_id}/permissions', headers=auth_head, json={'role': 'reader', 'type': 'anyone'}, timeout=15)
+      with db_lock: db[fid].update({'status': '✅ Swarm Assembly Complete - Output Link Ready', 'drive_id': file_id, 'down': ts})
+  elif not stop_event.is_set():
+      raise Exception("Upload finished but Drive returned no ID.")
+      
+ except Exception as e:
+  with db_lock: db[fid]['status'] = f'Error: {str(e)[:45]}'
+  try: stop_event.set(); executor.shutdown(wait=False, cancel_futures=True)
+  except: pass
+
+
+HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Hexa-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15;--drive:#10b981;}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:0.3s;}.status-dot-main{background:var(--success);box-shadow:0 0 8px var(--success);}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px;}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.type-drive{border-left:5px solid var(--drive)}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}</style></head><body><h2><span>🚀 Unified 6-Engine Master (V107)</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot status-dot-main" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success);"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
+
+<div class="engine-box"><div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button></div></div>
+<div class="engine-box"><div class="engine-title"><span style="color:var(--ram);">⚡ Engine 2: RAM Proxy</span></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000;">Start RAM Proxy</button></div></div>
+<div class="engine-box"><div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge</span></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000;">Multi-Thread DL</button></div></div>
+<div class="engine-box"><div class="engine-title"><span style="color:var(--swarm);text-shadow:0 0 5px rgba(236,72,153,0.4);">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_swarm" placeholder="Paste throttled link to aggregate speed smoothly via RAM..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff;">Initialize Swarm</button></div></div>
 
 <div class="engine-box" style="border-color:var(--drive);">
-    <div class="engine-title"><span style="color:var(--drive);">☁️ Engine 6: Google Drive RAM Uploader</span> <span class="status-dot" id="drive_dot" style="margin-left:10px;"></span></div>
+    <div class="engine-title"><span style="color:var(--drive);">☁️ Engine 6: Google One RAM Uploader</span> <span class="status-dot" id="drive_dot" style="margin-left:10px;"></span></div>
     
     <div id="drive_auth_panel" style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px;">
-        <div style="font-size:0.9em;color:#aaa;">⚠️ <b>Vault Empty:</b> Provide your Google Developer Keys below to permanently link the server to your Drive.</div>
-        <div class="input-group"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div>
-        <div class="input-group"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div>
-        <div class="input-group"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div>
+        <div style="font-size:0.9em;color:#aaa;">⚠️ <b>Vault Empty:</b> Provide your Google Developer Keys below to permanently link your Google One account.</div>
+        <div class="input-group" style="margin-bottom:0;"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div>
+        <div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div>
+        <div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div>
         <button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%;">Save to Server Vault & Connect</button>
     </div>
 
@@ -380,9 +522,14 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
     </div>
 
     <div class="input-group">
-        <input type="text" id="url_drive" placeholder="Paste download link to pipe directly into Google Drive...">
-        <button onclick="addFile('drive')" style="background:var(--drive);color:#000;">Remote Upload</button>
+        <input type="text" id="url_drive" placeholder="Paste link for Standard Remote Upload...">
+        <button onclick="addFile('drive')" style="background:var(--drive);color:#000;">Upload (1x)</button>
     </div>
+    <div class="input-group" style="margin-bottom:0;">
+        <input type="text" id="url_drive_swarm" placeholder="Paste link for Multi-Thread Swarm Upload (Requires Content-Length)...">
+        <button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Swarm Upload (32x)</button>
+    </div>
+    <div style="margin-top:10px;font-size:0.85em;color:#aaa;">💡 <b>256MB Zero-Copy Architecture:</b> Both engines assemble exactly 256MB in RAM, bypassing the Python Global Interpreter Lock (GIL), and firing single massive payloads to Google to completely shatter speed limits.</div>
 </div>
 
 <div class="engine-box" style="border-color:var(--desktop);">
@@ -390,7 +537,7 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
     <div class="input-group" style="margin-bottom:10px;">
         <input type="text" id="desktop_url" placeholder="Paste link to open in new Desktop tab (preserves existing work)...">
     </div>
-    <div class="input-group">
+    <div class="input-group" style="margin-bottom:0;">
         <select id="desk_res" style="max-width: 250px;">
             <option value="1366x768" selected>1366 x 768 (Default)</option>
             <option value="1280x768">1280 x 768</option>
@@ -426,7 +573,7 @@ function checkDriveStatus(){
     });
 }
 checkDriveStatus();
-setInterval(checkDriveStatus, 15000);
+setInterval(checkDriveStatus, 60000);
 
 function connectDrive(){
     let cid=document.getElementById('drive_cid').value;
@@ -457,7 +604,7 @@ function addFile(type){
     fetch('/api/add?type='+type+'&url='+encodeURIComponent(u));
 }
 
-function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';data.files.forEach(f=>{let pctStr=f.total?Math.round((f.down/f.total)*100)+'%':'Live';let mb=(f.down/(1024*1024)).toFixed(1);let totStr=f.total?(f.total/(1024*1024)).toFixed(1):'∞';let progBar=f.total?`<progress value="${f.down}" max="${f.total}"></progress>`:`<progress></progress>`;if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE RAM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Proxy Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
+function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';data.files.forEach(f=>{let pctStr=f.total?Math.round((f.down/f.total)*100)+'%':'Live';let mb=(f.down/(1024*1024)).toFixed(1);let totStr=f.total?(f.total/(1024*1024)).toFixed(1):'∞';let progBar=f.total?`<progress value="${f.down}" max="${f.total}"></progress>`:`<progress></progress>`;if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Output Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE RAM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Proxy Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
 
 @app.route('/')
 def index(): return render_template_string(HTML)
@@ -508,7 +655,7 @@ def drive_status():
     try:
         access_token, err = get_drive_auth()
         if err: return jsonify({'connected': False})
-        # V101 FIX: Querying Storage Quota instead of Email Address
+        
         r = requests.get('https://www.googleapis.com/drive/v3/about?fields=storageQuota', headers={'Authorization': f'Bearer {access_token}'}, timeout=10)
         if r.status_code == 200:
             sq = r.json().get('storageQuota', {})
@@ -530,6 +677,9 @@ def drive_connect():
     try:
         r = requests.post('https://oauth2.googleapis.com/token', data={'client_id': cid, 'client_secret': csec, 'refresh_token': rt, 'grant_type': 'refresh_token'}, timeout=10)
         if r.status_code == 200:
+            now = time.time()
+            data['access_token'] = r.json()['access_token']
+            data['expires_at'] = now + 3500
             with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(data, f)
             return jsonify({'success': True})
         return jsonify({'success': False, 'error': 'Google rejected keys. Ensure Client Secret & Refresh Token are valid.'})
@@ -550,7 +700,6 @@ def drive_dl(fid, fname):
     access_token, err = get_drive_auth()
     if err: return "Drive Auth Error", 500
 
-    # V101 FIX: Using official API alt=media endpoint to bypass Google Virus Scan warnings completely
     rh = {k: v for k, v in request.headers.items() if k.lower() in ['range', 'accept-encoding']}
     rh['Authorization'] = f'Bearer {access_token}'
     
@@ -560,7 +709,6 @@ def drive_dl(fid, fname):
         resp.headers['Content-Disposition'] = f'attachment; filename="{fname}"'
         return resp
     except: return "Error", 500
-
 
 @app.route('/api/data')
 def api_data():
@@ -578,6 +726,7 @@ def add():
  elif t=='ram': threading.Thread(target=ram_worker,args=(fid,)).start()
  elif t=='swarm': threading.Thread(target=swarm_worker,args=(fid,)).start()
  elif t=='drive': threading.Thread(target=drive_worker,args=(fid,)).start()
+ elif t=='drive_swarm': threading.Thread(target=drive_swarm_worker,args=(fid,)).start()
  return "OK"
 
 @app.route('/api/action/<fid>/<act>')
@@ -783,11 +932,11 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 IP=$(curl -s -m 5 -4 icanhazip.com || curl -s -m 5 -4 ifconfig.me || curl -s -m 5 -4 api.ipify.org || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V101 MASTER DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V107 MASTER DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
 echo "🌐 2. Direct VPS Local Access: http://$IP"
 echo "===================================================="
 BASH_EOF
-bash deploy_oracle_v101_master.sh
+bash deploy_oracle_v107_master.sh
