@@ -1,7 +1,7 @@
-rm -f deploy_oracle_v107_master.sh
-cat > deploy_oracle_v107_master.sh << 'BASH_EOF'
+rm -f deploy_oracle_v107_custom_50mb.sh
+cat > deploy_oracle_v107_custom_50mb.sh << 'BASH_EOF'
 #!/bin/bash
-clear; echo "===================================================="; echo "🚀 INITIATING V107 MASTER (256MB ZERO-COPY PIPELINE)"; echo "===================================================="
+clear; echo "===================================================="; echo "🚀 INITIATING V107 CUSTOM (50MB BOX 1 + 50MB BOX 2)"; echo "===================================================="
 
 echo "🛑 [1/6] Aggressive Purge of Old Systems..."
 sudo systemctl stop proxy desktop nginx >/dev/null 2>&1
@@ -283,7 +283,7 @@ def swarm_worker(fid):
   with db_lock: db[fid]['status']='Swarm Proxy Ready (Name Fetch Failed)'
 
 
-# THE V107 FIX: 1x UPLOAD - 256MB ZERO-COPY BUFFER ASSEMBLY
+# NEW: 1x UPLOAD - 50MB MICRO-BUFFER CHUNKING (IMMUNE TO POOL TIMEOUTS)
 def drive_worker(fid):
  with db_lock:
   if fid not in db: return
@@ -305,33 +305,27 @@ def drive_worker(fid):
   if 'filename=' in cd: fname = cd.split('filename=')[-1].strip('"\'')
   else: fname = urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(u).path)) or fname
   
-  with db_lock: db[fid].update({'total': ts, 'name': fname.replace('"', ''), 'status': 'Starting Single-Thread RAM Pipeline...'})
+  with db_lock: db[fid].update({'total': ts, 'name': fname.replace('"', ''), 'status': 'Starting Single-Thread Pipe (50MB Micro-Buffer)...'})
 
   auth_head = {'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'}
   init_res = session.post('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', headers=auth_head, json={'name': fname}, timeout=30)
   if init_res.status_code != 200: raise Exception("Drive API Rejected Upload Request")
   upload_url = init_res.headers['Location']
 
-  buffer_list = []
-  buffer_size = 0
+  buffer_data = b""
   start_byte = 0
   file_id = None
-  chunk_target = 268435456 # Exactly 256MB
+  chunk_target = 52428800 # Exactly 50MB
 
   for raw_chunk in src_req.iter_content(chunk_size=1048576):
    with db_lock:
     if db[fid]['status'] == 'Stopped': return
    
-   buffer_list.append(raw_chunk)
-   buffer_size += len(raw_chunk)
+   buffer_data += raw_chunk
    
-   while buffer_size >= chunk_target:
-    full_buf = b"".join(buffer_list)
-    upload_data = full_buf[:chunk_target]
-    leftover = full_buf[chunk_target:]
-    
-    buffer_list = [leftover] if leftover else []
-    buffer_size = len(leftover)
+   while len(buffer_data) >= chunk_target:
+    upload_data = buffer_data[:chunk_target]
+    buffer_data = buffer_data[chunk_target:]
     
     end_byte = start_byte + len(upload_data) - 1
     total_str = str(ts) if ts else '*'
@@ -346,35 +340,34 @@ def drive_worker(fid):
       elif put_res.status_code == 308: success = True; break
      except: time.sleep(2) 
     
-    if not success: raise Exception("Google Drive rejected 256MB data chunk.")
+    if not success: raise Exception("Google Drive rejected data chunk after 5 retries.")
     start_byte += len(upload_data)
     with db_lock: 
      db[fid]['down'] = start_byte
-     db[fid]['status'] = 'Piping 256MB Chunk to Google Drive (1x)...'
+     db[fid]['status'] = 'Piping 50MB Chunk to Google Drive (1x)...'
 
-  if buffer_size > 0:
+  if len(buffer_data) > 0:
    with db_lock:
     if db[fid]['status'] == 'Stopped': return
-   upload_data = b"".join(buffer_list)
-   end_byte = start_byte + len(upload_data) - 1
-   total_str = str(start_byte + len(upload_data)) if not ts else str(ts)
-   chunk_headers = {'Content-Length': str(len(upload_data)), 'Content-Range': f'bytes {start_byte}-{end_byte}/{total_str}'}
+   end_byte = start_byte + len(buffer_data) - 1
+   total_str = str(start_byte + len(buffer_data)) if not ts else str(ts)
+   chunk_headers = {'Content-Length': str(len(buffer_data)), 'Content-Range': f'bytes {start_byte}-{end_byte}/{total_str}'}
    for attempt in range(5):
     try:
-     put_res = session.put(upload_url, headers=chunk_headers, data=upload_data, timeout=(30, 240))
+     put_res = session.put(upload_url, headers=chunk_headers, data=buffer_data, timeout=(30, 240))
      if put_res.status_code in [200, 201]: file_id = put_res.json()['id']; break
     except: time.sleep(2)
-   with db_lock: db[fid]['down'] = start_byte + len(upload_data)
+   with db_lock: db[fid]['down'] = start_byte + len(buffer_data)
 
   if file_id:
    session.post(f'https://www.googleapis.com/drive/v3/files/{file_id}/permissions', headers=auth_head, json={'role': 'reader', 'type': 'anyone'}, timeout=15)
-   with db_lock: db[fid].update({'status': '✅ Saved to Drive - Output Link Ready', 'drive_id': file_id, 'down': ts if ts else start_byte + len(upload_data)})
+   with db_lock: db[fid].update({'status': '✅ Saved to Drive - Output Link Ready', 'drive_id': file_id, 'down': ts if ts else start_byte + len(buffer_data)})
   else: raise Exception("Drive finalized but no ID returned.")
  except Exception as e:
   with db_lock: db[fid]['status'] = f'Error: {str(e)[:45]}'
 
 
-# THE V107 FIX: 32x SWARM UPLOAD - 256MB ZERO-COPY BUFFER ASSEMBLY
+# MODIFIED: 32x SWARM UPLOAD - EXACTLY 50MB CHUNK ASSEMBLY
 def drive_swarm_worker(fid):
  with db_lock:
   if fid not in db: return
@@ -406,8 +399,8 @@ def drive_swarm_worker(fid):
   if init_res.status_code != 200: raise Exception("Drive API Rejected Upload Request")
   upload_url = init_res.headers['Location']
 
-  dl_chunk_size = 16777216 # 16MB blocks
-  up_chunk_target = 268435456 # Uploader fires only when 256MB is assembled
+  dl_chunk_size = 10485760 # 10MB blocks
+  up_chunk_target = 52428800 # Uploader fires only when exactly 50MB is assembled (5 * 10MB)
   total_chunks = (ts + dl_chunk_size - 1) // dl_chunk_size
   
   buffer = {}
@@ -457,7 +450,7 @@ def drive_swarm_worker(fid):
       current_buffer_size += len(data)
       curr_idx += 1
       
-      # When RAM buffer hits exactly 256MB (16 pieces) OR it's the final piece
+      # When RAM buffer hits exactly 50MB (5 pieces) OR it's the final piece
       if current_buffer_size >= up_chunk_target or curr_idx == total_chunks:
           upload_data = b"".join(ram_buffer_list)
           end_byte = start_byte + len(upload_data) - 1
@@ -474,7 +467,7 @@ def drive_swarm_worker(fid):
                       success = True; break
               except: time.sleep(2)
               
-          if not success: raise Exception("Google Drive rejected massive 256MB chunk.")
+          if not success: raise Exception("Google Drive rejected 50MB chunk.")
           
           start_byte += len(upload_data)
           ram_buffer_list = []
@@ -482,7 +475,7 @@ def drive_swarm_worker(fid):
           
           with db_lock:
               db[fid]['down'] = start_byte
-              db[fid]['status'] = f'Saturating Drive TCP (256MB Blocks) ({curr_idx}/{total_chunks})...'
+              db[fid]['status'] = f'Saturating Drive TCP (50MB Blocks) ({curr_idx}/{total_chunks})...'
           
   executor.shutdown(wait=False, cancel_futures=True)
   
@@ -498,7 +491,7 @@ def drive_swarm_worker(fid):
   except: pass
 
 
-HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Hexa-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15;--drive:#10b981;}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:0.3s;}.status-dot-main{background:var(--success);box-shadow:0 0 8px var(--success);}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px;}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.type-drive{border-left:5px solid var(--drive)}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}</style></head><body><h2><span>🚀 Unified 6-Engine Master (V107)</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot status-dot-main" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success);"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
+HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Hexa-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15;--drive:#10b981;}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:0.3s;}.status-dot-main{background:var(--success);box-shadow:0 0 8px var(--success);}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px;}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.type-drive{border-left:5px solid var(--drive)}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}</style></head><body><h2><span>🚀 Unified 6-Engine Master (V107 Base)</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot status-dot-main" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success);"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
 
 <div class="engine-box"><div class="engine-title"><span style="color:var(--purple);">💿 Engine 1: Disk Forge</span></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple);">Send to Disk</button></div></div>
 <div class="engine-box"><div class="engine-title"><span style="color:var(--ram);">⚡ Engine 2: RAM Proxy</span></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000;">Start RAM Proxy</button></div></div>
@@ -522,14 +515,14 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
     </div>
 
     <div class="input-group">
-        <input type="text" id="url_drive" placeholder="Paste link for Standard Remote Upload...">
+        <input type="text" id="url_drive" placeholder="Paste link for Standard Remote Upload (50MB Micro-Buffer)...">
         <button onclick="addFile('drive')" style="background:var(--drive);color:#000;">Upload (1x)</button>
     </div>
     <div class="input-group" style="margin-bottom:0;">
         <input type="text" id="url_drive_swarm" placeholder="Paste link for Multi-Thread Swarm Upload (Requires Content-Length)...">
-        <button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Swarm Upload (32x)</button>
+        <button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Swarm Upload (50MB Blocks)</button>
     </div>
-    <div style="margin-top:10px;font-size:0.85em;color:#aaa;">💡 <b>256MB Zero-Copy Architecture:</b> Both engines assemble exactly 256MB in RAM, bypassing the Python Global Interpreter Lock (GIL), and firing single massive payloads to Google to completely shatter speed limits.</div>
+    <div style="margin-top:10px;font-size:0.85em;color:#aaa;">💡 <b>Custom Architecture:</b> Box 1 uses a 50MB retry buffer. Box 2 aggregates exactly 50MB before firing.</div>
 </div>
 
 <div class="engine-box" style="border-color:var(--desktop);">
@@ -932,11 +925,11 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 IP=$(curl -s -m 5 -4 icanhazip.com || curl -s -m 5 -4 ifconfig.me || curl -s -m 5 -4 api.ipify.org || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V107 MASTER DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V107 CUSTOM DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
 echo "🌐 2. Direct VPS Local Access: http://$IP"
 echo "===================================================="
 BASH_EOF
-bash deploy_oracle_v107_master.sh
+bash deploy_oracle_v107_custom_50mb.sh
