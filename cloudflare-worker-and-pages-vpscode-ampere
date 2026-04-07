@@ -1,7 +1,7 @@
 rm -f setup.sh
 cat > setup.sh << 'EOF'
 #!/bin/bash
-clear; echo "===================================================="; echo "🚀 INITIATING V107 CUSTOM (ENGINE 1 VLC STREAMING FIX)"; echo "===================================================="
+clear; echo "===================================================="; echo "🚀 INITIATING V107 CUSTOM (ENGINE 7 INSTANT VLC + 500MB STRICT)"; echo "===================================================="
 
 echo "🛑 [1/6] Aggressive Purge of Old Systems..."
 sudo systemctl stop proxy desktop nginx >/dev/null 2>&1
@@ -51,11 +51,17 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
+    client_max_body_size 50000M;
 
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 86400;
+        proxy_connect_timeout 86400;
+        proxy_send_timeout 86400;
     }
 
     location /novnc/ {
@@ -74,17 +80,43 @@ echo "🖥️ [5/6] Setting up Server-Side Vault Backend..."
 mkdir -p /home/ubuntu/downloads
 rm -rf /home/ubuntu/venv
 python3 -m venv /home/ubuntu/venv >/dev/null 2>&1 || { python3 -m venv --without-pip /home/ubuntu/venv && curl -sS https://bootstrap.pypa.io/get-pip.py | /home/ubuntu/venv/bin/python >/dev/null 2>&1; }
-/home/ubuntu/venv/bin/pip install flask requests psutil curl_cffi >/dev/null 2>&1
+/home/ubuntu/venv/bin/pip install flask requests psutil curl_cffi waitress >/dev/null 2>&1
 
 echo "ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart desktop, /usr/bin/systemctl restart desktop" | sudo tee /etc/sudoers.d/desktop-restart >/dev/null
 
 cat > /home/ubuntu/app.py << 'PYTHON_EOF'
-import os,time,uuid,threading,requests,subprocess,shutil,re,queue,mimetypes,concurrent.futures,hashlib,json; from flask import Flask,jsonify,render_template_string,request,send_file,Response,redirect; import psutil; import urllib.parse
+import os,time,uuid,threading,requests,subprocess,shutil,re,queue,mimetypes,concurrent.futures,hashlib,json,gc; from flask import Flask,jsonify,render_template_string,request,send_file,Response,redirect; import psutil; import urllib.parse
+from collections import OrderedDict
 app=Flask(__name__); DL_DIR="/home/ubuntu/downloads"; os.makedirs(DL_DIR,exist_ok=True)
 db={}; db_lock=threading.Lock(); active_procs={}
 
-p2p_queues = {}
-p2p_events = {}
+P2P_CHUNK_SIZE = 1048576 # 1MB Micro-Chunks for ultra-fast VLC responses & minimal RAM overhead
+
+class P2PStream:
+    def __init__(self, fid, total_size):
+        self.fid = fid
+        self.total_size = total_size
+        self.chunks = OrderedDict()
+        self.needed = set()
+        self.active = {}
+        self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+        self.connected = False
+
+class DiskStream:
+    def __init__(self, fid, total_size):
+        self.fid = fid
+        self.total_size = total_size
+        self.written_chunks = set()
+        self.prioritized = set()
+        self.active = {}
+        self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+        total_chunks = (total_size + P2P_CHUNK_SIZE - 1) // P2P_CHUNK_SIZE if total_size > 0 else 0
+        self.background = set(range(total_chunks))
+
+p2p_streams = {}
+disk_streams = {}
 
 DRIVE_CREDS_FILE = "/home/ubuntu/drive_creds.json"
 CHUNK_SIZE=16777216; STREAM_CHUNK_SIZE=65536; SPOOF_AGENT='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'; HEADERS={'User-Agent':SPOOF_AGENT,'Accept':'*/*','Connection':'keep-alive'}
@@ -121,7 +153,21 @@ def cleaner():
     if now-db[fid].get('start',now)>86400:
      try: os.remove(db[fid]['path'])
      except: pass
+     if fid in p2p_streams:
+      p2p_streams[fid].chunks.clear()
+      del p2p_streams[fid]
+     if fid in disk_streams: del disk_streams[fid]
      del db[fid]
+   
+   for fid in list(p2p_streams.keys()):
+    if fid not in db:
+     p2p_streams[fid].chunks.clear()
+     del p2p_streams[fid]
+   
+   for fid in list(disk_streams.keys()):
+    if fid not in db: del disk_streams[fid]
+
+  gc.collect() 
 threading.Thread(target=cleaner,daemon=True).start()
 
 def drive_token_refresher():
@@ -203,13 +249,12 @@ def dl_worker(fid):
      if r2.status_code in [416, 404, 403]: break
      r2.raise_for_status()
      with open(fpath, 'ab') as out:
-      for chunk in r2.iter_content(chunk_size=1048576): # 1MB chunks for instant streaming availability
+      for chunk in r2.iter_content(chunk_size=1048576):
        with db_lock:
         if db[fid]['status']=='Stopped': break
        if chunk:
         out.write(chunk)
-        out.flush()
-        os.fsync(out.fileno()) # Force immediate OS flush to disk so readers don't hit EOF artificially
+        out.flush() 
         with db_lock: db[fid]['down']+=len(chunk)
      break
    except requests.exceptions.RequestException:
@@ -255,7 +300,7 @@ def multi_worker(fid):
         f.seek(start)
         for chunk in r.iter_content(chunk_size=1048576):
          if se.is_set(): return
-         if chunk: f.write(chunk)
+         if chunk: f.write(chunk); f.flush()
       succ=True
      except:
       retries-=1; time.sleep(2)
@@ -497,14 +542,14 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
     <div class="engine-title"><span style="color:#10b981;">📡 Engine 7: Direct Transfer (P2P RAM & Disk Relay)</span></div>
     <div class="input-group" style="margin-bottom:10px;">
         <div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px;">
-            <div style="color:#aaa;font-size:11px;padding-left:10px;">Box 1: Direct P2P (No Disk, Resumable, Backpressured)</div>
+            <div style="color:#aaa;font-size:11px;padding-left:10px;">Box 1: Direct P2P (Strict 500MB RAM | IDM Multi-Thread)</div>
             <input type="file" id="file_p2p" style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px;">
         </div>
         <button onclick="initUpload('p2p')" style="background:#10b981;color:#000;">Generate P2P Link</button>
     </div>
     <div class="input-group" style="margin-bottom:0;">
         <div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px;">
-            <div style="color:#aaa;font-size:11px;padding-left:10px;">Box 2: Disk Buffered (Wormhole Style, Resumable)</div>
+            <div style="color:#aaa;font-size:11px;padding-left:10px;">Box 2: Disk Buffered (Sparse-Allocated | Instant VLC Seekable)</div>
             <input type="file" id="file_disk_relay" style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px;">
         </div>
         <button onclick="initUpload('disk_relay')" style="background:#059669;color:#fff;">Generate Disk Link</button>
@@ -620,8 +665,7 @@ async function initUpload(type){
     let r=await fetch('/api/upload_init', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type:type, name:f.name, size:f.size})});
     let d=await r.json(); fi.value='';
     
-    if (type === 'p2p') { checkP2PWait(d.fid, f); } 
-    else { uploadFileChunks(d.fid, f, type); }
+    if (type === 'p2p' || type === 'disk_relay') { checkP2PWait(d.fid, f); } 
 }
 
 async function checkP2PWait(fid, file) {
@@ -633,48 +677,61 @@ async function checkP2PWait(fid, file) {
             if (data.status === 'Stopped') return;
             if (data.connected) {
                 connected = true;
-                uploadFileChunks(fid, file, 'p2p');
+                startGbpsP2P(fid, file);
             } else { await new Promise(r => setTimeout(r, 1000)); }
         } catch(e) { await new Promise(r => setTimeout(r, 1000)); }
     }
 }
 
-async function uploadFileChunks(fid, file, type){
-    let cs = 1024*1024; // 1MB chunks to ensure precise resume offsets
-    let off = 0;
-    while(off < file.size){
-        let chunk = file.slice(off, off+cs);
-        try{
-            let r = await fetch('/api/upload_chunk/'+fid, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/octet-stream'},
-                body: chunk
-            });
-            if(r.status === 400) break; // User aborted
-            if(r.status === 409) {
-                // REWIND SIGNAL: Recipient resumed at a specific byte offset!
-                let d = await r.json();
-                off = d.offset;
-                continue;
+async function startGbpsP2P(fid, file) {
+    let concurrencyLimit = 16; 
+    let activeUploads = new Set();
+    let running = true;
+    let P2P_CHUNK_SIZE = 1048576; // 1MB Chunks for perfect VLC seeking response
+
+    let loop = setInterval(async () => {
+        if(!running) { clearInterval(loop); return; }
+        if(activeUploads.size >= concurrencyLimit) return;
+        
+        try {
+            let res = await fetch(`/api/p2p_poll/${fid}`);
+            if (!res.ok) { running = false; clearInterval(loop); return; }
+            let needed = await res.json();
+            
+            if (needed.length === 0 && activeUploads.size === 0) {
+                let chk = await fetch('/api/data'); let js = await chk.json();
+                let fObj = js.files.find(x => x.id === fid);
+                if (!fObj || fObj.status === 'Completed' || fObj.status === 'Stopped') {
+                    running = false; clearInterval(loop); return;
+                }
             }
-            if(r.status === 408) {
-                // BACKPRESSURE: Server queue is full, wait and retry current slice
-                await new Promise(res => setTimeout(res, 2000));
-                continue;
+
+            for(let idx of needed) {
+                if(!activeUploads.has(idx) && activeUploads.size < concurrencyLimit) {
+                    activeUploads.add(idx);
+                    uploadP2PChunk(fid, file, idx, P2P_CHUNK_SIZE).finally(() => { activeUploads.delete(idx); });
+                }
             }
-            if(!r.ok) throw new Error('Bad Status');
-            off += cs;
-        }catch(e){
-            // General network drop, retry slice after wait
-            await new Promise(res => setTimeout(res, 2000));
-        }
-    }
-    if (off >= file.size) {
-        await fetch('/api/upload_chunk/'+fid+'?eof=1', {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: new Uint8Array()});
-    }
+        } catch(e) {}
+    }, 150); 
 }
 
-function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';data.files.forEach(f=>{let pctStr=f.total?Math.round((f.down/f.total)*100)+'%':'Live';let mb=(f.down/(1024*1024)).toFixed(1);let totStr=f.total?(f.total/(1024*1024)).toFixed(1):'∞';let progBar=f.total?`<progress value="${f.down}" max="${f.total}"></progress>`:`<progress></progress>`;if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Sender Prog: ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Download Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Download Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Output Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE RAM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Proxy Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
+async function uploadP2PChunk(fid, file, idx, chunkSize) {
+    let start = idx * chunkSize;
+    let end = Math.min(start + chunkSize, file.size);
+    if(start >= file.size) return;
+    
+    let chunk = file.slice(start, end);
+    try {
+        await fetch(`/api/p2p_up/${fid}/${idx}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/octet-stream'},
+            body: chunk
+        });
+    } catch(e) {}
+}
+
+function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';data.files.forEach(f=>{let pctStr=f.total?Math.round((f.down/f.total)*100)+'%':'Live';let mb=(f.down/(1024*1024)).toFixed(1);let totStr=f.total?(f.total/(1024*1024)).toFixed(1):'∞';let progBar=f.total?`<progress value="${f.down}" max="${f.total}"></progress>`:`<progress></progress>`;if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Target Transferred: ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Download Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Download Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Output Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE RAM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Proxy Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
 
 @app.route('/')
 def index(): return render_template_string(HTML)
@@ -682,13 +739,14 @@ def index(): return render_template_string(HTML)
 @app.route('/api/upload_init', methods=['POST'])
 def upload_init():
  d=request.json; fid=str(uuid.uuid4())[:8]; t=d.get('type'); nm=d.get('name','unnamed'); sz=int(d.get('size',0))
- initial_status = 'Waiting for Recipient...' if t == 'p2p' else 'Uploading to Disk...'
+ initial_status = 'Waiting for Recipient...' if t == 'p2p' else 'Sparse File Initialized - Waiting for Recipient...'
  with db_lock: db[fid]={'id':fid,'url':'','name':nm.replace('"',''),'path':os.path.join(DL_DIR,f"{fid}_{nm}"),'down':0,'total':sz,'status':initial_status,'start':time.time(),'type':t}
+ 
  if t=='p2p':
-     p2p_queues[fid] = queue.Queue(maxsize=15) # Backpressure limit
-     p2p_events[fid] = threading.Event()
+     p2p_streams[fid] = P2PStream(fid, sz)
  elif t=='disk_relay':
-     open(db[fid]['path'],'wb').close()
+     disk_streams[fid] = DiskStream(fid, sz)
+     with open(db[fid]['path'], 'wb') as f: f.truncate(sz) 
  return jsonify({'fid':fid})
 
 @app.route('/api/p2p_wait/<fid>')
@@ -697,51 +755,118 @@ def p2p_wait(fid):
   if fid not in db: return jsonify({'status': 'Stopped', 'connected': False})
   st = db[fid]['status']
  if st == 'Stopped': return jsonify({'status': 'Stopped', 'connected': False})
- return jsonify({'status': st, 'connected': p2p_events.get(fid, threading.Event()).is_set()})
-
-@app.route('/api/upload_chunk/<fid>', methods=['POST'])
-def upload_chunk(fid):
- with db_lock:
-  if fid not in db or db[fid]['status']=='Stopped': return "Stopped",400
-  t=db[fid]['type']; fp=db[fid]['path']
-  
-  # Check if recipient requested a Rewind (Resume)
-  if t == 'p2p' and 'resume_offset' in db[fid]:
-   ro = db[fid].pop('resume_offset')
-   while not p2p_queues[fid].empty():
-    try: p2p_queues[fid].get_nowait()
-    except: pass
-   return jsonify({"offset": ro}), 409
-
- eof=request.args.get('eof')=='1'
- c=request.data 
  
- if t=='p2p':
-  if eof:
-   try: p2p_queues[fid].put(b'EOF', timeout=2)
-   except: pass
-   with db_lock:
-    if db[fid]['status']!='Stopped': db[fid]['status']='Completed'
-  else:
-   if c:
-    try:
-     p2p_queues[fid].put(c, timeout=5)
-     with db_lock: db[fid]['down']+=len(c)
-    except queue.Full:
-     return "Queue Full", 408
+ is_connected = False
+ if fid in p2p_streams: is_connected = p2p_streams[fid].connected
+ elif fid in disk_streams: is_connected = disk_streams[fid].connected
+ 
+ return jsonify({'status': st, 'connected': is_connected})
 
- elif t=='disk_relay':
-  if eof:
-   with db_lock:
-    if db[fid]['status']!='Stopped': db[fid]['status']='Completed'
-  else:
-   if c:
-    with open(fp,'ab') as f:
-     f.write(c)
-     f.flush()
-     os.fsync(f.fileno()) 
-    with db_lock: db[fid]['down']+=len(c)
- return "OK"
+@app.route('/api/p2p_poll/<fid>')
+def p2p_poll(fid):
+    with db_lock:
+        if fid not in db or db[fid]['status'] == 'Stopped': return "Stopped", 400
+        ftype = db[fid]['type']
+        
+    ret = []
+    now = time.time()
+    
+    if ftype == 'p2p':
+        if fid not in p2p_streams: return "Not Found", 404
+        stream = p2p_streams[fid]
+        with stream.lock:
+            # 1. GC Dead Active chunks
+            stale = [i for i, t in stream.active.items() if now - t > 10]
+            for i in stale:
+                del stream.active[i]
+                if i not in stream.chunks: stream.needed.add(i)
+
+            # 2. Dispatch needed chunks
+            needed_list = list(stream.needed)
+            for idx in needed_list:
+                if len(ret) >= 16: break
+                stream.needed.remove(idx)
+                stream.active[idx] = now
+                ret.append(idx)
+                
+    elif ftype == 'disk_relay':
+        if fid not in disk_streams: return "Not Found", 404
+        stream = disk_streams[fid]
+        with stream.lock:
+            # 1. GC Dead Active chunks
+            stale = [i for i, t in stream.active.items() if now - t > 10]
+            for i in stale:
+                del stream.active[i]
+                if i not in stream.written_chunks: stream.prioritized.add(i)
+
+            # 2. Answer Priority VLC Requests First
+            pri_list = sorted(list(stream.prioritized))
+            for idx in pri_list:
+                if len(ret) >= 16: break
+                stream.prioritized.remove(idx)
+                stream.active[idx] = now
+                ret.append(idx)
+            
+            # 3. Background Download (IDM Read-Ahead/Sequential)
+            if len(ret) < 16:
+                bg_list = sorted(list(stream.background))
+                for idx in bg_list:
+                    if len(ret) >= 16: break
+                    stream.background.remove(idx)
+                    stream.active[idx] = now
+                    ret.append(idx)
+    return jsonify(ret)
+
+@app.route('/api/p2p_up/<fid>/<int:idx>', methods=['POST'])
+def p2p_up(fid, idx):
+    with db_lock:
+        if fid not in db or db[fid]['status'] == 'Stopped': return "Stopped", 400
+        ftype = db[fid]['type']
+        fp = db[fid]['path']
+        
+    data = request.data
+    
+    if ftype == 'p2p':
+        if fid not in p2p_streams: return "Not Found", 404
+        stream = p2p_streams[fid]
+        with stream.lock:
+            stream.chunks[idx] = data
+            if idx in stream.active: del stream.active[idx]
+            if idx in stream.needed: stream.needed.remove(idx)
+            
+            # Strict 250 MB Limit per stream
+            if len(stream.chunks) > 250:
+                oldest = next(iter(stream.chunks))
+                del stream.chunks[oldest]
+            stream.cond.notify_all()
+        with db_lock: db[fid]['down'] += len(data)
+        
+    elif ftype == 'disk_relay':
+        if fid not in disk_streams: return "Not Found", 404
+        stream = disk_streams[fid]
+        start_byte = idx * P2P_CHUNK_SIZE
+        
+        # Secure Write Length Validation
+        expected_len = min(P2P_CHUNK_SIZE, stream.total_size - start_byte)
+        if len(data) != expected_len and stream.total_size > 0: return "Incomplete", 400
+        
+        with open(fp, 'r+b') as f:
+            f.seek(start_byte)
+            f.write(data)
+            f.flush() # Page Cache flush ensures instant VLC read availability without physical NVMe lock contention
+            
+        with stream.lock:
+            if idx in stream.active: del stream.active[idx]
+            stream.written_chunks.add(idx)
+            stream.cond.notify_all()
+            
+        with db_lock: db[fid]['down'] += len(data)
+        
+        with stream.lock:
+            if not stream.background and not stream.prioritized and not stream.active:
+                with db_lock:
+                    if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Completed'
+    return "OK"
 
 @app.route('/relay_dl/<fid>/<path:fname>', methods=['GET', 'HEAD'])
 def relay_dl(fid,fname):
@@ -752,6 +877,7 @@ def relay_dl(fid,fname):
  last_mod = time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime(f.get('start', time.time())))
  etag = f'"{fid}-{ts}"'
  mt = mimetypes.guess_type(f['name'])[0] or 'application/octet-stream'
+ disp = 'inline' if mt.startswith(('video/', 'audio/')) else 'attachment'
 
  rh = request.headers.get('Range')
  sb = 0
@@ -780,43 +906,40 @@ def relay_dl(fid,fname):
   return Response(status=200, headers=hdrs)
 
  if ftype == 'p2p':
-  with db_lock:
-   if is_range or sb > 0:
-    db[fid]['resume_offset'] = sb
-    db[fid]['down'] = sb 
-   db[fid]['status']='Transferring (P2P)'
-  
-  if fid in p2p_events: p2p_events[fid].set()
-
-  # Wait for sender to acknowledge resume and clear queue
-  if is_range or sb > 0:
-   wait_time = 0
-   while wait_time < 50:
-    with db_lock:
-     if 'resume_offset' not in db[fid]: break
-    time.sleep(0.1); wait_time += 1
+  stream = p2p_streams[fid]
+  stream.connected = True
+  with db_lock: db[fid]['status']='Transferring (P2P)'
   
   def gen_p2p():
-   bytes_to_send = (eb - sb + 1) if ts > 0 else float('inf')
-   while bytes_to_send > 0:
-    with db_lock:
-     if fid not in db or db[fid]['status']=='Stopped': break
-     if 'resume_offset' in db[fid]: break # Stop if new resume requested
-    try:
-     c = p2p_queues[fid].get(timeout=15)
-     if c == b'EOF': break
+   curr = sb
+   max_chunk = ((ts - 1) // P2P_CHUNK_SIZE) if ts > 0 else float('inf')
+   
+   while curr <= eb:
+    idx = curr // P2P_CHUNK_SIZE
+    offset = curr % P2P_CHUNK_SIZE
+    
+    with stream.lock:
+     for i in range(idx, min(idx + 16, max_chunk + 1)):
+      if i not in stream.chunks and i not in stream.active:
+       stream.needed.add(i)
+       
+     while idx not in stream.chunks:
+      with db_lock:
+       if fid not in db or db[fid]['status'] == 'Stopped': return
+      if idx not in stream.needed and idx not in stream.active:
+       stream.needed.add(idx)
+      stream.cond.wait(timeout=1.0)
+      
+     data = stream.chunks[idx]
      
-     if len(c) > bytes_to_send:
-      yield c[:bytes_to_send]
-      bytes_to_send = 0
-     else:
-      yield c
-      bytes_to_send -= len(c)
-    except queue.Empty:
-     with db_lock:
-      if fid not in db or db[fid]['status'] in ['Completed', 'Stopped']: break
+    rem_in_chunk = len(data) - offset
+    rem_in_req = eb - curr + 1
+    take = min(rem_in_chunk, rem_in_req)
+    
+    yield data[offset : offset + take]
+    curr += take
 
-  hdrs['Content-Disposition'] = f'attachment; filename="{f["name"]}"'
+  hdrs['Content-Disposition'] = f'{disp}; filename="{f["name"]}"'
   hdrs['Content-Type'] = mt
   if ts > 0:
    l = eb - sb + 1
@@ -827,32 +950,45 @@ def relay_dl(fid,fname):
   return Response(gen_p2p(), status=200, headers=hdrs)
 
  elif ftype == 'disk_relay':
-  fp=f['path']
+  stream = disk_streams.get(fid)
+  if not stream: return "Not Found", 404
+  fp = f['path']
+  stream.connected = True
+  with db_lock: db[fid]['status'] = 'Transferring (Disk Buffered)'
+  
   def gen_disk():
+   curr = sb
+   max_chunk = ((ts - 1) // P2P_CHUNK_SIZE) if ts > 0 else float('inf')
+   
    with open(fp, 'rb') as lf:
-    while True:
-     with db_lock:
-      if fid not in db or db[fid]['status'] in ['Completed','Stopped'] or os.path.getsize(fp) > sb: break
-     time.sleep(0.5)
-    
-    lf.seek(sb)
-    bytes_left = (eb - sb + 1) if ts > 0 else float('inf')
-    while bytes_left > 0:
-     chunk_size = min(STREAM_CHUNK_SIZE, bytes_left) if bytes_left != float('inf') else STREAM_CHUNK_SIZE
-     c = lf.read(chunk_size)
-     if c:
-      yield c
-      bytes_left -= len(c)
-     else:
-      with db_lock: cst = db[fid]['status']
-      if cst == 'Completed':
-       c_final = lf.read(chunk_size)
-       if c_final: yield c_final
-       break
-      elif cst == 'Stopped': break
-      else: time.sleep(0.2)
+    while curr <= eb:
+     idx = curr // P2P_CHUNK_SIZE
+     
+     with stream.lock:
+      for i in range(idx, min(idx + 16, max_chunk + 1)):
+       if i not in stream.written_chunks and i not in stream.active:
+        stream.prioritized.add(i)
+        if i in stream.background: stream.background.remove(i)
+        
+      while idx not in stream.written_chunks:
+       with db_lock:
+        if fid not in db or db[fid]['status'] == 'Stopped': return
+       if idx not in stream.active and idx not in stream.prioritized: 
+        stream.prioritized.add(idx)
+       stream.cond.wait(timeout=1.0)
+       
+     rem_in_chunk = P2P_CHUNK_SIZE - (curr % P2P_CHUNK_SIZE)
+     rem_in_req = eb - curr + 1
+     take = min(rem_in_chunk, rem_in_req)
+     
+     lf.seek(curr)
+     data = lf.read(take)
+     if data:
+      yield data
+      curr += len(data)
+     else: time.sleep(0.1)
 
-  hdrs['Content-Disposition'] = f'attachment; filename="{f["name"]}"'
+  hdrs['Content-Disposition'] = f'{disp}; filename="{f["name"]}"'
   hdrs['Content-Type'] = mt
   if ts > 0:
    l = eb - sb + 1
@@ -861,7 +997,6 @@ def relay_dl(fid,fname):
     hdrs['Content-Range'] = f'bytes {sb}-{eb}/{ts}'
     return Response(gen_disk(), status=206, headers=hdrs)
   return Response(gen_disk(), status=200, headers=hdrs)
-
 
 @app.route('/api/drive/status')
 def drive_status():
@@ -956,12 +1091,19 @@ def action(fid,act):
    if db[fid]['type'] in ['disk','multi','disk_relay']:
     try: os.remove(db[fid]['path'])
     except: pass
+   
    if db[fid]['type'] == 'p2p':
-    if fid in p2p_queues:
-     try: p2p_queues[fid].put_nowait(b'EOF')
-     except: pass
-    if fid in p2p_events: p2p_events[fid].set()
+    if fid in p2p_streams:
+     with p2p_streams[fid].lock: p2p_streams[fid].cond.notify_all()
+     p2p_streams[fid].chunks.clear() # FREE RAM INSTANTLY
+     del p2p_streams[fid]
+   elif db[fid]['type'] == 'disk_relay':
+    if fid in disk_streams:
+     with disk_streams[fid].lock: disk_streams[fid].cond.notify_all()
+     del disk_streams[fid]
+   
    del db[fid]
+ gc.collect() # Force OS to reclaim memory exactly when you click abort/delete
  return "OK"
 
 @app.route('/dl/<fid>/<path:fname>', methods=['GET', 'HEAD'])
@@ -1150,7 +1292,9 @@ wait
     html = f"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Booting Engine...</title><style>body {{ background: #0a0c10; color: #00b3ff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; }} .loader {{ border: 6px solid #14171f; border-top: 6px solid #00b3ff; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin-bottom: 20px; }} @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}</style></head><body><div class="loader"></div><h2>Allocating {w}x{h} Hardware...</h2><p style="color:#888;">Booting secure Brave Engine in Dark Mode. Automatically connecting in 4 seconds...</p><script>setTimeout(() => {{ window.location.href = "/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote"; }}, 4000);</script></body></html>"""
     return html
 
-if __name__=='__main__': app.run(host='127.0.0.1',port=8080,threaded=True)
+if __name__=='__main__': 
+    from waitress import serve
+    serve(app, host='127.0.0.1', port=8080, threads=128)
 PYTHON_EOF
 
 echo "⚙️ [6/6] Writing Default Bootloader..."
