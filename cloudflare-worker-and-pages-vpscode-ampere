@@ -1,7 +1,7 @@
 rm -f setup.sh
 cat > setup.sh << 'EOF'
 #!/bin/bash
-clear; echo "===================================================="; echo "🚀 INITIATING V107 CUSTOM (ENGINE 7 PERFECT P2P RESUME)"; echo "===================================================="
+clear; echo "===================================================="; echo "🚀 INITIATING V107 CUSTOM (ENGINE 1 VLC STREAMING FIX)"; echo "===================================================="
 
 echo "🛑 [1/6] Aggressive Purge of Old Systems..."
 sudo systemctl stop proxy desktop nginx >/dev/null 2>&1
@@ -203,11 +203,13 @@ def dl_worker(fid):
      if r2.status_code in [416, 404, 403]: break
      r2.raise_for_status()
      with open(fpath, 'ab') as out:
-      for chunk in r2.iter_content(chunk_size=CHUNK_SIZE):
+      for chunk in r2.iter_content(chunk_size=1048576): # 1MB chunks for instant streaming availability
        with db_lock:
         if db[fid]['status']=='Stopped': break
        if chunk:
         out.write(chunk)
+        out.flush()
+        os.fsync(out.fileno()) # Force immediate OS flush to disk so readers don't hit EOF artificially
         with db_lock: db[fid]['down']+=len(chunk)
      break
    except requests.exceptions.RequestException:
@@ -967,7 +969,8 @@ def download(fid,fname):
  with db_lock:
   if fid not in db or not os.path.exists(db[fid]['path']): return "404",404
   f=db[fid]; fp=f['path']; ts=f.get('total',0); st=f['status']; nm=f['name']
- mt,_=mimetypes.guess_type(nm); mt=mt or 'video/mp4'
+ mt,_=mimetypes.guess_type(nm); mt=mt or 'application/octet-stream'
+ disp = 'inline' if mt.startswith(('video/', 'audio/')) else 'attachment'
  if st=='Completed' and ts==0:
   ts=os.path.getsize(fp)
   with db_lock: db[fid]['total']=ts
@@ -976,7 +979,7 @@ def download(fid,fname):
  etag = f'"{fid}-{ts}"'
 
  if ts==0:
-  hdrs = {'Content-Type': mt, 'Content-Disposition': f'inline; filename="{nm}"'}
+  hdrs = {'Content-Type': mt, 'Content-Disposition': f'{disp}; filename="{nm}"'}
   if request.method == 'HEAD': return Response(status=200, headers=hdrs)
   def gen_unk():
    with open(fp,'rb') as lf:
@@ -995,24 +998,30 @@ def download(fid,fname):
   if m: sb=int(m.group(1)); eb=int(m.group(2)) if m.group(2) else eb
  cs=os.path.getsize(fp); l=eb-sb+1
  
- hdrs={'Content-Type':mt,'Content-Disposition':f'attachment; filename="{nm}"','Accept-Ranges':'bytes', 'ETag': etag, 'Last-Modified': last_mod}
+ hdrs={'Content-Type':mt,'Content-Disposition':f'{disp}; filename="{nm}"','Accept-Ranges':'bytes', 'ETag': etag, 'Last-Modified': last_mod}
  if ts: hdrs.update({'Content-Length':str(l),'Content-Range':f'bytes {sb}-{eb}/{ts}'})
  
  if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
 
  def gen():
   with open(fp,'rb') as lf:
-   while os.path.getsize(fp) <= sb:
+   while True:
+    if os.path.getsize(fp) > sb: break
     with db_lock: cst=db[fid]['status']
     if cst in ['Completed','Stopped'] or 'Error' in cst: break
-    time.sleep(0.5)
-   lf.seek(sb); bs=0
-   while bs<l:
-    c=lf.read(STREAM_CHUNK_SIZE)
-    if c: yield c; bs+=len(c)
+    time.sleep(0.2)
+   lf.seek(sb); bytes_read=0
+   while bytes_read < l:
+    chunk_size = min(STREAM_CHUNK_SIZE, l - bytes_read)
+    c=lf.read(chunk_size)
+    if c: 
+     yield c
+     bytes_read += len(c)
     else:
      with db_lock: cst=db[fid]['status']
-     if cst not in ['Completed','Stopped'] and 'Error' not in cst: time.sleep(0.1); lf.seek(sb+bs)
+     if cst not in ['Completed','Stopped'] and 'Error' not in cst: 
+      time.sleep(0.2)
+      lf.seek(sb+bytes_read)
      else: break
  return Response(gen(),status=206 if rh else 200,headers=hdrs)
 
