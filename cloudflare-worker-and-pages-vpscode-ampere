@@ -3,7 +3,7 @@ cat > setup.sh << 'EOF'
 #!/bin/bash
 clear
 echo "===================================================="
-echo "🚀 INITIATING V107 CUSTOM (INSTANT VLC + UNIFIED UI)"
+echo "🚀 INITIATING V110 (LIVE AUDIO TRANSCODER + NOVNC FIX)"
 echo "===================================================="
 echo ""
 echo "🔐 DASHBOARD SECURITY SETUP"
@@ -23,6 +23,7 @@ killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox flu
 
 rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
 rm -rf /root/app.py /root/start_*.sh /home/ubuntu/app.py /home/ubuntu/start_*.sh /home/ubuntu/chromium /home/ubuntu/drive_creds.json /etc/systemd/system/proxy.service /etc/systemd/system/desktop.service >/dev/null 2>&1
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null
 for p in 80 443 5900 6080 8080 8081; do fuser -k -9 $p/tcp >/dev/null 2>&1; done; sleep 1
 
 echo "🛡️ [2/6] Installing Core Dependencies..."
@@ -35,7 +36,7 @@ PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.ve
 
 apt-get install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg dbus-x11 x11-xserver-utils build-essential python3-dev unrar p7zip-full $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv >/dev/null 2>&1
 
-apt-get install -y xvfb openbox x11vnc novnc websockify fonts-liberation fonts-ubuntu autocutsel >/dev/null 2>&1
+apt-get install -y xvfb fluxbox x11vnc novnc websockify fonts-liberation fonts-ubuntu autocutsel >/dev/null 2>&1
 
 if [ ! -f /usr/share/novnc/vnc.html ] && [ -f /usr/share/novnc/vnc_lite.html ]; then
     ln -s /usr/share/novnc/vnc_lite.html /usr/share/novnc/vnc.html
@@ -79,6 +80,8 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "Upgrade";
         proxy_set_header Host $host;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
     }
 }
 NGINX_EOF
@@ -107,7 +110,7 @@ db={}; db_lock=threading.Lock(); active_procs={}
 
 global_mounted_data = None 
 
-# Global Shared Cache - Prevents 7 connections from cloning RAM logic
+# Global Shared Cache - Strict 512MB RAM Engine
 shared_drive_cache = collections.OrderedDict()
 shared_drive_lock = threading.Lock()
 
@@ -153,7 +156,7 @@ class DriveRangeFile:
         self.headers = {'Authorization': f'Bearer {access_token}'}
         self.size = size
         self.pos = 0
-        self.chunk_size = 4194304 # 4MB Base Chunk for instant metadata seeking
+        self.chunk_size = 4194304 # 4MB Base Chunk for instant seeking
         self.file_id = file_id
 
     def _get_chunk(self, chunk_idx):
@@ -179,7 +182,7 @@ class DriveRangeFile:
             
         with shared_drive_lock:
             shared_drive_cache[cache_key] = data
-            # 128 * 4MB = 512MB Strict Global RAM Limit 
+            # 128 * 4MB = 512MB Strict Global RAM Limit
             while len(shared_drive_cache) > 128:
                 shared_drive_cache.popitem(last=False)
                 
@@ -290,7 +293,10 @@ def get_drive_auth():
 
 LOGIN_HTML=r"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Restricted Area</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}.box{background:#14171f;padding:40px;border-radius:12px;border:1px solid #2d3748;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5);width:100%;max-width:350px;}input{padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;margin-bottom:20px;width:100%;box-sizing:border-box;font-size:16px;outline:none;text-align:center;}input:focus{border-color:#00b3ff;}button{padding:15px;background:#00b3ff;border:none;color:#fff;border-radius:8px;cursor:pointer;width:100%;font-size:16px;font-weight:bold;transition:0.2s;}button:hover{background:#0099cc;}h2{margin-top:0;margin-bottom:25px;}</style></head><body><div class="box"><h2>🔒 Secure Engine Master</h2><form onsubmit="event.preventDefault(); document.cookie='dash_auth='+encodeURIComponent(document.getElementById('pw').value)+'; path=/; max-age=2592000'; window.location.reload();"><input type="password" id="pw" placeholder="Enter Password" autofocus required><button type="submit">Unlock Dashboard</button></form></div></body></html>"""
 
-HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Hexa-Core Media Engine</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15;--drive:#10b981;}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:0.3s;}.status-dot-main{background:var(--success);box-shadow:0 0 8px var(--success);}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px;}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.type-drive{border-left:5px solid var(--drive)}.type-archive{border-left:5px solid #fff}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333;}.zip-item:last-child{border-bottom:none;}</style></head><body><h2><span>🚀 Unified 7-Engine Master</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot status-dot-main" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success);"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
+HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Hexa-Core Media Engine</title>
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+<style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15;--drive:#10b981;}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:0.3s;}.status-dot-main{background:var(--success);box-shadow:0 0 8px var(--success);}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px;}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.type-drive{border-left:5px solid var(--drive)}.type-archive{border-left:5px solid #fff}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333;}.zip-item:last-child{border-bottom:none;}</style></head><body><h2><span>🚀 Unified 7-Engine Master</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot status-dot-main" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success);"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
 
 <div class="engine-box" style="border-color:#10b981;">
     <div class="engine-title"><span style="color:#10b981;">📡 Engine 7: Direct Transfer (P2P RAM & Disk Relay)</span></div>
@@ -347,7 +353,7 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
 </div>
 
 <div class="engine-box" style="border-color:var(--desktop);">
-    <div class="engine-title"><span style="color:var(--desktop);">🖥️ Engine 5: Dynamic Desktop (Openbox + Clipboard Sync)</span></div>
+    <div class="engine-title"><span style="color:var(--desktop);">🖥️ Engine 5: Dynamic Desktop (Fluxbox + Chromium + noVNC)</span></div>
     <div class="input-group" style="margin-bottom:10px;">
         <input type="text" id="desktop_url" placeholder="Paste link to open in new Desktop tab (preserves existing work)...">
     </div>
@@ -369,7 +375,54 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
     </div>
 </div>
 
-<div class="file-grid" id="files" style="margin-top:20px;"></div><script>
+<div class="file-grid" id="files" style="margin-top:20px;"></div>
+
+<!-- PLYR HTML5 Transcode Player Modal -->
+<div id="video_modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:9999; justify-content:center; align-items:center; flex-direction:column;">
+    <div style="width:95%; max-width:1200px; background:#14171f; border-radius:10px; padding:20px; border:1px solid #00b3ff; box-shadow: 0 10px 40px rgba(0,0,0,0.8);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+            <h3 id="video_title" style="margin:0; color:#00b3ff; word-break:break-all;">▶️ Web Player Active</h3>
+            <button onclick="closeVideo()" style="background:#ef4444; padding:8px 15px; margin:0; border:none; border-radius:5px; color:#fff; cursor:pointer; font-weight:bold;">❌ Close Player</button>
+        </div>
+        
+        <video id="plyr_video" playsinline controls style="width:100%; border-radius:8px;">
+            <source id="plyr_source" src="" type="video/mp4" />
+        </video>
+        
+        <div style="margin-top:15px; padding:10px; background:#1e2330; border-radius:6px; border-left:4px solid var(--warn); font-size:13px; color:#ccc;">
+            <b>⚡ Live Audio Transcoder Active:</b> The VPS is dynamically transcoding Dolby/DTS to AAC so your browser has sound. Because this is a live pipe, <b>seeking is disabled in the web player</b>. If you need perfect seeking, close this overlay, click "Copy Link", and paste it into VLC!
+        </div>
+    </div>
+</div>
+
+<script>
+const plyrPlayer = new Plyr('#plyr_video', {
+    controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
+    settings: ['captions', 'quality', 'speed']
+});
+
+function playVideo(url, name) {
+    document.getElementById('video_title').innerText = '▶️ ' + decodeURIComponent(name);
+    
+    // Route through the local VPS ffmpeg transcode pipe for guaranteed audio!
+    let streamUrl = '/web_stream?url=' + encodeURIComponent(url);
+    
+    plyrPlayer.source = {
+        type: 'video',
+        sources: [
+            { src: streamUrl, type: 'video/mp4' } 
+        ]
+    };
+    
+    document.getElementById('video_modal').style.display = 'flex';
+    plyrPlayer.play();
+}
+
+function closeVideo() {
+    plyrPlayer.stop();
+    document.getElementById('video_modal').style.display = 'none';
+}
+
 function checkDriveStatus(){
     fetch('/api/drive/status').then(r=>r.json()).then(d=>{
         if(d.connected){
@@ -418,11 +471,13 @@ function renderArchiveBox(d) {
     d.files.forEach(f => {
         let mb = (f.size / (1024*1024)).toFixed(2) + ' MB';
         let dlLink = window.location.origin + f.url;
+        let safeName = encodeURIComponent(f.name);
         html += `<div class="zip-item">
                     <div style="flex:1; word-break:break-all; padding-right:10px;">📄 ${f.name} <span style="color:#888;font-size:12px;">(${mb})</span></div>
                     <div style="display:flex; gap:5px;">
                         <input type="text" id="zl_${f.b64}" value="${dlLink}" readonly onclick="this.select()" style="margin:0; padding:5px; font-size:12px; width:220px;">
-                        <button onclick="copyToBox('zl_${f.b64}')" style="padding:5px 15px; margin:0; font-size:12px; background:var(--accent); color:#fff;">Copy Link</button>
+                        <button onclick="copyToBox('zl_${f.b64}')" style="padding:5px 15px; margin:0; font-size:12px; background:var(--accent); color:#fff;">Copy</button>
+                        <button onclick="playVideo('${dlLink}', '${safeName}')" style="padding:5px 15px; margin:0; font-size:12px; background:var(--purple); color:#fff;">▶️ Play</button>
                     </div>
                  </div>`;
     });
@@ -495,7 +550,7 @@ async function startGbpsP2P(fid, file) {
     let concurrencyLimit = 16; 
     let activeUploads = new Set();
     let running = true;
-    let P2P_CHUNK_SIZE = 1048576; // 1MB Chunks for perfect VLC seeking response
+    let P2P_CHUNK_SIZE = 1048576; 
 
     let loop = setInterval(async () => {
         if(!running) { clearInterval(loop); return; }
@@ -539,7 +594,7 @@ async function uploadP2PChunk(fid, file, idx, chunkSize) {
     } catch(e) {}
 }
 
-function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';if(!window.fSpeeds) window.fSpeeds={};let now=Date.now();data.files.forEach(f=>{let fdown=f.down||0;let ftotal=f.total||0;if(!window.fSpeeds[f.id]) window.fSpeeds[f.id]={d:fdown,t:now,s:0};let diff=fdown-window.fSpeeds[f.id].d;let secs=(now-window.fSpeeds[f.id].t)/1000;let spd=window.fSpeeds[f.id].s;if(secs>=1.0){spd=diff>0?(diff/secs/1048576):0;window.fSpeeds[f.id].s=spd;window.fSpeeds[f.id].d=fdown;window.fSpeeds[f.id].t=now;}let spdStr=spd>0?' &nbsp;⚡ '+spd.toFixed(1)+' MB/s':'';let realDown=ftotal>0?Math.min(fdown,ftotal):fdown;let pctStr=ftotal?Math.min(100,Math.round((realDown/ftotal)*100))+'%':'Live';let mb=(realDown/(1024*1024)).toFixed(1);let totStr=ftotal?(ftotal/(1024*1024)).toFixed(1):'∞';let progBar=ftotal?`<progress value="${realDown}" max="${ftotal}"></progress>`:`<progress></progress>`;if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Transferred: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Download Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Download Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='archive_pipe'){html+=`<div class="file-card type-archive"><div class="file-name">📦 [RAM CACHE STREAM] ${f.name}</div><div class="file-status">[${f.status}] - Flow: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Close Active Link</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Output Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE RAM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Proxy Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
+function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';if(!window.fSpeeds) window.fSpeeds={};let now=Date.now();data.files.forEach(f=>{let fdown=f.down||0;let ftotal=f.total||0;if(!window.fSpeeds[f.id]) window.fSpeeds[f.id]={d:fdown,t:now,s:0};let diff=fdown-window.fSpeeds[f.id].d;let secs=(now-window.fSpeeds[f.id].t)/1000;let spd=window.fSpeeds[f.id].s;if(secs>=1.0){spd=diff>0?(diff/secs/1048576):0;window.fSpeeds[f.id].s=spd;window.fSpeeds[f.id].d=fdown;window.fSpeeds[f.id].t=now;}let spdStr=spd>0?' &nbsp;⚡ '+spd.toFixed(1)+' MB/s':'';let realDown=ftotal>0?Math.min(fdown,ftotal):fdown;let pctStr=ftotal?Math.min(100,Math.round((realDown/ftotal)*100))+'%':'Live';let mb=(realDown/(1024*1024)).toFixed(1);let totStr=ftotal?(ftotal/(1024*1024)).toFixed(1):'∞';let progBar=ftotal?`<progress value="${realDown}" max="${ftotal}"></progress>`:`<progress></progress>`;let safeName=encodeURIComponent(f.name);if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Transferred: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${proxyDlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='archive_pipe'){html+=`<div class="file-card type-archive"><div class="file-name">📦 [RAM CACHE STREAM] ${f.name}</div><div class="file-status">[${f.status}] - Flow: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Close Active Link</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${swarmDlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Output Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${proxyDlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE RAM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${proxyDlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
 
 @app.route('/')
 def index():
@@ -552,6 +607,44 @@ def index():
         resp = Response(render_template_string(HTML))
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     return resp
+
+@app.route('/web_stream')
+def web_stream():
+    # Capture requested internal download URL
+    target_url = request.args.get('url')
+    if not target_url: return "No URL", 400
+    
+    # Reroute to blazing fast 127.0.0.1 local socket to fetch file internally
+    parsed = urllib.parse.urlparse(target_url)
+    local_url = f"http://127.0.0.1:8080{parsed.path}"
+    if parsed.query: local_url += f"?{parsed.query}"
+    
+    # FFMPEG LIVE TRANSCODER: Direct-copy video, transcode Dolby/DTS to AAC audio, output as fragmented MP4
+    cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error',
+        '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+        '-i', local_url,
+        '-c:v', 'copy',
+        '-c:a', 'aac', '-ac', '2', '-b:a', '256k',
+        '-movflags', 'frag_keyframe+empty_moov+faststart',
+        '-f', 'mp4',
+        'pipe:1'
+    ]
+    
+    def generate():
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            while True:
+                data = proc.stdout.read(1048576) # Blast via 1MB chunks
+                if not data: break
+                yield data
+        finally:
+            proc.kill()
+            
+    return Response(generate(), mimetype='video/mp4', headers={
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*'
+    })
 
 @app.route('/api/get_archive_mount')
 def get_archive_mount():
@@ -695,7 +788,6 @@ def drive_archive_dl(file_id, b64_name, filename):
 
         length_to_send = end_byte - start_byte + 1 if file_size > 0 else 0
 
-        # DETERMINISTIC UI ID: Merges all VLC connections into a single box!
         fid = hashlib.md5(f"archive_{file_id}_{b64_name}".encode()).hexdigest()[:8]
         
         with db_lock:
@@ -713,24 +805,21 @@ def drive_archive_dl(file_id, b64_name, filename):
                 with zipfile.ZipFile(drf) as zf:
                     with zf.open(internal_filename) as f:
                         yield from stream_extracted_file(f, start_byte, length_to_send, fid)
-            except Exception as e:
-                pass
+            except Exception as e: pass
 
         def generate_rar():
             try:
                 with rarfile.RarFile(drf) as rf:
                     with rf.open(internal_filename) as f:
                         yield from stream_extracted_file(f, start_byte, length_to_send, fid)
-            except Exception as e:
-                pass
+            except Exception as e: pass
                     
         def generate_7z():
             try:
                 with py7zr.SevenZipFile(drf, mode='r') as szf:
                     f = szf.read([internal_filename])[internal_filename]
                     yield from stream_extracted_file(f, start_byte, length_to_send, fid)
-            except Exception as e:
-                pass
+            except Exception as e: pass
 
         def generate_tar():
             try:
@@ -739,8 +828,7 @@ def drive_archive_dl(file_id, b64_name, filename):
                     f = tf.extractfile(internal_filename)
                     if not f: return
                     yield from stream_extracted_file(f, start_byte, length_to_send, fid)
-            except Exception as e:
-                pass
+            except Exception as e: pass
 
         hdrs = {
             'Content-Type': mt,
@@ -760,8 +848,7 @@ def drive_archive_dl(file_id, b64_name, filename):
         elif ext == '7z': return Response(generate_7z(), status=206 if is_range else 200, headers=hdrs)
         else: return Response(generate_tar(), status=206 if is_range else 200, headers=hdrs)
 
-    except Exception as e:
-        return str(e), 500
+    except Exception as e: return str(e), 500
 
 @app.route('/api/upload_init', methods=['POST'])
 def upload_init():
@@ -769,8 +856,7 @@ def upload_init():
  initial_status = 'Waiting for Recipient...' if t == 'p2p' else 'Sparse File Initialized - Waiting for Recipient...'
  with db_lock: db[fid]={'id':fid,'url':'','name':nm.replace('"',''),'path':os.path.join(DL_DIR,f"{fid}_{nm}"),'down':0,'total':sz,'status':initial_status,'start':time.time(),'type':t}
  
- if t=='p2p':
-     p2p_streams[fid] = P2PStream(fid, sz)
+ if t=='p2p': p2p_streams[fid] = P2PStream(fid, sz)
  elif t=='disk_relay':
      disk_streams[fid] = DiskStream(fid, sz)
      with open(db[fid]['path'], 'wb') as f: f.truncate(sz) 
@@ -1172,9 +1258,15 @@ def action(fid,act):
 def proxy_stream(fid):
  with db_lock:
   if fid not in db or db[fid]['type']!='ram': return "404",404
-  u=db[fid]['url']
+  u=db[fid]['url']; n=db[fid]['name']
+ mt,_=mimetypes.guess_type(n); mt=mt or 'application/octet-stream'
+ 
  rh={k:v for k,v in request.headers.items() if k.lower()=='range'}; rh['User-Agent']=SPOOF_AGENT
- try: r=requests.get(u,headers=rh,stream=True,timeout=10); return Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c),status=r.status_code,headers={k:v for k,v in r.headers.items() if k.lower() in ['content-length','content-range','content-type','accept-ranges']})
+ try: 
+  r=requests.get(u,headers=rh,stream=True,timeout=10)
+  hdrs = {k:v for k,v in r.headers.items() if k.lower() in ['content-length','content-range','accept-ranges']}
+  hdrs['Content-Type'] = mt
+  return Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c),status=r.status_code,headers=hdrs)
  except: return "Error",500
 
 @app.route('/proxy_dl/<fid>/<path:fname>')
@@ -1182,8 +1274,16 @@ def proxy_dl(fid,fname):
  with db_lock:
   if fid not in db or db[fid]['type']!='ram': return "404",404
   u=db[fid]['url']; n=db[fid]['name']
+ mt,_=mimetypes.guess_type(n); mt=mt or 'application/octet-stream'
+ 
  rh={k:v for k,v in request.headers.items() if k.lower()=='range'}; rh['User-Agent']=SPOOF_AGENT
- try: r=requests.get(u,headers=rh,stream=True,timeout=10); resp=Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c),status=r.status_code,headers={k:v for k,v in r.headers.items() if k.lower() in ['content-length','content-range','content-type','accept-ranges']}); resp.headers['Content-Disposition']=f'attachment; filename="{n}"'; return resp
+ try: 
+  r=requests.get(u,headers=rh,stream=True,timeout=10)
+  hdrs = {k:v for k,v in r.headers.items() if k.lower() in ['content-length','content-range','accept-ranges']}
+  hdrs['Content-Type'] = mt
+  resp=Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c),status=r.status_code,headers=hdrs)
+  resp.headers['Content-Disposition']=f'attachment; filename="{n}"'
+  return resp
  except: return "Error",500
 
 @app.route('/swarm_dl/<fid>/<path:fname>')
@@ -1191,7 +1291,8 @@ def swarm_dl(fid,fname):
  with db_lock:
   if fid not in db or db[fid]['type']!='swarm': return "404",404
   u=db[fid]['url']; ts=db[fid].get('total',0); nm=db[fid]['name']
- mt = 'application/octet-stream' 
+ mt,_ = mimetypes.guess_type(nm); mt=mt or 'application/octet-stream'
+ 
  rh=request.headers.get('Range',None); user_start=0; user_end=ts-1 if ts else None
  if rh and ts:
   m=re.search(r'bytes=(\d+)-(\d*)',rh)
@@ -1259,28 +1360,32 @@ def launch_desktop():
     target_url = request.args.get('url', '').strip()
     try: w, h = res.split('x')
     except: w, h = '1366', '768'
-    
-    is_active = subprocess.run("systemctl is-active desktop", shell=True, capture_output=True).stdout.decode().strip() == "active"
-    
-    if target_url and is_active:
-        cmd = f'DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000 /usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --user-data-dir=/home/ubuntu/brave-data "{target_url}" &'
-        subprocess.Popen(cmd, shell=True)
-        return redirect("/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote")
 
     start_url = target_url if target_url else "https://www.google.com"
     
     script = f'''#!/bin/bash
 export DISPLAY=:0
 export XDG_RUNTIME_DIR=/run/user/1000
+
+# Aggressive clean up to permanently fix VNC connection lock
+pkill -9 -f "Xvfb"
+pkill -9 -f "x11vnc"
+pkill -9 -f "websockify"
+pkill -9 -f "fluxbox"
+pkill -9 -f "brave"
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null
+
 Xvfb :0 -screen 0 {w}x{h}x24 -ac -nolisten tcp &
-sleep 1
+sleep 2
+
 xhost +
-openbox &
+fluxbox &
 autocutsel -fork &
 autocutsel -selection PRIMARY -fork &
-x11vnc -display :0 -nopw -listen localhost -xkb -ncache 10 -ncache_cr -forever -bg -q
-websockify --web /usr/share/novnc 6080 localhost:5900 &
-sleep 1
+x11vnc -display :0 -nopw -listen 127.0.0.1 -xkb -ncache 10 -ncache_cr -forever -shared -bg -q
+websockify --web /usr/share/novnc 6080 127.0.0.1:5900 &
+sleep 2
+
 mkdir -p /home/ubuntu/brave-data
 /usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --disable-software-rasterizer --disable-gpu --force-dark-mode --enable-features=WebUIDarkMode --user-data-dir=/home/ubuntu/brave-data --window-size={w},{h} --start-maximized "{start_url}" &
 wait
@@ -1292,7 +1397,8 @@ wait
         subprocess.run("sudo systemctl restart desktop", shell=True)
     threading.Thread(target=restart_bg).start()
     
-    html = f"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Booting Engine...</title><style>body {{ background: #0a0c10; color: #00b3ff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; }} .loader {{ border: 6px solid #14171f; border-top: 6px solid #00b3ff; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin-bottom: 20px; }} @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}</style></head><body><div class="loader"></div><h2>Allocating {w}x{h} Hardware...</h2><p style="color:#888;">Booting secure Brave Engine in Dark Mode. Automatically connecting in 4 seconds...</p><script>setTimeout(() => {{ window.location.href = "/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote"; }}, 4000);</script></body></html>"""
+    # Extended 6-second wait time to ensure Websockify binds perfectly
+    html = f"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Booting Engine...</title><style>body {{ background: #0a0c10; color: #00b3ff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; }} .loader {{ border: 6px solid #14171f; border-top: 6px solid #00b3ff; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin-bottom: 20px; }} @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}</style></head><body><div class="loader"></div><h2>Allocating {w}x{h} Hardware...</h2><p style="color:#888;">Booting secure Brave Engine in Dark Mode. Syncing WebSockets in 6 seconds...</p><script>setTimeout(() => {{ window.location.href = "/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote"; }}, 6000);</script></body></html>"""
     return html
 
 if __name__=='__main__': 
@@ -1304,16 +1410,24 @@ echo "⚙️ [6/6] Writing Default Bootloader..."
 cat > /home/ubuntu/start_desktop.sh << 'DESKTOP_EOF'
 #!/bin/bash
 export DISPLAY=:0
+export XDG_RUNTIME_DIR=/run/user/1000
+
+pkill -9 -f "Xvfb"
+pkill -9 -f "x11vnc"
+pkill -9 -f "websockify"
+pkill -9 -f "fluxbox"
+pkill -9 -f "brave"
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null
 
 Xvfb :0 -screen 0 1366x768x24 -ac -nolisten tcp &
 sleep 2
 
 xhost +
-openbox &
+fluxbox &
 autocutsel -fork &
 autocutsel -selection PRIMARY -fork &
-x11vnc -display :0 -nopw -listen localhost -xkb -ncache 10 -ncache_cr -forever -bg -q
-websockify --web /usr/share/novnc 6080 localhost:5900 &
+x11vnc -display :0 -nopw -listen 127.0.0.1 -xkb -ncache 10 -ncache_cr -forever -shared -bg -q
+websockify --web /usr/share/novnc 6080 127.0.0.1:5900 &
 sleep 2
 
 mkdir -p /home/ubuntu/brave-data
@@ -1359,7 +1473,7 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 IP=$(curl -s -m 5 -4 icanhazip.com || curl -s -m 5 -4 ifconfig.me || curl -s -m 5 -4 api.ipify.org || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V107 CUSTOM DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V110 CUSTOM DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
