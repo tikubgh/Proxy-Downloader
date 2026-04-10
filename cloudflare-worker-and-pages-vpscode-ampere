@@ -3,7 +3,7 @@ cat > setup.sh << 'EOF'
 #!/bin/bash
 clear
 echo "===================================================="
-echo "🚀 INITIATING V116 (VLC DYNAMIC CHUNK PRIORITY FIX)"
+echo "🚀 INITIATING V117 (ENGINE 1 HYBRID PROXY STREAM FIX)"
 echo "===================================================="
 echo ""
 echo "🔐 DASHBOARD SECURITY SETUP"
@@ -1213,6 +1213,7 @@ def download(fid,fname):
      cst = db[fid]['status']
      ftype = db[fid]['type']
      written = db[fid].get('written', set())
+     src_url = db[fid].get('url')
     
     if cst in ['Completed', 'Stopped'] or 'Error' in cst:
      c = lf.read(min(STREAM_CHUNK_SIZE, l - bytes_read))
@@ -1233,7 +1234,6 @@ def download(fid,fname):
      if chunk_start in written: 
       can_read = True
      else:
-      # CRITICAL FIX: If VLC asks for a chunk that isn't ready, instantly prioritize it!
       with db_lock:
        if 'priority' in db[fid]: db[fid]['priority'].add(chunk_idx)
     else:
@@ -1244,6 +1244,23 @@ def download(fid,fname):
      if c:
       yield c
       bytes_read += len(c)
+      continue
+    elif ftype in ['disk', 'drive_swarm'] and src_url:
+     req_size = min(1048576, l - bytes_read)
+     success_proxy = False
+     try:
+      ph = HEADERS.copy()
+      ph['Range'] = f'bytes={curr_pos}-{curr_pos + req_size - 1}'
+      with requests.get(src_url, headers=ph, timeout=10, stream=True) as pr:
+       if pr.status_code == 206:
+        for chunk in pr.iter_content(chunk_size=STREAM_CHUNK_SIZE):
+         if chunk:
+          yield chunk
+          bytes_read += len(chunk)
+          success_proxy = True
+     except: pass
+     if success_proxy:
+      lf.seek(sb + bytes_read)
       continue
       
     time.sleep(0.5)
@@ -1282,7 +1299,6 @@ def update_file_metadata(fid, r):
                 old_path = db[fid]['path']
                 new_path = os.path.join(DL_DIR, f"{fid}_{safe_name}")
                 db[fid]['path'] = new_path
-                # Rename sparse file if it was pre-allocated
                 if os.path.exists(old_path) and old_path != new_path:
                     os.rename(old_path, new_path)
 
@@ -1843,7 +1859,7 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 IP=$(curl -s -m 5 -4 icanhazip.com || curl -s -m 5 -4 ifconfig.me || curl -s -m 5 -4 api.ipify.org || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V116 CUSTOM DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V117 CUSTOM DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
