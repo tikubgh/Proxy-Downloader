@@ -3,12 +3,16 @@ cat > setup.sh << 'EOF'
 #!/bin/bash
 clear
 echo "===================================================="
-echo "🚀 INITIATING V117 (ENGINE 1 HYBRID PROXY STREAM FIX)"
+echo "🚀 INITIATING MEDIA ENGINE & NATIVE XRDP DESKTOP"
 echo "===================================================="
 echo ""
-echo "🔐 DASHBOARD SECURITY SETUP"
+echo "🔐 DASHBOARD & RDP SECURITY SETUP"
 read -s -p "Create a Password to protect your Web Dashboard: " DASH_PASS </dev/tty
-echo -e "\n✅ Password accepted. Proceeding with installation..."
+echo -e "\n✅ Dashboard password accepted."
+
+# Automatically generate a secure 10-character RDP password
+RDP_PASS=$(tr -dc 'A-Za-z0-9!@#%^&*' </dev/urandom | head -c 10)
+echo "✅ Generated secure RDP Password automatically."
 echo "===================================================="
 sleep 1
 
@@ -25,37 +29,35 @@ else
 fi
 
 echo "🛑 [1/6] Aggressive Purge of Old Systems..."
-sudo systemctl stop proxy desktop nginx >/dev/null 2>&1
-sudo systemctl disable proxy desktop nginx >/dev/null 2>&1
+sudo systemctl stop proxy desktop nginx xrdp >/dev/null 2>&1
+sudo systemctl disable proxy desktop nginx xrdp >/dev/null 2>&1
 
-sudo apt-get purge -y nginx nginx-common nginx-core snapd chromium-browser caddy cloudflared apache2 >/dev/null 2>&1
+sudo apt-get purge -y nginx nginx-common nginx-core snapd chromium-browser caddy cloudflared apache2 xvfb fluxbox x11vnc novnc websockify xrdp xfce4 xfce4-goodies >/dev/null 2>&1
 sudo apt-get autoremove -y >/dev/null 2>&1
 
-killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox fluxbox brave brave-browser chrome chromium dbus-daemon autocutsel >/dev/null 2>&1
+killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox fluxbox brave brave-browser chrome chromium dbus-daemon autocutsel xrdp >/dev/null 2>&1
 
 rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
 rm -rf /root/app.py /root/start_*.sh /home/ubuntu/app.py /home/ubuntu/start_*.sh /home/ubuntu/chromium /home/ubuntu/drive_creds.json /etc/systemd/system/proxy.service /etc/systemd/system/desktop.service >/dev/null 2>&1
-rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null
-for p in 80 443 5900 6080 8080 8081; do fuser -k -9 $p/tcp >/dev/null 2>&1; done; sleep 1
+for p in 80 443 3389 5900 6080 8080 8081; do fuser -k -9 $p/tcp >/dev/null 2>&1; done; sleep 1
 
-echo "🛡️ [2/6] Installing Core Dependencies..."
+echo "🛡️ [2/6] Installing Core Dependencies & Desktop Environment..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y -qq >/dev/null 2>&1
 
+# Fix timezone prompt hanging the XRDP installation
+sudo ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
+sudo dpkg-reconfigure --frontend noninteractive tzdata >/dev/null 2>&1
+
+apt-get update -y -qq >/dev/null 2>&1
 sudo apt-get -o Dpkg::Options::="--force-confmiss" install --reinstall -y nginx nginx-common nginx-core >/dev/null 2>&1
 
 PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")')
 
-apt-get install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg dbus-x11 x11-xserver-utils build-essential python3-dev unrar p7zip-full $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv >/dev/null 2>&1
-
-apt-get install -y xvfb fluxbox x11vnc novnc websockify fonts-liberation fonts-ubuntu autocutsel >/dev/null 2>&1
-
-if [ ! -f /usr/share/novnc/vnc.html ] && [ -f /usr/share/novnc/vnc_lite.html ]; then
-    ln -s /usr/share/novnc/vnc_lite.html /usr/share/novnc/vnc.html
-fi
+# Install Python, FFmpeg, and Linux Desktop (XFCE4 + XRDP + Firefox)
+sudo apt-get install -y -qq python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg build-essential python3-dev unrar p7zip-full $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv xrdp xfce4 xfce4-goodies dbus-x11 x11-xserver-utils firefox >/dev/null 2>&1
 
 ufw --force reset >/dev/null 2>&1; ufw default deny incoming >/dev/null 2>&1; ufw default allow outgoing >/dev/null 2>&1
-for p in 22 80; do ufw allow $p/tcp >/dev/null 2>&1; sudo iptables -I INPUT 1 -p tcp --dport $p -j ACCEPT; done
+for p in 22 80 3389; do ufw allow $p/tcp >/dev/null 2>&1; sudo iptables -I INPUT 1 -p tcp --dport $p -j ACCEPT; done
 ufw --force enable >/dev/null 2>&1; sudo netfilter-persistent save >/dev/null 2>&1
 
 echo "🦁 [3/6] Fetching Native ARM64 Brave (Chromium Engine)..."
@@ -64,7 +66,41 @@ echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] http
 sudo apt-get update -y -qq >/dev/null 2>&1
 sudo apt-get install -y brave-browser >/dev/null 2>&1
 
-echo "🔀 [4/6] Configuring Nginx Port 80 Switchboard..."
+echo "🖥️ [4/6] Configuring Native Windows RDP (xrdp)..."
+echo "ubuntu:$RDP_PASS" | sudo chpasswd
+sudo usermod -aG ssl-cert xrdp >/dev/null 2>&1
+echo xfce4-session > /home/ubuntu/.xsession
+chown ubuntu:ubuntu /home/ubuntu/.xsession
+
+# Flawless XRDP execution script injection
+cat << 'STARTWM' | sudo tee /etc/xrdp/startwm.sh > /dev/null
+#!/bin/sh
+if [ -r /etc/default/locale ]; then
+  . /etc/default/locale
+  export LANG LANGUAGE
+fi
+export XDG_SESSION_DESKTOP=xfce
+export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
+export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xdg
+exec startxfce4
+STARTWM
+sudo chmod +x /etc/xrdp/startwm.sh
+
+# Prevent Polkit Color Manager crash on remote login
+mkdir -p /etc/polkit-1/localauthority/50-local.d/
+cat << 'POLKIT' | sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla > /dev/null
+[Allow Colord all Users]
+Identity=unix-user:*
+Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-profile
+ResultAny=no
+ResultInactive=no
+ResultActive=yes
+POLKIT
+
+sudo systemctl enable xrdp >/dev/null 2>&1
+sudo systemctl restart xrdp >/dev/null 2>&1
+
+echo "🔀 [5/6] Configuring Nginx Port 80 Switchboard..."
 mkdir -p /etc/nginx/sites-available
 mkdir -p /etc/nginx/sites-enabled
 
@@ -85,29 +121,17 @@ server {
         proxy_connect_timeout 86400;
         proxy_send_timeout 86400;
     }
-
-    location /novnc/ {
-        proxy_pass http://127.0.0.1:6080/;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
-        proxy_set_header Host $host;
-        proxy_read_timeout 86400;
-        proxy_send_timeout 86400;
-    }
 }
 NGINX_EOF
 ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 systemctl restart nginx >/dev/null 2>&1
 
-echo "🖥️ [5/6] Setting up Server-Side Vault Backend..."
+echo "⚡ [6/6] Setting up Server-Side Vault Backend..."
 mkdir -p /home/ubuntu/downloads
 echo "$DASH_PASS" > /home/ubuntu/.dash_pass
 rm -rf /home/ubuntu/venv
 python3 -m venv /home/ubuntu/venv >/dev/null 2>&1 || { python3 -m venv --without-pip /home/ubuntu/venv && curl -sS https://bootstrap.pypa.io/get-pip.py | /home/ubuntu/venv/bin/python >/dev/null 2>&1; }
 /home/ubuntu/venv/bin/pip install flask requests psutil curl_cffi waitress rarfile py7zr >/dev/null 2>&1
-
-echo "ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart desktop, /usr/bin/systemctl restart desktop" | sudo tee /etc/sudoers.d/desktop-restart >/dev/null
 
 cat > /home/ubuntu/app.py << 'PYTHON_EOF'
 import os,time,uuid,threading,requests,subprocess,shutil,re,queue,mimetypes,concurrent.futures,hashlib,json,gc,zipfile,tarfile,base64,collections; from flask import Flask,jsonify,render_template_string,request,send_file,Response,redirect; import psutil; import urllib.parse
@@ -253,6 +277,11 @@ def update_telemetry():
   except: pass
 threading.Thread(target=update_telemetry,daemon=True).start()
 
+# --- HLS ENGINE VARIABLES ---
+HLS_DIR = os.path.join(DL_DIR, "hls_cache")
+os.makedirs(HLS_DIR, exist_ok=True)
+hls_procs = {}
+
 def cleaner():
  while True:
   time.sleep(3600); now=time.time()
@@ -271,6 +300,19 @@ def cleaner():
      p2p_streams[fid].chunks.clear(); del p2p_streams[fid]
    for fid in list(disk_streams.keys()):
     if fid not in db: del disk_streams[fid]
+    
+  # Cleanup stale HLS transcodes older than 24 hours
+  try:
+      for d in os.listdir(HLS_DIR):
+          dir_path = os.path.join(HLS_DIR, d)
+          if os.path.isdir(dir_path):
+              if now - os.path.getmtime(dir_path) > 86400:
+                  if d in hls_procs:
+                      try: hls_procs[d].kill()
+                      except: pass
+                      del hls_procs[d]
+                  shutil.rmtree(dir_path, ignore_errors=True)
+  except: pass
   gc.collect() 
 threading.Thread(target=cleaner,daemon=True).start()
 
@@ -304,10 +346,11 @@ def get_drive_auth():
 
 LOGIN_HTML=r"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Restricted Area</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}.box{background:#14171f;padding:40px;border-radius:12px;border:1px solid #2d3748;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5);width:100%;max-width:350px;}input{padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;margin-bottom:20px;width:100%;box-sizing:border-box;font-size:16px;outline:none;text-align:center;}input:focus{border-color:#00b3ff;}button{padding:15px;background:#00b3ff;border:none;color:#fff;border-radius:8px;cursor:pointer;width:100%;font-size:16px;font-weight:bold;transition:0.2s;}button:hover{background:#0099cc;}h2{margin-top:0;margin-bottom:25px;}</style></head><body><div class="box"><h2>🔒 Secure Engine Master</h2><form onsubmit="event.preventDefault(); document.cookie='dash_auth='+encodeURIComponent(document.getElementById('pw').value)+'; path=/; max-age=2592000'; window.location.reload();"><input type="password" id="pw" placeholder="Enter Password" autofocus required><button type="submit">Unlock Dashboard</button></form></div></body></html>"""
 
-HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Hexa-Core Media Engine</title>
+HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Media Engine Dashboard</title>
 <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
 <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
-<style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--desktop:#facc15;--drive:#10b981;}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:0.3s;}.status-dot-main{background:var(--success);box-shadow:0 0 8px var(--success);}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px;}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.type-drive{border-left:5px solid var(--drive)}.type-archive{border-left:5px solid #fff}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333;}.zip-item:last-child{border-bottom:none;}</style></head><body><h2><span>🚀 Unified 7-Engine Master</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot status-dot-main" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success);"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--drive:#10b981;}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:0.3s;}.status-dot-main{background:var(--success);box-shadow:0 0 8px var(--success);}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px;}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.type-drive{border-left:5px solid var(--drive)}.type-archive{border-left:5px solid #fff}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333;}.zip-item:last-child{border-bottom:none;}</style></head><body><h2><span>🚀 Unified 6-Engine Master</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot status-dot-main" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success);"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
 
 <div class="engine-box" style="border-color:#10b981;">
     <div class="engine-title"><span style="color:#10b981;">📡 Engine 7: Direct Transfer (P2P RAM & Disk Relay)</span></div>
@@ -363,32 +406,9 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
     <div id="zip_contents" style="margin-top:10px; display:none; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"></div>
 </div>
 
-<div class="engine-box" style="border-color:var(--desktop);">
-    <div class="engine-title"><span style="color:var(--desktop);">🖥️ Engine 5: Dynamic Desktop (Fluxbox + Chromium + noVNC)</span></div>
-    <div class="input-group" style="margin-bottom:10px;">
-        <input type="text" id="desktop_url" placeholder="Paste link to open in new Desktop tab (preserves existing work)...">
-    </div>
-    <div class="input-group" style="margin-bottom:0;">
-        <select id="desk_res" style="max-width: 250px;">
-            <option value="1366x768" selected>1366 x 768 (Default)</option>
-            <option value="1280x768">1280 x 768</option>
-            <option value="1280x1024">1280 x 1024</option>
-            <option value="1400x1050">1400 x 1050</option>
-            <option value="1440x768">1440 x 768</option>
-            <option value="1440x900">1440 x 900</option>
-            <option value="1600x900">1600 x 900</option>
-            <option value="1680x768">1680 x 768</option>
-            <option value="1680x1050">1680 x 1050</option>
-            <option value="1920x768">1920 x 768</option>
-            <option value="1920x1080">1920 x 1080</option>
-        </select>
-        <button onclick="launchDynamicDesktop()" style="background:var(--desktop);color:#000;flex:1;">Launch / Open Link</button>
-    </div>
-</div>
-
 <div class="file-grid" id="files" style="margin-top:20px;"></div>
 
-<!-- PLYR HTML5 Transcode Player Modal -->
+<!-- PLYR HTML5 Web Player Modal -->
 <div id="video_modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:9999; justify-content:center; align-items:center; flex-direction:column;">
     <div style="width:95%; max-width:1200px; background:#14171f; border-radius:10px; padding:20px; border:1px solid #00b3ff; box-shadow: 0 10px 40px rgba(0,0,0,0.8);">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
@@ -397,11 +417,9 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
         </div>
         
         <video id="plyr_video" playsinline controls style="width:100%; border-radius:8px;">
-            <source id="plyr_source" src="" type="video/mp4" />
         </video>
         
-        <div style="margin-top:15px; padding:10px; background:#1e2330; border-radius:6px; border-left:4px solid var(--warn); font-size:13px; color:#ccc;">
-            <b>⚡ Live Audio Transcoder Active:</b> The VPS is dynamically transcoding Dolby/DTS to AAC so your browser has sound. Because this is a live pipe, <b>seeking is disabled in the web player</b>. If you need perfect seeking, close this overlay, click "Copy Link", and paste it into VLC!
+        <div id="transcode_warning" style="margin-top:15px; padding:10px; background:#1e2330; border-radius:6px; border-left:4px solid var(--warn); font-size:13px; color:#ccc;">
         </div>
     </div>
 </div>
@@ -414,22 +432,44 @@ const plyrPlayer = new Plyr('#plyr_video', {
 
 function playVideo(url, name) {
     document.getElementById('video_title').innerText = '▶️ ' + decodeURIComponent(name);
-    
-    let streamUrl = '/web_stream?url=' + encodeURIComponent(url);
-    
-    plyrPlayer.source = {
-        type: 'video',
-        sources: [
-            { src: streamUrl, type: 'video/mp4' } 
-        ]
-    };
-    
     document.getElementById('video_modal').style.display = 'flex';
-    plyrPlayer.play();
+    
+    let warnBox = document.getElementById('transcode_warning');
+    warnBox.innerHTML = '⏳ Initializing Universal Apple-Compatible HLS Transcoder... (Please wait 3-5 seconds)';
+    
+    fetch('/api/start_hls?url=' + encodeURIComponent(url))
+    .then(r => r.json())
+    .then(data => {
+        let playlistUrl = data.playlist_url;
+        let video = document.getElementById('plyr_video');
+        
+        warnBox.innerHTML = '<b>✅ Universal HLS VOD Stream Active:</b> Server is dynamically transcoding audio and forcing strict 00:00:00 timestamps. Perfect Apple/Windows/Android compatibility and seeking enabled!';
+        
+        if (Hls.isSupported()) {
+            if(window.hls) window.hls.destroy();
+            window.hls = new Hls({maxBufferLength: 30, maxMaxBufferLength: 60});
+            window.hls.loadSource(playlistUrl);
+            window.hls.attachMedia(video);
+            window.hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                plyrPlayer.play();
+            });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = playlistUrl;
+            video.addEventListener('loadedmetadata', function() {
+                plyrPlayer.play();
+            });
+        }
+    }).catch(e => {
+        warnBox.innerHTML = '<b>❌ Error initializing stream. Ensure target URL is active.</b>';
+    });
 }
 
 function closeVideo() {
     plyrPlayer.stop();
+    if(window.hls) {
+        window.hls.destroy();
+        window.hls = null;
+    }
     document.getElementById('video_modal').style.display = 'none';
 }
 
@@ -522,8 +562,6 @@ function clearMountedArchive() {
         document.getElementById('url_drive_zip').value = '';
     });
 }
-
-function launchDynamicDesktop(){ let r=document.getElementById('desk_res').value; let u=document.getElementById('desktop_url').value; window.open('/launch_desktop?res='+r+'&url='+encodeURIComponent(u), '_blank'); document.getElementById('desktop_url').value=''; }
 
 function addFile(type){
     let u=document.getElementById('url_'+type).value;
@@ -618,40 +656,75 @@ def index():
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     return resp
 
-@app.route('/web_stream')
-def web_stream():
+# --- HLS ENGINE VARIABLES ---
+HLS_DIR = os.path.join(DL_DIR, "hls_cache")
+os.makedirs(HLS_DIR, exist_ok=True)
+hls_procs = {}
+
+@app.route('/hls/<stream_id>/<filename>')
+def serve_hls(stream_id, filename):
+    file_path = os.path.join(HLS_DIR, stream_id, filename)
+    if not os.path.exists(file_path): 
+        return "Not found", 404
+        
+    if filename.endswith('.m3u8'):
+        with open(file_path, 'r') as f:
+            content = f.read()
+            
+        # Dynamically inject Apple VOD 00:00:00 timestamp tag into the live playlist
+        if '#EXT-X-START' not in content:
+            content = content.replace('#EXT-X-TARGETDURATION', '#EXT-X-START:TIME-OFFSET=0.0\n#EXT-X-TARGETDURATION')
+            
+        resp = Response(content, mimetype='application/vnd.apple.mpegurl')
+        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+        
+    resp = send_file(file_path, mimetype='video/MP2T')
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    return resp
+
+@app.route('/api/start_hls')
+def start_hls():
     target_url = request.args.get('url')
-    if not target_url: return "No URL", 400
+    if not target_url: return jsonify({'error': 'No URL'}), 400
+    
+    stream_id = hashlib.md5(target_url.encode()).hexdigest()
+    stream_dir = os.path.join(HLS_DIR, stream_id)
     
     parsed = urllib.parse.urlparse(target_url)
     local_url = f"http://127.0.0.1:8080{parsed.path}"
     if parsed.query: local_url += f"?{parsed.query}"
-    
-    cmd = [
-        'ffmpeg', '-hide_banner', '-loglevel', 'error',
-        '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-        '-i', local_url,
-        '-c:v', 'copy',
-        '-c:a', 'aac', '-ac', '2', '-b:a', '256k',
-        '-movflags', 'frag_keyframe+empty_moov+faststart',
-        '-f', 'mp4',
-        'pipe:1'
-    ]
-    
-    def generate():
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            while True:
-                data = proc.stdout.read(1048576) 
-                if not data: break
-                yield data
-        finally:
-            proc.kill()
+
+    if stream_id not in hls_procs or hls_procs[stream_id].poll() is not None:
+        os.makedirs(stream_dir, exist_ok=True)
+        for f in os.listdir(stream_dir): 
+            try: os.remove(os.path.join(stream_dir, f))
+            except: pass
             
-    return Response(generate(), mimetype='video/mp4', headers={
-        'Cache-Control': 'no-store',
-        'Access-Control-Allow-Origin': '*'
-    })
+        cmd = [
+            'ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+            '-i', local_url,
+            '-c:v', 'copy',
+            '-c:a', 'aac', '-ac', '2', '-b:a', '256k',
+            '-f', 'hls',
+            '-hls_time', '4',
+            '-hls_list_size', '0', 
+            '-hls_playlist_type', 'event',
+            '-start_at_zero', 
+            '-avoid_negative_ts', 'make_zero',
+            '-hls_segment_filename', os.path.join(stream_dir, 'seg_%04d.ts'),
+            os.path.join(stream_dir, 'index.m3u8')
+        ]
+        hls_procs[stream_id] = subprocess.Popen(cmd)
+        
+        for _ in range(150):
+            if os.path.exists(os.path.join(stream_dir, 'index.m3u8')): break
+            time.sleep(0.1)
+
+    return jsonify({'playlist_url': f'/hls/{stream_id}/index.m3u8'})
 
 @app.route('/api/get_archive_mount')
 def get_archive_mount():
@@ -1112,6 +1185,39 @@ def relay_dl(fid,fname):
     hdrs['Content-Range'] = f'bytes {sb}-{eb}/{ts}'
     return Response(gen_disk(), status=206, headers=hdrs)
   return Response(gen_disk(), status=200, headers=hdrs)
+
+def cleaner():
+ while True:
+  time.sleep(3600); now=time.time()
+  with db_lock:
+   for fid in list(db.keys()):
+    if now-db[fid].get('start',now)>86400:
+     try: os.remove(db[fid]['path'])
+     except: pass
+     if fid in p2p_streams:
+      p2p_streams[fid].chunks.clear()
+      del p2p_streams[fid]
+     if fid in disk_streams: del disk_streams[fid]
+     del db[fid]
+   for fid in list(p2p_streams.keys()):
+    if fid not in db:
+     p2p_streams[fid].chunks.clear(); del p2p_streams[fid]
+   for fid in list(disk_streams.keys()):
+    if fid not in db: del disk_streams[fid]
+    
+  try:
+      for d in os.listdir(HLS_DIR):
+          dir_path = os.path.join(HLS_DIR, d)
+          if os.path.isdir(dir_path):
+              if now - os.path.getmtime(dir_path) > 86400:
+                  if d in hls_procs:
+                      try: hls_procs[d].kill()
+                      except: pass
+                      del hls_procs[d]
+                  shutil.rmtree(dir_path, ignore_errors=True)
+  except: pass
+  gc.collect() 
+threading.Thread(target=cleaner,daemon=True).start()
 
 @app.route('/api/drive/status')
 def drive_status():
@@ -1741,88 +1847,10 @@ def swarm_dl(fid,fname):
  if ts: hdrs.update({'Content-Length':str(user_end-user_start+1),'Content-Range':f'bytes {user_start}-{user_end}/{ts}'})
  return Response(generate_swarm(),status=206 if rh else 200,headers=hdrs)
 
-@app.route('/launch_desktop')
-def launch_desktop():
-    res = request.args.get('res', '1366x768')
-    target_url = request.args.get('url', '').strip()
-    try: w, h = res.split('x')
-    except: w, h = '1366', '768'
-
-    start_url = target_url if target_url else "https://www.google.com"
-    
-    script = f'''#!/bin/bash
-export DISPLAY=:0
-export XDG_RUNTIME_DIR=/run/user/1000
-
-# Aggressive clean up to permanently fix VNC connection lock
-pkill -9 -f "Xvfb"
-pkill -9 -f "x11vnc"
-pkill -9 -f "websockify"
-pkill -9 -f "fluxbox"
-pkill -9 -f "brave"
-rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null
-
-Xvfb :0 -screen 0 {w}x{h}x24 -ac -nolisten tcp &
-sleep 2
-
-xhost +
-fluxbox &
-autocutsel -fork &
-autocutsel -selection PRIMARY -fork &
-x11vnc -display :0 -nopw -listen 127.0.0.1 -xkb -ncache 10 -ncache_cr -forever -shared -bg -q
-websockify --web /usr/share/novnc 6080 127.0.0.1:5900 &
-sleep 2
-
-mkdir -p /home/ubuntu/brave-data
-/usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --disable-software-rasterizer --disable-gpu --force-dark-mode --enable-features=WebUIDarkMode --user-data-dir=/home/ubuntu/brave-data --window-size={w},{h} --start-maximized "{start_url}" &
-wait
-'''
-    with open('/home/ubuntu/start_desktop.sh', 'w') as f: f.write(script)
-    os.chmod('/home/ubuntu/start_desktop.sh', 0o755)
-    
-    def restart_bg():
-        subprocess.run("sudo systemctl restart desktop", shell=True)
-    threading.Thread(target=restart_bg).start()
-    
-    html = f"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Booting Engine...</title><style>body {{ background: #0a0c10; color: #00b3ff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; }} .loader {{ border: 6px solid #14171f; border-top: 6px solid #00b3ff; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin-bottom: 20px; }} @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}</style></head><body><div class="loader"></div><h2>Allocating {w}x{h} Hardware...</h2><p style="color:#888;">Booting secure Brave Engine in Dark Mode. Syncing WebSockets in 6 seconds...</p><script>setTimeout(() => {{ window.location.href = "/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote"; }}, 6000);</script></body></html>"""
-    return html
-
 if __name__=='__main__': 
     from waitress import serve
     serve(app, host='127.0.0.1', port=8080, threads=32)
 PYTHON_EOF
-
-echo "⚙️ [6/6] Writing Default Bootloader..."
-cat > /home/ubuntu/start_desktop.sh << 'DESKTOP_EOF'
-#!/bin/bash
-export DISPLAY=:0
-export XDG_RUNTIME_DIR=/run/user/1000
-
-pkill -9 -f "Xvfb"
-pkill -9 -f "x11vnc"
-pkill -9 -f "websockify"
-pkill -9 -f "fluxbox"
-pkill -9 -f "brave"
-rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null
-
-Xvfb :0 -screen 0 1366x768x24 -ac -nolisten tcp &
-sleep 2
-
-xhost +
-fluxbox &
-autocutsel -fork &
-autocutsel -selection PRIMARY -fork &
-x11vnc -display :0 -nopw -listen 127.0.0.1 -xkb -ncache 10 -ncache_cr -forever -shared -bg -q
-websockify --web /usr/share/novnc 6080 127.0.0.1:5900 &
-sleep 2
-
-mkdir -p /home/ubuntu/brave-data
-/usr/bin/brave-browser --no-sandbox --disable-dev-shm-usage --disable-software-rasterizer --disable-gpu --force-dark-mode --enable-features=WebUIDarkMode --user-data-dir=/home/ubuntu/brave-data --window-size=1366,768 --start-maximized "https://www.google.com" &
-wait
-DESKTOP_EOF
-chmod +x /home/ubuntu/start_desktop.sh
-
-chown -R ubuntu:ubuntu /home/ubuntu/venv /home/ubuntu/downloads /home/ubuntu/app.py /home/ubuntu/start_desktop.sh /home/ubuntu/brave-data >/dev/null 2>&1
 
 cat > /etc/systemd/system/proxy.service << 'PROXY_EOF'
 [Unit]
@@ -1837,31 +1865,25 @@ User=ubuntu
 WantedBy=multi-user.target
 PROXY_EOF
 
-cat > /etc/systemd/system/desktop.service << 'DESKTOP_SVC_EOF'
-[Unit]
-Description=Cloud Dynamic Scaled Desktop
-After=network.target nginx.service
-[Service]
-ExecStart=/home/ubuntu/start_desktop.sh
-WorkingDirectory=/home/ubuntu
-Restart=always
-User=ubuntu
-Environment=DISPLAY=:0
-[Install]
-WantedBy=multi-user.target
-DESKTOP_SVC_EOF
-
 systemctl daemon-reload
-systemctl enable proxy desktop nginx >/dev/null 2>&1
-systemctl restart proxy desktop nginx >/dev/null 2>&1
+systemctl enable proxy nginx >/dev/null 2>&1
+systemctl restart proxy nginx >/dev/null 2>&1
 
 echo "🔍 Fetching precise public IP Address..."
 sleep 3
 IP=$(curl -s -m 5 -4 icanhazip.com || curl -s -m 5 -4 ifconfig.me || curl -s -m 5 -4 api.ipify.org || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V117 CUSTOM DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V122 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
 echo "===================================================="
-echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
+echo "⚠️ IMPORTANT: Ensure Ports 80 and 3389 are open in your VPS Firewall/Oracle Security List!"
+echo ""
+echo "🖥️ --- WINDOWS RDP CONNECTION INFO ---"
+echo "🖥️ App to use: Remote Desktop Connection (Windows) or Microsoft Remote Desktop (Mac)"
+echo "🖥️ IP Address: $IP"
+echo "🖥️ Username: ubuntu"
+echo "🖥️ Password: $RDP_PASS"
+echo ""
+echo "🌐 --- WEB DASHBOARD INFO ---"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
 echo "🌐 2. Direct VPS Local Access: http://$IP"
 echo "===================================================="
