@@ -1648,7 +1648,7 @@ def drive_worker(fid):
         init_res.raise_for_status()
         upload_url = init_res.headers['Location']
         
-        chunk_size = 8388608 # 8MB Buffer strictly enforced for Drive API chunking
+        chunk_size = 67108864 # 64MB Buffer strictly enforced for gigabit Drive API chunking
         start_byte = 0
         file_id = None
         buf = bytearray()
@@ -1661,7 +1661,7 @@ def drive_worker(fid):
             
             for _ in range(5):
                 try:
-                    res = drive_api_session.put(upload_url, data=data_bytes, headers=headers, timeout=60)
+                    res = drive_api_session.put(upload_url, data=data_bytes, headers=headers, timeout=120)
                     if res.status_code in [308, 200, 201]:
                         if res.status_code in [200, 201]: file_id = res.json().get('id')
                         start_byte += chunk_len
@@ -1670,7 +1670,7 @@ def drive_worker(fid):
                 except: time.sleep(2)
             return False
 
-        for chunk in r_head.iter_content(chunk_size=1048576):
+        for chunk in r_head.iter_content(chunk_size=4194304):
             with db_lock:
                 if db[fid]['status'] == 'Stopped': 
                     r_head.close()
@@ -1729,7 +1729,7 @@ def drive_swarm_worker(fid):
         init_res.raise_for_status()
         upload_url = init_res.headers['Location']
         
-        chunk_size = 8388608 # 8MB Buffer chunking
+        chunk_size = 67108864 # 64MB Gigabit Buffer chunking
         max_workers = 16 
         session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers*2, pool_maxsize=max_workers*2)
@@ -1747,7 +1747,7 @@ def drive_swarm_worker(fid):
             th = HEADERS.copy(); th['Range'] = f'bytes={sb}-{eb}'
             for _ in range(5):
                 try:
-                    res = session.get(u, headers=th, timeout=(5, 15))
+                    res = session.get(u, headers=th, timeout=(5, 30))
                     if res.status_code in [200, 206]:
                         with cv: 
                             buffer[idx] = res.content
@@ -1783,7 +1783,7 @@ def drive_swarm_worker(fid):
                 success = False
                 for _ in range(5):
                     try:
-                        res = drive_api_session.put(upload_url, data=data, headers=headers, timeout=60)
+                        res = drive_api_session.put(upload_url, data=data, headers=headers, timeout=120)
                         if res.status_code in [308, 200, 201]:
                             if res.status_code in [200, 201]: file_id = res.json().get('id')
                             success = True
@@ -1979,7 +1979,7 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V126 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V127 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Ports 80 and 3389 are open in your VPS Firewall/Oracle Security List!"
 echo ""
