@@ -47,12 +47,11 @@ echo "🛑 [1/6] Aggressive Purge of Old Systems & Disk Space Wipe..."
 sudo systemctl stop proxy desktop nginx xrdp >/dev/null 2>&1 || true
 sudo systemctl disable proxy desktop nginx xrdp >/dev/null 2>&1 || true
 
-sudo apt-get purge -y nginx nginx-common nginx-core snapd chromium-browser caddy cloudflared apache2 xvfb fluxbox x11vnc novnc websockify xrdp xfce4 xfce4-goodies >/dev/null 2>&1 || true
+sudo apt-get purge -y nginx nginx-common nginx-core snapd chromium-browser caddy cloudflared apache2 xvfb fluxbox x11vnc novnc websockify xrdp xfce4 xfce4-goodies xorgxrdp tigervnc-standalone-server >/dev/null 2>&1 || true
 sudo apt-get autoremove -y >/dev/null 2>&1 || true
 
 killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox fluxbox brave brave-browser chrome chromium dbus-daemon autocutsel xrdp >/dev/null 2>&1 || true
 
-# Wiping all previously downloaded videos and HLS stream caches off the disk
 rm -rf /home/ubuntu/downloads/* /home/ubuntu/hls_cache/* /root/downloads/* /root/hls_cache/* >/dev/null 2>&1 || true
 rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
 rm -rf /root/app.py /root/start_*.sh /home/ubuntu/app.py /home/ubuntu/start_*.sh /home/ubuntu/chromium /home/ubuntu/drive_creds.json /etc/systemd/system/proxy.service /etc/systemd/system/desktop.service >/dev/null 2>&1
@@ -68,11 +67,14 @@ sudo apt-get -o Dpkg::Options::="--force-confmiss" install --reinstall -y nginx 
 
 PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")' 2>/dev/null || echo "python3-venv")
 
-apt-get install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg build-essential python3-dev unrar p7zip-full $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv || true
+apt-get install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg build-essential python3-dev unrar p7zip-full $PY_VENV || true
 
 echo "🖥️ [3/6] Configuring Native Windows RDP & Browsers (Verbose Output Enabled)..."
-apt-get install -y xfce4 xfce4-goodies dbus-x11 || true
-apt-get install -y xrdp xclip xsel firefox || true
+# Explicitly installing xorgxrdp and tigervnc backend to prevent session crashes on ARM
+apt-get install -y xfce4 xfce4-goodies dbus-x11 xrdp xorgxrdp tigervnc-standalone-server xclip xsel firefox || true
+
+# Grant xrdp access to ssl certificates to enable proper NLA (Network Level Authentication)
+adduser xrdp ssl-cert || true
 
 sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
@@ -87,16 +89,25 @@ else
     usermod -aG sudo "$RDP_USERNAME"
 fi
 
+# Hardcode proper D-Bus X session for XFCE4
 mkdir -p /home/$RDP_USERNAME
-echo "startxfce4" > /home/$RDP_USERNAME/.xsession
+echo "xfce4-session" > /home/$RDP_USERNAME/.xsession
 chown $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.xsession
 chmod +x /home/$RDP_USERNAME/.xsession
 
-if [ -f /etc/xrdp/startwm.sh ]; then
-    if ! grep -q "startxfce4" /etc/xrdp/startwm.sh; then
-        sed -i '/^test -x \/etc\/X11\/Xsession/i startxfce4' /etc/xrdp/startwm.sh
-    fi
+# Completely rebuild startwm.sh from scratch to prevent display manager conflicts
+cat > /etc/xrdp/startwm.sh << 'STARTWM_EOF'
+#!/bin/sh
+if [ -r /etc/default/locale ]; then
+  . /etc/default/locale
+  export LANG LANGUAGE
 fi
+export XDG_SESSION_DESKTOP=xfce
+export XDG_CURRENT_DESKTOP=xfce
+export DESKTOP_SESSION=xfce
+exec dbus-launch --exit-with-session xfce4-session
+STARTWM_EOF
+chmod +x /etc/xrdp/startwm.sh
 
 mkdir -p /home/$RDP_USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml
 cat > /home/$RDP_USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml << 'XFCE_EOF'
@@ -107,9 +118,22 @@ cat > /home/$RDP_USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml << 
   </property>
 </channel>
 XFCE_EOF
-chown -R $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.config
 
-systemctl start xrdp || true
+mkdir -p /home/$RDP_USERNAME/Desktop
+cat > /home/$RDP_USERNAME/Desktop/Brave.desktop << 'SHORTCUT_EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Brave Web Browser
+Exec=/usr/bin/brave-browser %U
+Icon=brave-browser
+Terminal=false
+Categories=Network;WebBrowser;
+SHORTCUT_EOF
+chmod +x /home/$RDP_USERNAME/Desktop/Brave.desktop
+chown -R $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.config /home/$RDP_USERNAME/Desktop
+
+systemctl restart xrdp || true
 systemctl enable xrdp || true
 
 ufw --force reset >/dev/null 2>&1 || true
@@ -1979,16 +2003,20 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V127 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V129 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
 echo "===================================================="
-echo "⚠️ IMPORTANT: Ensure Ports 80 and 3389 are open in your VPS Firewall/Oracle Security List!"
+echo "⚠️ IMPORTANT: Ensure Ports 80 and 3389 are open in your VPS Firewall!"
 echo ""
-echo "🖥️ --- WINDOWS RDP CONNECTION INFO ---"
-echo "🖥️ App to use: Remote Desktop Connection (Windows) or Microsoft Remote Desktop (Mac)"
-echo "🖥️ IP Address: $SERVER_IP:3389"
-echo "🖥️ Username: $RDP_USERNAME"
-echo "🖥️ Password: $RDP_PASSWORD"
-echo "🖥️ (When prompted inside RDP, leave 'Session' as Xorg)"
+echo "💻 --- HOW TO BYPASS LINUX LOGIN AND SET 1366x768 --- 💻"
+echo "1. Open 'Remote Desktop Connection' on your Windows laptop."
+echo "2. Click 'Show Options' at the bottom left corner."
+echo "3. Go to the 'Display' tab and drag the slider to 1366 by 768."
+echo "4. Go back to the 'General' tab."
+echo "5. Computer: Enter '$SERVER_IP'"
+echo "6. User name: Type 'rdpuser' (Check 'Allow me to save credentials' if desired)."
+echo "7. Click Connect!"
+echo "8. Windows will natively prompt for the password ($RDP_PASSWORD) - PASTE IT HERE!"
+echo "   (This completely bypasses the green Linux login screen and prevents crashes)."
 echo ""
 echo "🌐 --- WEB DASHBOARD INFO ---"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
