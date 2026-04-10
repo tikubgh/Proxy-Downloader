@@ -3,7 +3,7 @@ cat > setup.sh << 'EOF'
 #!/bin/bash
 clear
 echo "===================================================="
-echo "🚀 INITIATING V115 (VLC STREAMING + FILENAME PARSER FIX)"
+echo "🚀 INITIATING V116 (VLC DYNAMIC CHUNK PRIORITY FIX)"
 echo "===================================================="
 echo ""
 echo "🔐 DASHBOARD SECURITY SETUP"
@@ -1155,6 +1155,8 @@ def drive_disconnect():
     if os.path.exists(DRIVE_CREDS_FILE): os.remove(DRIVE_CREDS_FILE)
     return jsonify({'success': True})
 
+CHUNK_SIZE_MULTI = 1048576 * 4
+
 @app.route('/dl/<fid>/<path:fname>', methods=['GET', 'HEAD'])
 def download(fid,fname):
  with db_lock:
@@ -1201,8 +1203,6 @@ def download(fid,fname):
  
  if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
 
- CHUNK_SIZE_MULTI = 1048576 * 4
-
  def gen():
   with open(fp,'rb') as lf:
    lf.seek(sb)
@@ -1229,7 +1229,13 @@ def download(fid,fname):
      if os.path.getsize(fp) > curr_pos: can_read = True
     elif ftype == 'multi':
      chunk_start = (curr_pos // CHUNK_SIZE_MULTI) * CHUNK_SIZE_MULTI
-     if chunk_start in written: can_read = True
+     chunk_idx = curr_pos // CHUNK_SIZE_MULTI
+     if chunk_start in written: 
+      can_read = True
+     else:
+      # CRITICAL FIX: If VLC asks for a chunk that isn't ready, instantly prioritize it!
+      with db_lock:
+       if 'priority' in db[fid]: db[fid]['priority'].add(chunk_idx)
     else:
      can_read = True
 
@@ -1273,7 +1279,12 @@ def update_file_metadata(fid, r):
         if safe_name:
             with db_lock:
                 db[fid]['name'] = safe_name
-                db[fid]['path'] = os.path.join(DL_DIR, f"{fid}_{safe_name}")
+                old_path = db[fid]['path']
+                new_path = os.path.join(DL_DIR, f"{fid}_{safe_name}")
+                db[fid]['path'] = new_path
+                # Rename sparse file if it was pre-allocated
+                if os.path.exists(old_path) and old_path != new_path:
+                    os.rename(old_path, new_path)
 
 def dl_worker(fid):
     with db_lock:
@@ -1320,6 +1331,7 @@ def multi_worker(fid):
         with db_lock: 
             db[fid]['total'] = tot
             db[fid]['written'] = set()
+            db[fid]['priority'] = set()
             p = db[fid]['path']
         
         if tot == 0 or not supports_range:
@@ -1328,59 +1340,89 @@ def multi_worker(fid):
             
         with open(p, 'wb') as f: f.truncate(tot)
         
-        chunk_size = 1048576 * 4
-        ranges = [(i, min(i+chunk_size-1, tot-1)) for i in range(0, tot, chunk_size)]
+        total_chunks = (tot + CHUNK_SIZE_MULTI - 1) // CHUNK_SIZE_MULTI
         
+        pending_chunks = set(range(total_chunks))
+        active_chunks = set()
+        lock = threading.Lock()
         file_write_lock = threading.Lock()
         error_flag = []
         
-        def fetch(start, end):
-            if error_flag: return
-            with db_lock:
-                if db[fid]['status'] == 'Stopped': return
-                
-            h = HEADERS.copy(); h['Range'] = f'bytes={start}-{end}'
-            success = False
-            
-            for _ in range(5):
-                try:
-                    res = requests.get(u, headers=h, timeout=15, allow_redirects=True)
-                    res.raise_for_status()
-                    
-                    with file_write_lock:
-                        with open(p, 'r+b') as f:
-                            f.seek(start)
-                            f.write(res.content)
-                            
-                    with db_lock: 
-                        db[fid]['down'] += len(res.content)
-                        db[fid]['written'].add(start)
-                    success = True
-                    break
-                except Exception:
-                    time.sleep(1)
-            
-            if not success:
-                error_flag.append(True)
-                raise Exception("Chunk failed 5x")
-                
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as exe:
-            futures = [exe.submit(fetch, s, e) for s, e in ranges]
-            for future in concurrent.futures.as_completed(futures):
-                future.result() 
+        def get_next_chunk():
+            with lock:
                 with db_lock:
-                    if db[fid]['status'] == 'Stopped':
-                        exe.shutdown(wait=False, cancel_futures=True)
-                        return
+                    pri = list(db[fid].get('priority', set()))
+                for c in pri:
+                    if c in pending_chunks and c not in active_chunks:
+                        active_chunks.add(c)
+                        return c
+                for c in sorted(list(pending_chunks)):
+                    if c not in active_chunks:
+                        active_chunks.add(c)
+                        return c
+                return None
+
+        def worker():
+            while True:
+                if error_flag: break
+                with db_lock:
+                    if fid not in db or db[fid]['status'] == 'Stopped': break
+                    
+                c_idx = get_next_chunk()
+                if c_idx is None: break
+                
+                start = c_idx * CHUNK_SIZE_MULTI
+                end = min(start + CHUNK_SIZE_MULTI - 1, tot - 1)
+                h = HEADERS.copy(); h['Range'] = f'bytes={start}-{end}'
+                success = False
+                
+                for _ in range(5):
+                    try:
+                        res = requests.get(u, headers=h, timeout=15, allow_redirects=True)
+                        res.raise_for_status()
                         
+                        with file_write_lock:
+                            with open(p, 'r+b') as f:
+                                f.seek(start)
+                                f.write(res.content)
+                                
+                        with db_lock: 
+                            if fid in db:
+                                db[fid]['down'] += len(res.content)
+                                db[fid]['written'].add(start)
+                                if 'priority' in db[fid] and c_idx in db[fid]['priority']:
+                                    db[fid]['priority'].remove(c_idx)
+                                
+                        with lock:
+                            pending_chunks.remove(c_idx)
+                            active_chunks.remove(c_idx)
+                        success = True
+                        break
+                    except Exception:
+                        time.sleep(1)
+                        
+                if not success:
+                    error_flag.append(True)
+                    break
+                    
+        threads = []
+        for _ in range(8):
+            t = threading.Thread(target=worker)
+            t.start()
+            threads.append(t)
+            
+        for t in threads: t.join()
+                
         with db_lock:
-            if db[fid]['status'] != 'Stopped' and not error_flag:
-                db[fid]['status'] = 'Completed'
-            elif error_flag:
-                db[fid]['status'] = 'Error: Connection Refused'
+            if fid in db:
+                if db[fid]['status'] != 'Stopped' and not error_flag:
+                    db[fid]['status'] = 'Completed'
+                elif error_flag:
+                    db[fid]['status'] = 'Error: Connection Refused'
                 
     except Exception as e:
-        with db_lock: db[fid]['status'] = f'Error: {str(e)[:40]}'
+        with db_lock: 
+            if fid in db: db[fid]['status'] = f'Error: {str(e)[:40]}'
 
 def ram_worker(fid):
     with db_lock: 
@@ -1801,7 +1843,7 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 IP=$(curl -s -m 5 -4 icanhazip.com || curl -s -m 5 -4 ifconfig.me || curl -s -m 5 -4 api.ipify.org || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V115 CUSTOM DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V116 CUSTOM DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Port 80 is open in your Oracle Security List!"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
