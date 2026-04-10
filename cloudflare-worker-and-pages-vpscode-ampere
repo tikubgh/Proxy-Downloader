@@ -43,7 +43,7 @@ else
     echo "✅ Swapfile already exists."
 fi
 
-echo "🛑 [1/6] Aggressive Purge of Old Systems..."
+echo "🛑 [1/6] Aggressive Purge of Old Systems & Disk Space Wipe..."
 sudo systemctl stop proxy desktop nginx xrdp >/dev/null 2>&1 || true
 sudo systemctl disable proxy desktop nginx xrdp >/dev/null 2>&1 || true
 
@@ -52,6 +52,8 @@ sudo apt-get autoremove -y >/dev/null 2>&1 || true
 
 killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox fluxbox brave brave-browser chrome chromium dbus-daemon autocutsel xrdp >/dev/null 2>&1 || true
 
+# Wiping all previously downloaded videos and HLS stream caches off the disk
+rm -rf /home/ubuntu/downloads/* /home/ubuntu/hls_cache/* /root/downloads/* /root/hls_cache/* >/dev/null 2>&1 || true
 rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
 rm -rf /root/app.py /root/start_*.sh /home/ubuntu/app.py /home/ubuntu/start_*.sh /home/ubuntu/chromium /home/ubuntu/drive_creds.json /etc/systemd/system/proxy.service /etc/systemd/system/desktop.service >/dev/null 2>&1
 for p in 80 443 3389 5900 6080 8080 8081; do fuser -k -9 $p/tcp >/dev/null 2>&1 || true; done; sleep 1
@@ -152,6 +154,12 @@ python3 -m venv /home/ubuntu/venv || { python3 -m venv --without-pip /home/ubunt
 
 cat > /home/ubuntu/app.py << 'PYTHON_EOF'
 import os,time,uuid,threading,requests,subprocess,shutil,re,queue,mimetypes,concurrent.futures,hashlib,json,gc,zipfile,tarfile,base64,collections; from flask import Flask,jsonify,render_template_string,request,send_file,Response,redirect; import psutil; import urllib.parse
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry
+except ImportError:
+    from urllib3.util import Retry
+
 try: import rarfile
 except ImportError: rarfile = None
 try: import py7zr
@@ -170,6 +178,16 @@ archive_session = requests.Session()
 archive_adapter = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=100)
 archive_session.mount('https://', archive_adapter)
 archive_session.mount('http://', archive_adapter)
+
+drive_api_session = requests.Session()
+_retry_strategy = Retry(
+    total=5, backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT"]
+)
+_api_adapter = HTTPAdapter(max_retries=_retry_strategy, pool_connections=100, pool_maxsize=100)
+drive_api_session.mount("https://", _api_adapter)
+drive_api_session.mount("http://", _api_adapter)
 
 try:
     with open('/home/ubuntu/.dash_pass', 'r') as f: DASH_PASS = f.read().strip()
@@ -338,7 +356,7 @@ def get_drive_auth():
   with open(DRIVE_CREDS_FILE, 'r') as f: creds = json.load(f)
   now = time.time()
   if 'access_token' in creds and 'expires_at' in creds and now < creds['expires_at']: return creds['access_token'], None
-  r = requests.post('https://oauth2.googleapis.com/token', data={'client_id': creds['client_id'], 'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'}, timeout=10)
+  r = requests.post('https://oauth2.googleapis.com/token', data={'client_id': creds['client_id'], 'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'}, timeout=15)
   if r.status_code != 200: return None, "Google rejected Refresh Token. Please generate a new one."
   new_token = r.json()['access_token']; creds['access_token'] = new_token; creds['expires_at'] = now + 3500 
   with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(creds, f)
@@ -393,16 +411,20 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
     </div>
 
     <div class="input-group" style="margin-bottom:10px;">
-        <input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive (Pipes directly via RAM)...">
+        <input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive (Pipes precisely via RAM)...">
         <button onclick="addFile('drive')" style="background:var(--drive);color:#000;">Upload (RAM)</button>
     </div>
     <div class="input-group" style="margin-bottom:10px;">
         <input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload (Aggregates via RAM -> Uploads to Drive)...">
         <button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Swarm Upload (RAM)</button>
     </div>
-    <div class="input-group" style="margin-bottom:0;">
+    <div class="input-group" style="margin-bottom:10px;">
         <input type="text" id="url_drive_zip" placeholder="Box 3: Link to ZIP, RAR, 7z, TAR, GZ, BZ2, LZIP, XZ for Instant Extract & Stream...">
         <button onclick="listDriveArchive()" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Stream Contents</button>
+    </div>
+    <div class="input-group" style="margin-bottom:0;">
+        <input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Stream/Download Link...">
+        <button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Generate Link</button>
     </div>
     <div id="zip_contents" style="margin-top:10px; display:none; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"></div>
 </div>
@@ -426,6 +448,7 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
 </div>
 
 <script>
+let current_stream_id = null;
 const plyrPlayer = new Plyr('#plyr_video', {
     controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
     settings: ['captions', 'quality', 'speed']
@@ -442,6 +465,7 @@ function playVideo(url, name) {
     .then(r => r.json())
     .then(data => {
         let playlistUrl = data.playlist_url;
+        current_stream_id = data.stream_id;
         let video = document.getElementById('plyr_video');
         
         warnBox.innerHTML = '<b>✅ Universal FFmpeg HLS Pipeline Active:</b> Server is dynamically transcoding audio to AAC and strictly enforcing VOD timestamps. Perfect Apple/Windows/Android compatibility and seeking enabled!';
@@ -472,6 +496,10 @@ function closeVideo() {
         window.hls = null;
     }
     document.getElementById('video_modal').style.display = 'none';
+    if(current_stream_id) {
+        fetch('/api/stop_hls?stream_id=' + current_stream_id);
+        current_stream_id = null;
+    }
 }
 
 function checkDriveStatus(){
@@ -643,7 +671,7 @@ async function uploadP2PChunk(fid, file, idx, chunkSize) {
     } catch(e) {}
 }
 
-function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';if(!window.fSpeeds) window.fSpeeds={};let now=Date.now();data.files.forEach(f=>{let fdown=f.down||0;let ftotal=f.total||0;if(!window.fSpeeds[f.id]) window.fSpeeds[f.id]={d:fdown,t:now,s:0};let diff=fdown-window.fSpeeds[f.id].d;let secs=(now-window.fSpeeds[f.id].t)/1000;let spd=window.fSpeeds[f.id].s;if(secs>=1.0){spd=diff>0?(diff/secs/1048576):0;window.fSpeeds[f.id].s=spd;window.fSpeeds[f.id].d=fdown;window.fSpeeds[f.id].t=now;}let spdStr=spd>0?' &nbsp;⚡ '+spd.toFixed(1)+' MB/s':'';let realDown=ftotal>0?Math.min(fdown,ftotal):fdown;let pctStr=ftotal?Math.min(100,Math.round((realDown/ftotal)*100))+'%':'Live';let mb=(realDown/(1024*1024)).toFixed(1);let totStr=ftotal?(ftotal/(1024*1024)).toFixed(1):'∞';let progBar=ftotal?`<progress value="${realDown}" max="${ftotal}"></progress>`:`<progress></progress>`;let safeName=encodeURIComponent(f.name);if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Transferred: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${proxyDlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='archive_pipe'){html+=`<div class="file-card type-archive"><div class="file-name">📦 [RAM CACHE STREAM] ${f.name}</div><div class="file-status">[${f.status}] - Flow: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Close Active Link</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${swarmDlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE UPLOAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
+function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';if(!window.fSpeeds) window.fSpeeds={};let now=Date.now();data.files.forEach(f=>{let fdown=f.down||0;let ftotal=f.total||0;if(!window.fSpeeds[f.id]) window.fSpeeds[f.id]={d:fdown,t:now,s:0};let diff=fdown-window.fSpeeds[f.id].d;let secs=(now-window.fSpeeds[f.id].t)/1000;let spd=window.fSpeeds[f.id].s;if(secs>=1.0){spd=diff>0?(diff/secs/1048576):0;window.fSpeeds[f.id].s=spd;window.fSpeeds[f.id].d=fdown;window.fSpeeds[f.id].t=now;}let spdStr=spd>0?' &nbsp;⚡ '+spd.toFixed(1)+' MB/s':'';let realDown=ftotal>0?Math.min(fdown,ftotal):fdown;let pctStr=ftotal?Math.min(100,Math.round((realDown/ftotal)*100))+'%':'Live';let mb=(realDown/(1024*1024)).toFixed(1);let totStr=ftotal?(ftotal/(1024*1024)).toFixed(1):'∞';let progBar=ftotal?`<progress value="${realDown}" max="${ftotal}"></progress>`:`<progress></progress>`;let safeName=encodeURIComponent(f.name);if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Transferred: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${proxyDlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='archive_pipe'){html+=`<div class="file-card type-archive"><div class="file-name">📦 [RAM CACHE STREAM] ${f.name}</div><div class="file-status">[${f.status}] - Flow: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Close Active Link</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${swarmDlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE UPLOAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive_direct'){let dlLink=window.location.origin+'/drive_direct_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🔗 [DRIVE DIRECT] ${f.name}</div><div class="file-status">[${f.status}] - Direct Stream Proxy Ready</div><div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Remove</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
 
 @app.route('/')
 def index():
@@ -716,7 +744,23 @@ def start_hls():
             if os.path.exists(os.path.join(stream_dir, 'index.m3u8')): break
             time.sleep(0.1)
 
-    return jsonify({'playlist_url': f'/hls/{stream_id}/index.m3u8'})
+    return jsonify({'playlist_url': f'/hls/{stream_id}/index.m3u8', 'stream_id': stream_id})
+
+@app.route('/api/stop_hls')
+def stop_hls():
+    stream_id = request.args.get('stream_id')
+    if stream_id and stream_id in hls_procs:
+        try:
+            hls_procs[stream_id].terminate()
+            hls_procs[stream_id].wait(timeout=2)
+        except:
+            try: hls_procs[stream_id].kill()
+            except: pass
+        del hls_procs[stream_id]
+        
+        stream_dir = os.path.join(HLS_DIR, stream_id)
+        shutil.rmtree(stream_dir, ignore_errors=True)
+    return jsonify({'success': True})
 
 @app.route('/api/get_archive_mount')
 def get_archive_mount():
@@ -743,7 +787,7 @@ def drive_archive_list():
 
     try:
         meta_url = f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=id,name,size&supportsAllDrives=true'
-        meta_res = requests.get(meta_url, headers={'Authorization': f'Bearer {access_token}'}, timeout=10).json()
+        meta_res = drive_api_session.get(meta_url, headers={'Authorization': f'Bearer {access_token}'}, timeout=15).json()
         
         if 'error' in meta_res:
             return jsonify({'error': f"Drive API Error: {meta_res['error'].get('message', 'Unknown Error')}"})
@@ -840,7 +884,7 @@ def drive_archive_dl(file_id, b64_name, filename):
         if err: return "Drive Auth Error", 500
 
         meta_url = f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=size&supportsAllDrives=true'
-        meta_res = requests.get(meta_url, headers={'Authorization': f'Bearer {access_token}'}, timeout=10).json()
+        meta_res = drive_api_session.get(meta_url, headers={'Authorization': f'Bearer {access_token}'}, timeout=15).json()
         total_size = int(meta_res.get('size', 0))
 
         drf = DriveRangeFile(file_id, access_token, total_size)
@@ -922,6 +966,35 @@ def drive_archive_dl(file_id, b64_name, filename):
         else: return Response(generate_tar(), status=206 if is_range else 200, headers=hdrs)
 
     except Exception as e: return str(e), 500
+
+@app.route('/drive_direct_dl/<fid>/<path:fname>')
+def drive_direct_dl(fid, fname):
+    with db_lock:
+        if fid not in db or db[fid]['type'] != 'drive_direct': return "404", 404
+        file_id = db[fid].get('file_id')
+    
+    if not file_id: return "Error", 400
+    
+    token, err = get_drive_auth()
+    if err: return "Auth Error", 500
+    
+    url = f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media'
+    req_headers = {'Authorization': f'Bearer {token}'}
+    rh = request.headers.get('Range')
+    if rh: req_headers['Range'] = rh
+    
+    try:
+        r = drive_api_session.get(url, headers=req_headers, stream=True, timeout=30)
+        resp_headers = {k: v for k, v in r.headers.items() if k.lower() in ['content-length', 'content-range', 'accept-ranges', 'content-type']}
+        mt = mimetypes.guess_type(fname)[0] or 'application/octet-stream'
+        resp_headers['Content-Type'] = mt
+        
+        resp = Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c), status=r.status_code, headers=resp_headers)
+        resp.headers['Content-Disposition'] = f"inline; filename*=UTF-8''{urllib.parse.quote(fname)}"
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        return str(e), 500
 
 @app.route('/api/upload_init', methods=['POST'])
 def upload_init():
@@ -1185,7 +1258,7 @@ def drive_status():
         access_token, err = get_drive_auth()
         if err: return jsonify({'connected': False})
         
-        r = requests.get('https://www.googleapis.com/drive/v3/about?fields=storageQuota', headers={'Authorization': f'Bearer {access_token}'}, timeout=10)
+        r = drive_api_session.get('https://www.googleapis.com/drive/v3/about?fields=storageQuota', headers={'Authorization': f'Bearer {access_token}'}, timeout=15)
         if r.status_code == 200:
             sq = r.json().get('storageQuota', {})
             limit = int(sq.get('limit', 0))
@@ -1204,7 +1277,7 @@ def drive_connect():
     data = request.json
     cid, csec, rt = data.get('client_id'), data.get('client_secret'), data.get('refresh_token')
     try:
-        r = requests.post('https://oauth2.googleapis.com/token', data={'client_id': cid, 'client_secret': csec, 'refresh_token': rt, 'grant_type': 'refresh_token'}, timeout=10)
+        r = drive_api_session.post('https://oauth2.googleapis.com/token', data={'client_id': cid, 'client_secret': csec, 'refresh_token': rt, 'grant_type': 'refresh_token'}, timeout=15)
         if r.status_code == 200:
             now = time.time()
             data['access_token'] = r.json()['access_token']
@@ -1513,6 +1586,37 @@ def swarm_worker(fid):
     with db_lock: 
         if fid in db: db[fid]['status'] = 'Active (Swarm Proxy)'
 
+def drive_direct_worker(fid):
+    with db_lock:
+        if fid not in db: return
+        u = db[fid]['url']
+        db[fid]['status'] = 'Generating Direct Link...'
+    try:
+        file_id = extract_drive_id(u)
+        if not file_id: raise Exception("Invalid Google Drive URL")
+        
+        token, err = get_drive_auth()
+        if err: raise Exception(err)
+        
+        meta_url = f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=name,size&supportsAllDrives=true'
+        res = drive_api_session.get(meta_url, headers={'Authorization': f'Bearer {token}'}, timeout=30).json()
+        
+        if 'error' in res: raise Exception(res['error'].get('message', 'Drive API Error'))
+        
+        name = res.get('name', f'drive_file_{fid}.bin')
+        size = int(res.get('size', 0))
+        
+        with db_lock:
+            if fid in db:
+                db[fid]['name'] = name
+                db[fid]['total'] = size
+                db[fid]['down'] = size
+                db[fid]['file_id'] = file_id 
+                db[fid]['status'] = 'Direct Link Ready'
+    except Exception as e:
+        with db_lock: 
+            if fid in db: db[fid]['status'] = f'Error: {str(e)[:40]}'
+
 def drive_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -1536,29 +1640,56 @@ def drive_worker(fid):
         mt = mimetypes.guess_type(name)[0] or 'application/octet-stream'
         meta = {'name': name}
         
-        init_res = requests.post(
+        init_res = drive_api_session.post(
             'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
             headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json', 'X-Upload-Content-Type': mt, 'X-Upload-Content-Length': str(tot)},
-            json=meta, timeout=15
+            json=meta, timeout=30
         )
         init_res.raise_for_status()
         upload_url = init_res.headers['Location']
         
-        def stream_generator():
-            for chunk in r_head.iter_content(chunk_size=1048576 * 2):
-                with db_lock:
-                    if db[fid]['status'] == 'Stopped': 
-                        r_head.close()
-                        raise Exception("Stopped by user")
-                if chunk:
-                    with db_lock: db[fid]['down'] += len(chunk)
-                    yield chunk
+        chunk_size = 8388608 # 8MB Buffer strictly enforced for Drive API chunking
+        start_byte = 0
+        file_id = None
+        buf = bytearray()
 
-        up_res = requests.put(upload_url, data=stream_generator(), headers={'Content-Length': str(tot)}, timeout=86400)
-        up_res.raise_for_status()
-        
+        def upload_chunk(data_bytes):
+            nonlocal start_byte, file_id
+            chunk_len = len(data_bytes)
+            end_byte = start_byte + chunk_len - 1
+            headers = {'Content-Range': f'bytes {start_byte}-{end_byte}/{tot}', 'Content-Length': str(chunk_len)}
+            
+            for _ in range(5):
+                try:
+                    res = drive_api_session.put(upload_url, data=data_bytes, headers=headers, timeout=60)
+                    if res.status_code in [308, 200, 201]:
+                        if res.status_code in [200, 201]: file_id = res.json().get('id')
+                        start_byte += chunk_len
+                        with db_lock: db[fid]['down'] = start_byte
+                        return True
+                except: time.sleep(2)
+            return False
+
+        for chunk in r_head.iter_content(chunk_size=1048576):
+            with db_lock:
+                if db[fid]['status'] == 'Stopped': 
+                    r_head.close()
+                    raise Exception("Stopped by user")
+            if chunk:
+                buf.extend(chunk)
+                while len(buf) >= chunk_size:
+                    c_data = bytes(buf[:chunk_size])
+                    del buf[:chunk_size]
+                    if not upload_chunk(c_data): raise Exception("Drive chunk upload rejected after 5 retries.")
+                    
+        if buf:
+            if not upload_chunk(bytes(buf)): raise Exception("Final Drive chunk upload rejected.")
+            
         with db_lock:
-            if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Completed'
+            if db[fid]['status'] != 'Stopped': 
+                db[fid]['status'] = 'Completed'
+                db[fid]['type'] = 'drive_direct'
+                db[fid]['file_id'] = file_id
             
     except Exception as e:
         with db_lock: db[fid]['status'] = f'Error: {str(e)[:40]}'
@@ -1590,76 +1721,91 @@ def drive_swarm_worker(fid):
             
         mt = mimetypes.guess_type(name)[0] or 'application/octet-stream'
         meta = {'name': name}
-        init_res = requests.post(
+        init_res = drive_api_session.post(
             'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
             headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json', 'X-Upload-Content-Type': mt, 'X-Upload-Content-Length': str(tot)},
-            json=meta, timeout=15
+            json=meta, timeout=30
         )
         init_res.raise_for_status()
         upload_url = init_res.headers['Location']
         
-        def generate_swarm():
-            chunk_size = 1048576 * 2 
-            max_workers = 16 
-            session = requests.Session()
-            adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers*2, pool_maxsize=max_workers*2)
-            session.mount('http://', adapter); session.mount('https://', adapter)
-            buffer = {}
-            cv = threading.Condition()
-            stop_event = threading.Event()
-            
-            total_chunks = (tot + chunk_size - 1) // chunk_size
+        chunk_size = 8388608 # 8MB Buffer chunking
+        max_workers = 16 
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers*2, pool_maxsize=max_workers*2)
+        session.mount('http://', adapter); session.mount('https://', adapter)
+        buffer = {}
+        cv = threading.Condition()
+        stop_event = threading.Event()
+        
+        total_chunks = (tot + chunk_size - 1) // chunk_size
 
-            def fetch(idx):
-                if stop_event.is_set(): return
-                sb = idx * chunk_size
-                eb = min(sb + chunk_size - 1, tot - 1)
-                th = HEADERS.copy(); th['Range'] = f'bytes={sb}-{eb}'
+        def fetch(idx):
+            if stop_event.is_set(): return
+            sb = idx * chunk_size
+            eb = min(sb + chunk_size - 1, tot - 1)
+            th = HEADERS.copy(); th['Range'] = f'bytes={sb}-{eb}'
+            for _ in range(5):
+                try:
+                    res = session.get(u, headers=th, timeout=(5, 15))
+                    if res.status_code in [200, 206]:
+                        with cv: 
+                            buffer[idx] = res.content
+                            cv.notify_all()
+                        return
+                except: time.sleep(0.5)
+            with cv: 
+                buffer[idx] = b'ERR'
+                cv.notify_all()
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        for i in range(min(max_workers, total_chunks)): executor.submit(fetch, i)
+
+        curr = 0
+        file_id = None
+        try:
+            while curr < total_chunks:
+                with cv:
+                    while curr not in buffer:
+                        with db_lock:
+                            if db[fid]['status'] == 'Stopped': 
+                                stop_event.set()
+                                raise Exception("Stopped by user")
+                        cv.wait(0.5)
+                    data = buffer.pop(curr)
+                    
+                if data == b'ERR': raise Exception("Chunk download failed in Swarm")
+                
+                start_byte = curr * chunk_size
+                end_byte = start_byte + len(data) - 1
+                headers = {'Content-Range': f'bytes {start_byte}-{end_byte}/{tot}', 'Content-Length': str(len(data))}
+                
+                success = False
                 for _ in range(5):
                     try:
-                        res = session.get(u, headers=th, timeout=(3, 10))
-                        if res.status_code in [200, 206]:
-                            with cv: 
-                                buffer[idx] = res.content
-                                cv.notify_all()
-                            return
-                    except: time.sleep(0.2)
-                with cv: 
-                    buffer[idx] = b'ERR'
-                    cv.notify_all()
-
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-            for i in range(min(max_workers, total_chunks)): executor.submit(fetch, i)
-
-            curr = 0
-            try:
-                while curr < total_chunks:
-                    with cv:
-                        while curr not in buffer:
-                            with db_lock:
-                                if db[fid]['status'] == 'Stopped': 
-                                    stop_event.set()
-                                    raise Exception("Stopped by user")
-                            cv.wait(0.5)
-                        data = buffer.pop(curr)
-                        
-                    if data == b'ERR': raise Exception("Chunk download failed")
-                        
-                    next_fetch = curr + max_workers
-                    if next_fetch < total_chunks: executor.submit(fetch, next_fetch)
-                        
-                    with db_lock: db[fid]['down'] += len(data)
-                    yield data
-                    curr += 1
-            finally:
-                stop_event.set()
-                executor.shutdown(wait=False, cancel_futures=True)
-
-        up_res = requests.put(upload_url, data=generate_swarm(), headers={'Content-Length': str(tot)}, timeout=86400)
-        up_res.raise_for_status()
-
-        with db_lock:
-            if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Completed'
+                        res = drive_api_session.put(upload_url, data=data, headers=headers, timeout=60)
+                        if res.status_code in [308, 200, 201]:
+                            if res.status_code in [200, 201]: file_id = res.json().get('id')
+                            success = True
+                            break
+                    except: time.sleep(2)
+                    
+                if not success: raise Exception("Swarm Google Drive Upload rejected.")
+                    
+                with db_lock: db[fid]['down'] += len(data)
+                
+                next_fetch = curr + max_workers
+                if next_fetch < total_chunks: executor.submit(fetch, next_fetch)
+                curr += 1
+                
+            with db_lock:
+                if db[fid]['status'] != 'Stopped': 
+                    db[fid]['status'] = 'Completed'
+                    db[fid]['type'] = 'drive_direct'
+                    db[fid]['file_id'] = file_id
+        finally:
+            stop_event.set()
+            executor.shutdown(wait=False, cancel_futures=True)
 
     except Exception as e:
         with db_lock: db[fid]['status'] = f'Error: {str(e)[:40]}'
@@ -1677,6 +1823,7 @@ def add():
  elif t=='swarm': threading.Thread(target=swarm_worker,args=(fid,)).start()
  elif t=='drive': threading.Thread(target=drive_worker,args=(fid,)).start()
  elif t=='drive_swarm': threading.Thread(target=drive_swarm_worker,args=(fid,)).start()
+ elif t=='drive_direct': threading.Thread(target=drive_direct_worker,args=(fid,)).start()
  return "OK"
 
 @app.route('/api/action/<fid>/<act>')
@@ -1832,7 +1979,7 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V124 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V126 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Ports 80 and 3389 are open in your VPS Firewall/Oracle Security List!"
 echo ""
