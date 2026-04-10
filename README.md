@@ -6,7 +6,7 @@ Download any files resumable or non-resumable file from a low speed routed by di
 - copy the script.sh text to vps shell terminal for smooth installation.
 - After installation replace the vps ip here http://VPSIP:8080/
 
-## 🚀 Features: File trasnfers & Link Fetching to vps server with online video player Windows/Apple/Android.
+## 🚀 Features: File transfers & Remote uploading to vps servers & Gdrive with online video player Windows/Apple/Android.
 Current updated file "cloudflare-worker-and-pages-vpscode-ampere"  for ubuntu Arm64 tested
 
 - 1st engine download non-resume links in single connection to vps disk gives instant resumable output link for idm & vlc with play buttom.
