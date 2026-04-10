@@ -2,16 +2,31 @@ rm -f setup.sh
 cat > setup.sh << 'EOF'
 #!/bin/bash
 clear
+set -e
+
 echo "===================================================="
 echo "🚀 INITIATING MEDIA ENGINE & NATIVE XRDP DESKTOP"
 echo "===================================================="
 echo ""
-echo "🔐 DASHBOARD & RDP SECURITY SETUP"
+
+# Generate random password (10 characters: uppercase, lowercase, numbers, symbols)
+generate_password() {
+    PASSWORD=$(cat /dev/urandom | tr -dc 'A-Za-z0-9!@#$%^&*()_+-=' | fold -w 10 | head -n 1)
+    while ! echo "$PASSWORD" | grep -q '[A-Z]' || \
+          ! echo "$PASSWORD" | grep -q '[a-z]' || \
+          ! echo "$PASSWORD" | grep -q '[0-9]' || \
+          ! echo "$PASSWORD" | grep -q '[!@#$%^&*()_+=-]'; do
+        PASSWORD=$(cat /dev/urandom | tr -dc 'A-Za-z0-9!@#$%^&*()_+-=' | fold -w 10 | head -n 1)
+    done
+    echo "$PASSWORD"
+}
+
+RDP_USERNAME="rdpuser"
+RDP_PASSWORD=$(generate_password)
+
+echo "🔐 DASHBOARD SECURITY SETUP"
 read -s -p "Create a Password to protect your Web Dashboard: " DASH_PASS </dev/tty
 echo -e "\n✅ Dashboard password accepted."
-
-# Automatically generate a secure 10-character RDP password
-RDP_PASS=$(tr -dc 'A-Za-z0-9!@#%^&*' </dev/urandom | head -c 10)
 echo "✅ Generated secure RDP Password automatically."
 echo "===================================================="
 sleep 1
@@ -29,78 +44,80 @@ else
 fi
 
 echo "🛑 [1/6] Aggressive Purge of Old Systems..."
-sudo systemctl stop proxy desktop nginx xrdp >/dev/null 2>&1
-sudo systemctl disable proxy desktop nginx xrdp >/dev/null 2>&1
+sudo systemctl stop proxy desktop nginx xrdp >/dev/null 2>&1 || true
+sudo systemctl disable proxy desktop nginx xrdp >/dev/null 2>&1 || true
 
-sudo apt-get purge -y nginx nginx-common nginx-core snapd chromium-browser caddy cloudflared apache2 xvfb fluxbox x11vnc novnc websockify xrdp xfce4 xfce4-goodies >/dev/null 2>&1
-sudo apt-get autoremove -y >/dev/null 2>&1
+sudo apt-get purge -y nginx nginx-common nginx-core snapd chromium-browser caddy cloudflared apache2 xvfb fluxbox x11vnc novnc websockify xrdp xfce4 xfce4-goodies >/dev/null 2>&1 || true
+sudo apt-get autoremove -y >/dev/null 2>&1 || true
 
-killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox fluxbox brave brave-browser chrome chromium dbus-daemon autocutsel xrdp >/dev/null 2>&1
+killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox fluxbox brave brave-browser chrome chromium dbus-daemon autocutsel xrdp >/dev/null 2>&1 || true
 
 rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
 rm -rf /root/app.py /root/start_*.sh /home/ubuntu/app.py /home/ubuntu/start_*.sh /home/ubuntu/chromium /home/ubuntu/drive_creds.json /etc/systemd/system/proxy.service /etc/systemd/system/desktop.service >/dev/null 2>&1
-for p in 80 443 3389 5900 6080 8080 8081; do fuser -k -9 $p/tcp >/dev/null 2>&1; done; sleep 1
+for p in 80 443 3389 5900 6080 8080 8081; do fuser -k -9 $p/tcp >/dev/null 2>&1 || true; done; sleep 1
 
-echo "🛡️ [2/6] Installing Core Dependencies & Desktop Environment..."
+echo "🛡️ [2/6] Installing Core Dependencies (Verbose Output Enabled)..."
 export DEBIAN_FRONTEND=noninteractive
-
-# Fix timezone prompt hanging the XRDP installation
 sudo ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
-sudo dpkg-reconfigure --frontend noninteractive tzdata >/dev/null 2>&1
+sudo dpkg-reconfigure --frontend noninteractive tzdata || true
 
-apt-get update -y -qq >/dev/null 2>&1
-sudo apt-get -o Dpkg::Options::="--force-confmiss" install --reinstall -y nginx nginx-common nginx-core >/dev/null 2>&1
+apt-get update -y || true
+sudo apt-get -o Dpkg::Options::="--force-confmiss" install --reinstall -y nginx nginx-common nginx-core || true
 
-PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")')
+PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")' 2>/dev/null || echo "python3-venv")
 
-# Install Python, FFmpeg, and Linux Desktop (XFCE4 + XRDP + Firefox)
-sudo apt-get install -y -qq python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg build-essential python3-dev unrar p7zip-full $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv xrdp xfce4 xfce4-goodies dbus-x11 x11-xserver-utils firefox >/dev/null 2>&1
+apt-get install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg build-essential python3-dev unrar p7zip-full $PY_VENV python3.10-venv python3.11-venv python3.12-venv python3.13-venv python3.14-venv || true
 
-ufw --force reset >/dev/null 2>&1; ufw default deny incoming >/dev/null 2>&1; ufw default allow outgoing >/dev/null 2>&1
-for p in 22 80 3389; do ufw allow $p/tcp >/dev/null 2>&1; sudo iptables -I INPUT 1 -p tcp --dport $p -j ACCEPT; done
-ufw --force enable >/dev/null 2>&1; sudo netfilter-persistent save >/dev/null 2>&1
+echo "🖥️ [3/6] Configuring Native Windows RDP & Browsers (Verbose Output Enabled)..."
+apt-get install -y xfce4 xfce4-goodies dbus-x11 || true
+apt-get install -y xrdp xclip xsel firefox || true
 
-echo "🦁 [3/6] Fetching Native ARM64 Brave (Chromium Engine)..."
 sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-release.list >/dev/null 2>&1
-sudo apt-get update -y -qq >/dev/null 2>&1
-sudo apt-get install -y brave-browser >/dev/null 2>&1
+echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
+sudo apt-get update -y || true
+sudo apt-get install -y brave-browser || true
 
-echo "🖥️ [4/6] Configuring Native Windows RDP (xrdp)..."
-echo "ubuntu:$RDP_PASS" | sudo chpasswd
-sudo usermod -aG ssl-cert xrdp >/dev/null 2>&1
-echo xfce4-session > /home/ubuntu/.xsession
-chown ubuntu:ubuntu /home/ubuntu/.xsession
-
-# Flawless XRDP execution script injection
-cat << 'STARTWM' | sudo tee /etc/xrdp/startwm.sh > /dev/null
-#!/bin/sh
-if [ -r /etc/default/locale ]; then
-  . /etc/default/locale
-  export LANG LANGUAGE
+if id "$RDP_USERNAME" &>/dev/null; then
+    echo "$RDP_USERNAME:$RDP_PASSWORD" | chpasswd
+else
+    useradd -m -s /bin/bash "$RDP_USERNAME"
+    echo "$RDP_USERNAME:$RDP_PASSWORD" | chpasswd
+    usermod -aG sudo "$RDP_USERNAME"
 fi
-export XDG_SESSION_DESKTOP=xfce
-export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
-export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xdg
-exec startxfce4
-STARTWM
-sudo chmod +x /etc/xrdp/startwm.sh
 
-# Prevent Polkit Color Manager crash on remote login
-mkdir -p /etc/polkit-1/localauthority/50-local.d/
-cat << 'POLKIT' | sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla > /dev/null
-[Allow Colord all Users]
-Identity=unix-user:*
-Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-profile
-ResultAny=no
-ResultInactive=no
-ResultActive=yes
-POLKIT
+mkdir -p /home/$RDP_USERNAME
+echo "startxfce4" > /home/$RDP_USERNAME/.xsession
+chown $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.xsession
+chmod +x /home/$RDP_USERNAME/.xsession
 
-sudo systemctl enable xrdp >/dev/null 2>&1
-sudo systemctl restart xrdp >/dev/null 2>&1
+if [ -f /etc/xrdp/startwm.sh ]; then
+    if ! grep -q "startxfce4" /etc/xrdp/startwm.sh; then
+        sed -i '/^test -x \/etc\/X11\/Xsession/i startxfce4' /etc/xrdp/startwm.sh
+    fi
+fi
 
-echo "🔀 [5/6] Configuring Nginx Port 80 Switchboard..."
+mkdir -p /home/$RDP_USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml
+cat > /home/$RDP_USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml << 'XFCE_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false"/>
+  </property>
+</channel>
+XFCE_EOF
+chown -R $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.config
+
+systemctl start xrdp || true
+systemctl enable xrdp || true
+
+ufw --force reset >/dev/null 2>&1 || true
+ufw default deny incoming >/dev/null 2>&1 || true
+ufw default allow outgoing >/dev/null 2>&1 || true
+for p in 22 80 3389; do ufw allow $p/tcp >/dev/null 2>&1 || true; sudo iptables -I INPUT 1 -p tcp --dport $p -j ACCEPT || true; done
+ufw --force enable >/dev/null 2>&1 || true
+sudo netfilter-persistent save >/dev/null 2>&1 || true
+
+echo "🔀 [4/6] Configuring Nginx Port 80 Switchboard..."
 mkdir -p /etc/nginx/sites-available
 mkdir -p /etc/nginx/sites-enabled
 
@@ -124,14 +141,14 @@ server {
 }
 NGINX_EOF
 ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
-systemctl restart nginx >/dev/null 2>&1
+systemctl restart nginx >/dev/null 2>&1 || true
 
-echo "⚡ [6/6] Setting up Server-Side Vault Backend..."
+echo "⚡ [5/6] Setting up Server-Side Vault Backend..."
 mkdir -p /home/ubuntu/downloads
 echo "$DASH_PASS" > /home/ubuntu/.dash_pass
 rm -rf /home/ubuntu/venv
-python3 -m venv /home/ubuntu/venv >/dev/null 2>&1 || { python3 -m venv --without-pip /home/ubuntu/venv && curl -sS https://bootstrap.pypa.io/get-pip.py | /home/ubuntu/venv/bin/python >/dev/null 2>&1; }
-/home/ubuntu/venv/bin/pip install flask requests psutil curl_cffi waitress rarfile py7zr >/dev/null 2>&1
+python3 -m venv /home/ubuntu/venv || { python3 -m venv --without-pip /home/ubuntu/venv && curl -sS https://bootstrap.pypa.io/get-pip.py | /home/ubuntu/venv/bin/python; }
+/home/ubuntu/venv/bin/pip install flask requests psutil curl_cffi waitress rarfile py7zr
 
 cat > /home/ubuntu/app.py << 'PYTHON_EOF'
 import os,time,uuid,threading,requests,subprocess,shutil,re,queue,mimetypes,concurrent.futures,hashlib,json,gc,zipfile,tarfile,base64,collections; from flask import Flask,jsonify,render_template_string,request,send_file,Response,redirect; import psutil; import urllib.parse
@@ -146,7 +163,6 @@ db={}; db_lock=threading.Lock(); active_procs={}
 
 global_mounted_data = None 
 
-# Global Shared Cache - Strict 512MB RAM Engine
 shared_drive_cache = collections.OrderedDict()
 shared_drive_lock = threading.Lock()
 
@@ -192,55 +208,43 @@ class DriveRangeFile:
         self.headers = {'Authorization': f'Bearer {access_token}'}
         self.size = size
         self.pos = 0
-        self.chunk_size = 4194304 # 4MB Base Chunk for instant seeking
+        self.chunk_size = 4194304 
         self.file_id = file_id
 
     def _get_chunk(self, chunk_idx):
         cache_key = f"{self.file_id}_{chunk_idx}"
-        
         with shared_drive_lock:
             if cache_key in shared_drive_cache:
                 shared_drive_cache.move_to_end(cache_key)
                 return shared_drive_cache[cache_key]
-                
         start = chunk_idx * self.chunk_size
         end = min(start + self.chunk_size - 1, self.size - 1)
         if start >= self.size: return b''
-        
         h = self.headers.copy()
         h['Range'] = f'bytes={start}-{end}'
-        
         try:
             r = archive_session.get(self.url, headers=h, timeout=10)
             data = r.content
-        except:
-            data = b''
-            
+        except: data = b''
         with shared_drive_lock:
             shared_drive_cache[cache_key] = data
             while len(shared_drive_cache) > 128:
                 shared_drive_cache.popitem(last=False)
-                
         return data
 
     def read(self, size=-1):
         if self.pos >= self.size: return b''
         if size < 0 or self.pos + size > self.size: size = self.size - self.pos
-        
         result = bytearray()
         while size > 0 and self.pos < self.size:
             chunk_idx = self.pos // self.chunk_size
             chunk_offset = self.pos % self.chunk_size
-            
             chunk_data = self._get_chunk(chunk_idx)
             if not chunk_data: break
-            
             take = min(size, len(chunk_data) - chunk_offset)
             result.extend(chunk_data[chunk_offset : chunk_offset + take])
-            
             self.pos += take
             size -= take
-            
         return bytes(result)
 
     def seek(self, offset, whence=0):
@@ -277,7 +281,6 @@ def update_telemetry():
   except: pass
 threading.Thread(target=update_telemetry,daemon=True).start()
 
-# --- HLS ENGINE VARIABLES ---
 HLS_DIR = os.path.join(DL_DIR, "hls_cache")
 os.makedirs(HLS_DIR, exist_ok=True)
 hls_procs = {}
@@ -300,8 +303,6 @@ def cleaner():
      p2p_streams[fid].chunks.clear(); del p2p_streams[fid]
    for fid in list(disk_streams.keys()):
     if fid not in db: del disk_streams[fid]
-    
-  # Cleanup stale HLS transcodes older than 24 hours
   try:
       for d in os.listdir(HLS_DIR):
           dir_path = os.path.join(HLS_DIR, d)
@@ -443,7 +444,7 @@ function playVideo(url, name) {
         let playlistUrl = data.playlist_url;
         let video = document.getElementById('plyr_video');
         
-        warnBox.innerHTML = '<b>✅ Universal HLS VOD Stream Active:</b> Server is dynamically transcoding audio and forcing strict 00:00:00 timestamps. Perfect Apple/Windows/Android compatibility and seeking enabled!';
+        warnBox.innerHTML = '<b>✅ Universal FFmpeg HLS Pipeline Active:</b> Server is dynamically transcoding audio to AAC and strictly enforcing VOD timestamps. Perfect Apple/Windows/Android compatibility and seeking enabled!';
         
         if (Hls.isSupported()) {
             if(window.hls) window.hls.destroy();
@@ -656,11 +657,6 @@ def index():
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     return resp
 
-# --- HLS ENGINE VARIABLES ---
-HLS_DIR = os.path.join(DL_DIR, "hls_cache")
-os.makedirs(HLS_DIR, exist_ok=True)
-hls_procs = {}
-
 @app.route('/hls/<stream_id>/<filename>')
 def serve_hls(stream_id, filename):
     file_path = os.path.join(HLS_DIR, stream_id, filename)
@@ -668,13 +664,9 @@ def serve_hls(stream_id, filename):
         return "Not found", 404
         
     if filename.endswith('.m3u8'):
-        with open(file_path, 'r') as f:
-            content = f.read()
-            
-        # Dynamically inject Apple VOD 00:00:00 timestamp tag into the live playlist
+        with open(file_path, 'r') as f: content = f.read()
         if '#EXT-X-START' not in content:
             content = content.replace('#EXT-X-TARGETDURATION', '#EXT-X-START:TIME-OFFSET=0.0\n#EXT-X-TARGETDURATION')
-            
         resp = Response(content, mimetype='application/vnd.apple.mpegurl')
         resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -1185,39 +1177,6 @@ def relay_dl(fid,fname):
     hdrs['Content-Range'] = f'bytes {sb}-{eb}/{ts}'
     return Response(gen_disk(), status=206, headers=hdrs)
   return Response(gen_disk(), status=200, headers=hdrs)
-
-def cleaner():
- while True:
-  time.sleep(3600); now=time.time()
-  with db_lock:
-   for fid in list(db.keys()):
-    if now-db[fid].get('start',now)>86400:
-     try: os.remove(db[fid]['path'])
-     except: pass
-     if fid in p2p_streams:
-      p2p_streams[fid].chunks.clear()
-      del p2p_streams[fid]
-     if fid in disk_streams: del disk_streams[fid]
-     del db[fid]
-   for fid in list(p2p_streams.keys()):
-    if fid not in db:
-     p2p_streams[fid].chunks.clear(); del p2p_streams[fid]
-   for fid in list(disk_streams.keys()):
-    if fid not in db: del disk_streams[fid]
-    
-  try:
-      for d in os.listdir(HLS_DIR):
-          dir_path = os.path.join(HLS_DIR, d)
-          if os.path.isdir(dir_path):
-              if now - os.path.getmtime(dir_path) > 86400:
-                  if d in hls_procs:
-                      try: hls_procs[d].kill()
-                      except: pass
-                      del hls_procs[d]
-                  shutil.rmtree(dir_path, ignore_errors=True)
-  except: pass
-  gc.collect() 
-threading.Thread(target=cleaner,daemon=True).start()
 
 @app.route('/api/drive/status')
 def drive_status():
@@ -1866,26 +1825,27 @@ WantedBy=multi-user.target
 PROXY_EOF
 
 systemctl daemon-reload
-systemctl enable proxy nginx >/dev/null 2>&1
-systemctl restart proxy nginx >/dev/null 2>&1
+systemctl enable proxy nginx >/dev/null 2>&1 || true
+systemctl restart proxy nginx >/dev/null 2>&1 || true
 
 echo "🔍 Fetching precise public IP Address..."
 sleep 3
-IP=$(curl -s -m 5 -4 icanhazip.com || curl -s -m 5 -4 ifconfig.me || curl -s -m 5 -4 api.ipify.org || hostname -I | awk '{print $1}')
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V122 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
+echo "✅ [SUCCESS] V124 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
 echo "===================================================="
 echo "⚠️ IMPORTANT: Ensure Ports 80 and 3389 are open in your VPS Firewall/Oracle Security List!"
 echo ""
 echo "🖥️ --- WINDOWS RDP CONNECTION INFO ---"
 echo "🖥️ App to use: Remote Desktop Connection (Windows) or Microsoft Remote Desktop (Mac)"
-echo "🖥️ IP Address: $IP"
-echo "🖥️ Username: ubuntu"
-echo "🖥️ Password: $RDP_PASS"
+echo "🖥️ IP Address: $SERVER_IP:3389"
+echo "🖥️ Username: $RDP_USERNAME"
+echo "🖥️ Password: $RDP_PASSWORD"
+echo "🖥️ (When prompted inside RDP, leave 'Session' as Xorg)"
 echo ""
 echo "🌐 --- WEB DASHBOARD INFO ---"
 echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
-echo "🌐 2. Direct VPS Local Access: http://$IP"
+echo "🌐 2. Direct VPS Local Access: http://$SERVER_IP"
 echo "===================================================="
 EOF
 bash setup.sh
