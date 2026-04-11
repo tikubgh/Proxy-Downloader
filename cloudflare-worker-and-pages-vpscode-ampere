@@ -1314,8 +1314,8 @@ def drive_swarm_worker(fid):
         )
         init_res.raise_for_status()
         upload_url = init_res.headers['Location']
-        chunk_size = 67108864 # 64MB Gigabit Buffer chunking
-        max_workers = 16 
+        chunk_size = 33554432
+        max_workers = 8
         session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers*2, pool_maxsize=max_workers*2)
         session.mount('http://', adapter); session.mount('https://', adapter)
@@ -1369,6 +1369,8 @@ def drive_swarm_worker(fid):
                     except: time.sleep(2)
                 if not success: raise Exception("Swarm Google Drive Upload rejected.")
                 with db_lock: db[fid]['down'] += len(data)
+                del data
+                gc.collect()
                 next_fetch = curr + max_workers
                 if next_fetch < total_chunks: executor.submit(fetch, next_fetch)
                 curr += 1
@@ -1534,7 +1536,7 @@ SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/de
 OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASSWORD}" | base64 -w 0)
 echo ""
 echo "====================================================================="
-echo "✅ [SUCCESS] V133 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
+echo "✅ [SUCCESS] V134 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
 echo "====================================================================="
 echo ""
 echo "🌐 --- 1. WEB DASHBOARD INFO ---"
