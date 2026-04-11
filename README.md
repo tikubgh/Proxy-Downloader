@@ -16,4 +16,5 @@ Current updated file "cloudflare-worker-and-pages-vpscode-ampere"  for ubuntu Ar
 - 6th engine have google drive linking facility with remote uploading to Gdrive & instant extracting zip or rar links with output link for idm & vlc with play buttom.
 - 7th engine have box 1 P2P file transfer facility without vps disk & box 2 upload to vps disk both with output link for idm & vlc with play buttom.
 
-- Additionally (Windows RDP Linux GUI), (shadowsocks VPN optimised speed)
+- Additionally (Windows RDP Linux GUI) before start reboot vps and delete old credentials in RDP click (allow me to save crednetials)
+- Additionally (shadowsocks VPN optimised speed)
