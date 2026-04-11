@@ -820,12 +820,14 @@ def relay_dl(fid,fname):
        if fid not in db or db[fid]['status'] == 'Stopped': return
       if idx not in stream.needed and idx not in stream.active:
        stream.needed.add(idx)
-      stream.cond.wait(timeout=1.0)
+      stream.cond.wait(timeout=0.5)
      data = stream.chunks[idx]
     rem_in_chunk = len(data) - offset
     rem_in_req = eb - curr + 1
     take = min(rem_in_chunk, rem_in_req)
-    yield data[offset : offset + take]
+    chunk_data = data[offset : offset + take]
+    for i in range(0, len(chunk_data), STREAM_CHUNK_SIZE):
+     yield chunk_data[i:i+STREAM_CHUNK_SIZE]
     curr += take
   hdrs['Content-Disposition'] = f"{disp}; filename*=UTF-8''{encoded_name}"
   hdrs['Content-Type'] = mt
@@ -845,7 +847,7 @@ def relay_dl(fid,fname):
   def gen_disk():
    curr = sb
    max_chunk = ((ts - 1) // P2P_CHUNK_SIZE) if ts > 0 else float('inf')
-   with open(fp, 'rb') as lf:
+   with open(fp, 'rb', buffering=0) as lf:
     while curr <= eb:
      idx = curr // P2P_CHUNK_SIZE
      with stream.lock:
@@ -858,16 +860,21 @@ def relay_dl(fid,fname):
         if fid not in db or db[fid]['status'] == 'Stopped': return
        if idx not in stream.active and idx not in stream.prioritized: 
         stream.prioritized.add(idx)
-       stream.cond.wait(timeout=1.0)
+       stream.cond.wait(timeout=0.5)
      rem_in_chunk = P2P_CHUNK_SIZE - (curr % P2P_CHUNK_SIZE)
      rem_in_req = eb - curr + 1
-     take = min(rem_in_chunk, rem_in_req)
+     take_total = min(rem_in_chunk, rem_in_req)
      lf.seek(curr)
-     data = lf.read(take)
-     if data:
+     bytes_yielded = 0
+     while bytes_yielded < take_total:
+      c_take = min(STREAM_CHUNK_SIZE, take_total - bytes_yielded)
+      data = lf.read(c_take)
+      if not data:
+       time.sleep(0.1)
+       continue
       yield data
+      bytes_yielded += len(data)
       curr += len(data)
-     else: time.sleep(0.1)
   hdrs['Content-Disposition'] = f"{disp}; filename*=UTF-8''{encoded_name}"
   hdrs['Content-Type'] = mt
   if ts > 0:
@@ -1527,7 +1534,7 @@ SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/de
 OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASSWORD}" | base64 -w 0)
 echo ""
 echo "====================================================================="
-echo "✅ [SUCCESS] V132 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
+echo "✅ [SUCCESS] V133 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
 echo "====================================================================="
 echo ""
 echo "🌐 --- 1. WEB DASHBOARD INFO ---"
