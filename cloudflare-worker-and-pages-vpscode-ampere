@@ -5,7 +5,7 @@ clear
 set -e
 
 echo "===================================================="
-echo "🚀 INITIATING MEDIA ENGINE & NATIVE XRDP DESKTOP"
+echo "🚀 INITIATING MEDIA ENGINE, NATIVE RDP & OUTLINE VPN"
 echo "===================================================="
 echo ""
 
@@ -23,15 +23,18 @@ generate_password() {
 
 RDP_USERNAME="rdpuser"
 RDP_PASSWORD=$(generate_password)
+VPN_PASSWORD=$(generate_password)
+VPN_PORT="8443"
 
 echo "🔐 DASHBOARD SECURITY SETUP"
 read -s -p "Create a Password to protect your Web Dashboard: " DASH_PASS </dev/tty
 echo -e "\n✅ Dashboard password accepted."
 echo "✅ Generated secure RDP Password automatically."
+echo "✅ Generated secure Shadowsocks VPN Password automatically."
 echo "===================================================="
 sleep 1
 
-echo "💽 [0/6] Configuring Virtual Memory (4GB Swap)..."
+echo "💽 [0/7] Configuring Virtual Memory (4GB Swap)..."
 if [ ! -f /swapfile ]; then
     sudo fallocate -l 4G /swapfile
     sudo chmod 600 /swapfile
@@ -43,21 +46,21 @@ else
     echo "✅ Swapfile already exists."
 fi
 
-echo "🛑 [1/6] Aggressive Purge of Old Systems & Disk Space Wipe..."
-sudo systemctl stop proxy desktop nginx xrdp >/dev/null 2>&1 || true
-sudo systemctl disable proxy desktop nginx xrdp >/dev/null 2>&1 || true
+echo "🛑 [1/7] Aggressive Purge of Old Systems & Disk Space Wipe..."
+sudo systemctl stop proxy desktop nginx xrdp shadowsocks-rust >/dev/null 2>&1 || true
+sudo systemctl disable proxy desktop nginx xrdp shadowsocks-rust >/dev/null 2>&1 || true
 
 sudo apt-get purge -y nginx nginx-common nginx-core snapd chromium-browser caddy cloudflared apache2 xvfb fluxbox x11vnc novnc websockify xrdp xfce4 xfce4-goodies xorgxrdp tigervnc-standalone-server >/dev/null 2>&1 || true
 sudo apt-get autoremove -y >/dev/null 2>&1 || true
 
-killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox fluxbox brave brave-browser chrome chromium dbus-daemon autocutsel xrdp >/dev/null 2>&1 || true
+killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox fluxbox brave brave-browser chrome chromium dbus-daemon autocutsel xrdp ssserver >/dev/null 2>&1 || true
 
 rm -rf /home/ubuntu/downloads/* /home/ubuntu/hls_cache/* /root/downloads/* /root/hls_cache/* >/dev/null 2>&1 || true
 rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
-rm -rf /root/app.py /root/start_*.sh /home/ubuntu/app.py /home/ubuntu/start_*.sh /home/ubuntu/chromium /home/ubuntu/drive_creds.json /etc/systemd/system/proxy.service /etc/systemd/system/desktop.service >/dev/null 2>&1
-for p in 80 443 3389 5900 6080 8080 8081; do fuser -k -9 $p/tcp >/dev/null 2>&1 || true; done; sleep 1
+rm -rf /root/app.py /root/start_*.sh /home/ubuntu/app.py /home/ubuntu/start_*.sh /home/ubuntu/chromium /home/ubuntu/drive_creds.json /etc/systemd/system/proxy.service /etc/systemd/system/desktop.service /usr/local/bin/ssserver /etc/shadowsocks-rust /etc/systemd/system/shadowsocks-rust.service >/dev/null 2>&1
+for p in 80 443 3389 5900 6080 8080 8081 8443; do fuser -k -9 $p/tcp >/dev/null 2>&1 || true; fuser -k -9 $p/udp >/dev/null 2>&1 || true; done; sleep 1
 
-echo "🛡️ [2/6] Installing Core Dependencies (Verbose Output Enabled)..."
+echo "🛡️ [2/7] Installing Core Dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 sudo ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
 sudo dpkg-reconfigure --frontend noninteractive tzdata || true
@@ -67,13 +70,12 @@ sudo apt-get -o Dpkg::Options::="--force-confmiss" install --reinstall -y nginx 
 
 PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")' 2>/dev/null || echo "python3-venv")
 
-apt-get install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg build-essential python3-dev unrar p7zip-full $PY_VENV || true
+apt-get install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg build-essential python3-dev unrar p7zip-full tar jq xz-utils $PY_VENV || true
 
-echo "🖥️ [3/6] Configuring Native Windows RDP & Browsers (Verbose Output Enabled)..."
-# Explicitly installing xorgxrdp and tigervnc backend to prevent session crashes on ARM
+echo "🖥️ [3/7] Configuring Native Windows RDP & Browsers..."
 apt-get install -y xfce4 xfce4-goodies dbus-x11 xrdp xorgxrdp tigervnc-standalone-server xclip xsel firefox || true
 
-# Grant xrdp access to ssl certificates to enable proper NLA (Network Level Authentication)
+# Grant xrdp access to ssl certificates to enable proper NLA
 adduser xrdp ssl-cert || true
 
 sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
@@ -89,13 +91,11 @@ else
     usermod -aG sudo "$RDP_USERNAME"
 fi
 
-# Hardcode proper D-Bus X session for XFCE4
 mkdir -p /home/$RDP_USERNAME
 echo "xfce4-session" > /home/$RDP_USERNAME/.xsession
 chown $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.xsession
 chmod +x /home/$RDP_USERNAME/.xsession
 
-# Completely rebuild startwm.sh from scratch to prevent display manager conflicts
 cat > /etc/xrdp/startwm.sh << 'STARTWM_EOF'
 #!/bin/sh
 if [ -r /etc/default/locale ]; then
@@ -136,14 +136,95 @@ chown -R $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.config /home/$RDP_USER
 systemctl restart xrdp || true
 systemctl enable xrdp || true
 
+echo "🌍 [4/7] Setting Up ISP-Throttling Evasion VPN (Shadowsocks-Rust)..."
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ]; then
+    RUST_URL="https://github.com/shadowsocks/shadowsocks-rust/releases/download/v1.18.2/shadowsocks-v1.18.2.x86_64-unknown-linux-gnu.tar.xz"
+elif [ "$ARCH" = "aarch64" ]; then
+    RUST_URL="https://github.com/shadowsocks/shadowsocks-rust/releases/download/v1.18.2/shadowsocks-v1.18.2.aarch64-unknown-linux-gnu.tar.xz"
+fi
+
+wget -qO ss-rust.tar.xz "$RUST_URL"
+tar -xf ss-rust.tar.xz -C /usr/local/bin/ ssserver
+rm ss-rust.tar.xz
+chmod +x /usr/local/bin/ssserver
+setcap 'cap_net_bind_service=+ep' /usr/local/bin/ssserver
+
+mkdir -p /etc/shadowsocks-rust
+cat > /etc/shadowsocks-rust/config.json << EOF_JSON
+{
+    "server": "0.0.0.0",
+    "server_port": $VPN_PORT,
+    "password": "$VPN_PASSWORD",
+    "method": "chacha20-ietf-poly1305",
+    "mode": "tcp_and_udp",
+    "fast_open": true,
+    "no_delay": true
+}
+EOF_JSON
+
+cat > /etc/sysctl.d/99-shadowsocks-final.conf << EOF_SYSCTL
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+net.ipv4.udp_rmem_min=8192
+net.ipv4.udp_wmem_min=8192
+net.core.rmem_default=262144
+net.core.wmem_default=262144
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_mtu_probing=1
+net.ipv4.tcp_base_mss=1024
+net.ipv4.tcp_window_scaling=1
+net.ipv4.tcp_adv_win_scale=1
+net.core.rmem_max=33554432
+net.core.wmem_max=33554432
+net.ipv4.tcp_rmem=4096 87380 33554432
+net.ipv4.tcp_wmem=4096 65536 33554432
+net.core.somaxconn=65535
+net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_fin_timeout=15
+net.ipv4.tcp_slow_start_after_idle=0
+EOF_SYSCTL
+sysctl -p /etc/sysctl.d/99-shadowsocks-final.conf >/dev/null 2>&1 || true
+modprobe tcp_bbr 2>/dev/null || true
+
+cat > /etc/systemd/system/shadowsocks-rust.service << EOF_SYSTEMD
+[Unit]
+Description=Shadowsocks-Rust Final
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF_SYSTEMD
+
+systemctl daemon-reload
+systemctl enable shadowsocks-rust >/dev/null 2>&1 || true
+systemctl restart shadowsocks-rust >/dev/null 2>&1 || true
+
+echo "🛡️ [5/7] Establishing Unified Master Firewall..."
 ufw --force reset >/dev/null 2>&1 || true
 ufw default deny incoming >/dev/null 2>&1 || true
 ufw default allow outgoing >/dev/null 2>&1 || true
-for p in 22 80 3389; do ufw allow $p/tcp >/dev/null 2>&1 || true; sudo iptables -I INPUT 1 -p tcp --dport $p -j ACCEPT || true; done
+
+# Merging SSH, Web Dashboard, RDP, and VPN TCP rules
+for p in 22 80 3389 $VPN_PORT; do 
+    ufw allow $p/tcp >/dev/null 2>&1 || true
+    sudo iptables -I INPUT 1 -p tcp --dport $p -j ACCEPT || true
+done
+# Adding UDP exception exclusively for the VPN
+ufw allow $VPN_PORT/udp >/dev/null 2>&1 || true
+sudo iptables -I INPUT 1 -p udp --dport $VPN_PORT -j ACCEPT || true
+
 ufw --force enable >/dev/null 2>&1 || true
 sudo netfilter-persistent save >/dev/null 2>&1 || true
 
-echo "🔀 [4/6] Configuring Nginx Port 80 Switchboard..."
+echo "🔀 [6/7] Configuring Nginx Port 80 Switchboard..."
 mkdir -p /etc/nginx/sites-available
 mkdir -p /etc/nginx/sites-enabled
 
@@ -169,7 +250,7 @@ NGINX_EOF
 ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 systemctl restart nginx >/dev/null 2>&1 || true
 
-echo "⚡ [5/6] Setting up Server-Side Vault Backend..."
+echo "⚡ [7/7] Setting up Server-Side Vault Backend..."
 mkdir -p /home/ubuntu/downloads
 echo "$DASH_PASS" > /home/ubuntu/.dash_pass
 rm -rf /home/ubuntu/venv
@@ -2003,24 +2084,41 @@ echo "🔍 Fetching precise public IP Address..."
 sleep 3
 SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 
-echo "✅ [SUCCESS] V129 MEDIA ENGINE & RDP DEPLOYMENT COMPLETE."
-echo "===================================================="
-echo "⚠️ IMPORTANT: Ensure Ports 80 and 3389 are open in your VPS Firewall!"
+# Base64 encode the Outline Access Key properly
+OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASSWORD}" | base64 -w 0)
+
 echo ""
-echo "💻 --- HOW TO BYPASS LINUX LOGIN AND SET 1366x768 --- 💻"
-echo "1. Open 'Remote Desktop Connection' on your Windows laptop."
-echo "2. Click 'Show Options' at the bottom left corner."
-echo "3. Go to the 'Display' tab and drag the slider to 1366 by 768."
-echo "4. Go back to the 'General' tab."
-echo "5. Computer: Enter '$SERVER_IP'"
-echo "6. User name: Type 'rdpuser' (Check 'Allow me to save credentials' if desired)."
-echo "7. Click Connect!"
-echo "8. Windows will natively prompt for the password ($RDP_PASSWORD) - PASTE IT HERE!"
-echo "   (This completely bypasses the green Linux login screen and prevents crashes)."
+echo "====================================================================="
+echo "✅ [SUCCESS] V130 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
+echo "====================================================================="
 echo ""
-echo "🌐 --- WEB DASHBOARD INFO ---"
-echo "🌐 1. Access your Cloudflare Worker: https://[your-worker-name].workers.dev"
-echo "🌐 2. Direct VPS Local Access: http://$SERVER_IP"
-echo "===================================================="
+echo "🌐 --- 1. WEB DASHBOARD INFO ---"
+echo "Direct Access: http://$SERVER_IP"
+echo "Cloudflare Worker Access: https://[your-worker-name].workers.dev"
+echo ""
+echo "====================================================================="
+echo ""
+echo "💻 --- 2. WINDOWS RDP CONNECTION INFO ---"
+echo "IP Address:  $SERVER_IP:3389"
+echo "Username:    $RDP_USERNAME"
+echo "Password:    $RDP_PASSWORD"
+echo ""
+echo "* How to bypass Linux login & set 1366x768:"
+echo "  1. Open 'Remote Desktop Connection'."
+echo "  2. Click 'Show Options' -> 'Display' -> drag to 1366 by 768."
+echo "  3. Go back to 'General', enter IP and Username ($RDP_USERNAME)."
+echo "  4. Click Connect. Windows will prompt for the password natively!"
+echo ""
+echo "====================================================================="
+echo ""
+echo "🛡️ --- 3. OUTLINE VPN (SHADOWSOCKS) INFO ---"
+echo "Port:        $VPN_PORT (TCP/UDP)"
+echo "Encryption:  chacha20-ietf-poly1305"
+echo "Password:    $VPN_PASSWORD"
+echo ""
+echo "🔑 ONE-CLICK OUTLINE CLIENT LINK (Copy & Paste this into the app):"
+echo "ss://${OUTLINE_ENCODED}@${SERVER_IP}:${VPN_PORT}#MediaEngineVPN"
+echo ""
+echo "====================================================================="
 EOF
 bash setup.sh
