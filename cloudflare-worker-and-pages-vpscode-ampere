@@ -1684,12 +1684,38 @@ def multi_worker(fid):
             if fid in db: db[fid]['status'] = f'Error: {str(e)[:40]}'
 
 def ram_worker(fid):
-    with db_lock: 
-        if fid in db: db[fid]['status'] = 'Active (RAM Proxy)'
+    with db_lock:
+        if fid not in db: return
+        u = db[fid]['url']
+    try:
+        r_head = requests.get(u, stream=True, headers=HEADERS, timeout=15, allow_redirects=True)
+        update_file_metadata(fid, r_head)
+        tot = int(r_head.headers.get('content-length', 0))
+        r_head.close()
+        with db_lock: 
+            if fid in db:
+                db[fid]['total'] = tot
+                db[fid]['status'] = 'Active (RAM Proxy)'
+    except Exception as e:
+        with db_lock: 
+            if fid in db: db[fid]['status'] = f'Error: {str(e)[:40]}'
 
 def swarm_worker(fid):
-    with db_lock: 
-        if fid in db: db[fid]['status'] = 'Active (Swarm Proxy)'
+    with db_lock:
+        if fid not in db: return
+        u = db[fid]['url']
+    try:
+        r_head = requests.get(u, stream=True, headers=HEADERS, timeout=15, allow_redirects=True)
+        update_file_metadata(fid, r_head)
+        tot = int(r_head.headers.get('content-length', 0))
+        r_head.close()
+        with db_lock: 
+            if fid in db:
+                db[fid]['total'] = tot
+                db[fid]['status'] = 'Active (Swarm Proxy)'
+    except Exception as e:
+        with db_lock: 
+            if fid in db: db[fid]['status'] = f'Error: {str(e)[:40]}'
 
 def drive_direct_worker(fid):
     with db_lock:
@@ -2089,7 +2115,7 @@ OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASSWORD}" | base64 -w 0
 
 echo ""
 echo "====================================================================="
-echo "✅ [SUCCESS] V130 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
+echo "✅ [SUCCESS] V131 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
 echo "====================================================================="
 echo ""
 echo "🌐 --- 1. WEB DASHBOARD INFO ---"
