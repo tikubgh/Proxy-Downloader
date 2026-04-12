@@ -43,7 +43,7 @@ killall -9 python python3 node npm nginx Xvnc x11vnc xrdp ssserver aria2c >/dev/
 rm -rf /home/ubuntu/downloads/* /home/ubuntu/hls_cache/* >/dev/null 2>&1 || true
 for p in 80 443 3389 6080 8080 8081 8443 6800; do fuser -k -9 $p/tcp >/dev/null 2>&1 || true; done; sleep 1
 
-echo "🛡️ [2/7] Installing Core Dependencies & Aria2 Download Manager..."
+echo "🛡️ [2/7] Installing Core Dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 sudo ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
 sudo dpkg-reconfigure --frontend noninteractive tzdata || true
@@ -52,7 +52,7 @@ sudo apt-get install --reinstall -y nginx aria2 || true
 PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")' 2>/dev/null || echo "python3-venv")
 apt-get install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg build-essential python3-dev unrar p7zip-full tar jq xz-utils $PY_VENV || true
 
-echo "🖥️ [3/7] Configuring Native Windows RDP, Power Settings & Browsers..."
+echo "🖥️ [3/7] Configuring Native Windows RDP, Aria2 Full GUI & Browsers..."
 apt-get install -y xfce4 xfce4-goodies dbus-x11 xrdp xorgxrdp tigervnc-standalone-server xclip xsel firefox || true
 adduser xrdp ssl-cert || true
 sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
@@ -108,12 +108,15 @@ cat > /etc/aria2/aria2.conf << ARIA_EOF
 enable-rpc=true
 rpc-listen-all=true
 rpc-allow-origin-all=true
-max-concurrent-downloads=10
+max-concurrent-downloads=20
 max-connection-per-server=16
-split=16
+split=64
+min-split-size=1M
 dir=/home/$RDP_USERNAME/Downloads
 continue=true
-disk-cache=64M
+disk-cache=128M
+file-allocation=trunc
+optimize-concurrent-downloads=true
 ARIA_EOF
 cat > /etc/systemd/system/aria2c.service << SYSTEMD_ARIA_EOF
 [Unit]
@@ -137,6 +140,24 @@ cat > /etc/brave/policies/managed/extensions.json << 'BRAVE_POL_EOF'
 BRAVE_POL_EOF
 
 mkdir -p /home/$RDP_USERNAME/Desktop
+wget -qO ariang.zip "https://github.com/mayswind/AriaNg/releases/download/1.3.7/AriaNg-1.3.7-AllInOne.zip"
+unzip -o ariang.zip index.html -d /home/$RDP_USERNAME/Desktop/
+mv /home/$RDP_USERNAME/Desktop/index.html /home/$RDP_USERNAME/Desktop/AriaNg.html
+rm ariang.zip
+
+cat > /home/$RDP_USERNAME/Desktop/Aria2_Downloader.desktop << 'SHORTCUT_EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Aria2 Downloader Full UI
+Comment=Multi-threaded download manager
+Exec=/usr/bin/brave-browser --app=file:///home/rdpuser/Desktop/AriaNg.html
+Icon=emblem-downloads
+Terminal=false
+Categories=Network;
+SHORTCUT_EOF
+chmod +x /home/$RDP_USERNAME/Desktop/Aria2_Downloader.desktop
+
 cat > /home/$RDP_USERNAME/Desktop/Brave.desktop << 'SHORTCUT_EOF'
 [Desktop Entry]
 Version=1.0
@@ -226,14 +247,14 @@ NGINX_EOF
 ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 systemctl restart nginx >/dev/null 2>&1 || true
 
-echo "⚡ [7/7] Setting up Server-Side Vault Backend with ArtPlayer Engine..."
+echo "⚡ [7/7] Setting up Native Player Core Backend & VTT Forge Engine..."
 mkdir -p /home/ubuntu/downloads
 echo "$DASH_PASS" > /home/ubuntu/.dash_pass
 rm -rf /home/ubuntu/venv
 python3 -m venv /home/ubuntu/venv || { python3 -m venv --without-pip /home/ubuntu/venv && curl -sS https://bootstrap.pypa.io/get-pip.py | /home/ubuntu/venv/bin/python; }
 /home/ubuntu/venv/bin/pip install flask requests psutil curl_cffi waitress rarfile py7zr
 cat > /home/ubuntu/app.py << 'PYTHON_EOF'
-import os,time,uuid,threading,requests,subprocess,shutil,re,queue,mimetypes,concurrent.futures,hashlib,json,gc,zipfile,tarfile,base64,collections; from flask import Flask,jsonify,render_template_string,request,send_file,Response,redirect; import psutil; import urllib.parse
+import os,time,uuid,threading,requests,subprocess,shutil,re,queue,mimetypes,concurrent.futures,hashlib,json,gc,zipfile,tarfile,base64,collections,select; from flask import Flask,jsonify,render_template_string,request,send_file,Response,redirect; import psutil; import urllib.parse
 from requests.adapters import HTTPAdapter
 try:
     from urllib3.util.retry import Retry
@@ -250,16 +271,6 @@ db={}; db_lock=threading.Lock(); active_procs={}
 global_mounted_data = None 
 shared_drive_cache = collections.OrderedDict()
 shared_drive_lock = threading.Lock()
-
-sub_extraction_locks = {}
-sub_lock_mutex = threading.Lock()
-
-def get_sub_lock(fid, idx):
-    key = f"{fid}_{idx}"
-    with sub_lock_mutex:
-        if key not in sub_extraction_locks:
-            sub_extraction_locks[key] = threading.Lock()
-        return sub_extraction_locks[key]
 
 archive_session = requests.Session()
 archive_adapter = requests.adapters.HTTPAdapter(pool_connections=200, pool_maxsize=200)
@@ -557,12 +568,6 @@ def cleaner():
                       except: pass
                       del hls_procs[d]
                   shutil.rmtree(dir_path, ignore_errors=True)
-      for f in os.listdir(DL_DIR):
-          if f.endswith('.vtt') and '_sub_' in f:
-              fpath = os.path.join(DL_DIR, f)
-              if now - os.path.getmtime(fpath) > 86400:
-                  try: os.remove(fpath)
-                  except: pass
   except: pass
   gc.collect() 
 threading.Thread(target=cleaner,daemon=True).start()
@@ -599,9 +604,12 @@ LOGIN_HTML=r"""<!DOCTYPE html><html><head><meta name="viewport" content="width=d
 
 HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Media Engine Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-<script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script>
 <style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--drive:#10b981;}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:0.3s;}.status-dot-main{background:var(--success);box-shadow:0 0 8px var(--success);}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:bold;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px;}input, select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:bold;cursor:pointer;transition:0.2s;white-space:nowrap}button:hover{opacity:0.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748;overflow:hidden}.monitor-value{font-size:15px;font-weight:bold;margin-top:8px;color:var(--accent);white-space:nowrap}.monitor-card div:first-child{font-size:14px;color:#aaa;white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.type-disk{border-left:5px solid var(--purple)}.type-ram{border-left:5px solid var(--ram)}.type-multi{border-left:5px solid var(--multi)}.type-swarm{border-left:5px solid var(--swarm)}.type-drive{border-left:5px solid var(--drive)}.type-archive{border-left:5px solid #fff}.file-name{font-weight:bold;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:0.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333;}.zip-item:last-child{border-bottom:none;}
-#vid_container { width: 100%; height: 65vh; border-radius: 8px; overflow: hidden; background: #000; }
+#vid_container { width: 100%; height: 65vh; border-radius: 8px; overflow: hidden; background: #000; position: relative;}
+.audio-switcher { background: #1e2330; padding: 15px; border-radius: 8px; margin-top: 15px; display: none; align-items: center; gap: 15px; border: 1px solid #333; }
+.audio-switcher select { padding: 10px; flex: 1; border-radius: 5px; background: #111; color: #fff; border: 1px solid #555; font-size: 14px; }
+/* Native Video Subtitle Styling */
+::cue { color: #fff; background-color: rgba(0, 0, 0, 0.8); font-size: 1.2rem; text-shadow: 1px 1px 2px #000; font-family: sans-serif; }
 </style></head><body><h2><span>🚀 Unified 6-Engine Master</span><span style="font-size:14px;color:#888;">Cloudflare Port 80 <span class="status-dot status-dot-main" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success);"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram);">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--swap);">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success);">--</div></div><div class="monitor-card network-card"><div>Network Traffic (WAN)</div><div class="monitor-value" id="net" style="color:var(--success);">--</div></div></div>
 
 <div class="engine-box" style="border-color:#10b981;"><div class="engine-title"><span style="color:#10b981;">📡 Engine 7: Direct Transfer (P2P RAM & Disk Relay)</span></div><div class="input-group" style="margin-bottom:10px;"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px;"><div style="color:#aaa;font-size:11px;padding-left:10px;">Box 1: Direct P2P (Strict 500MB RAM | IDM Multi-Thread)</div><input type="file" id="file_p2p" style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px;"></div><button onclick="initUpload('p2p')" style="background:#10b981;color:#000;">Generate P2P Link</button></div><div class="input-group" style="margin-bottom:0;"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px;"><div style="color:#aaa;font-size:11px;padding-left:10px;">Box 2: Disk Buffered (Sparse-Allocated | Instant VLC Seekable)</div><input type="file" id="file_disk_relay" style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px;"></div><button onclick="initUpload('disk_relay')" style="background:#059669;color:#fff;">Generate Disk Link</button></div></div>
@@ -621,73 +629,156 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
 <div id="swarm_zip_contents" style="margin-top:10px; display:none; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--swarm);"></div>
 </div>
 
-<div class="engine-box" style="border-color:var(--drive);"><div class="engine-title"><span style="color:var(--drive);">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px;"></span></div><div id="drive_auth_panel" style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px;"><div style="font-size:0.9em;color:#aaa;">⚠️ <b>Vault Empty:</b> Provide your Google Developer Keys below to permanently link your Google One account.</div><div class="input-group" style="margin-bottom:0;"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%;">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none; margin-bottom:15px; align-items:center; gap:10px; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"><span id="drive_email" style="color:var(--success); font-weight:bold; flex:1;">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive (Pipes precisely via RAM)..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000;">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload (Aggregates via RAM -> Uploads to Drive)..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Swarm Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to ZIP, RAR, 7z, TAR, GZ, BZ2, LZIP, XZ for Instant Extract & Stream..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Stream Contents</button></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Stream/Download Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Generate Link</button></div><div id="zip_contents" style="margin-top:10px; display:none; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"></div></div><div class="file-grid" id="files" style="margin-top:20px;"></div><div id="video_modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:9999; justify-content:center; align-items:center; flex-direction:column;"><div style="width:95%; max-width:1200px; background:#14171f; border-radius:10px; padding:20px; border:1px solid #00b3ff; box-shadow: 0 10px 40px rgba(0,0,0,0.8);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;"><h3 id="video_title" style="margin:0; color:#00b3ff; word-break:break-all;">▶️ Web Player Active</h3><button onclick="closeVideo()" style="background:#ef4444; padding:8px 15px; margin:0; border:none; border-radius:5px; color:#fff; cursor:pointer; font-weight:bold;">❌ Close Player</button></div><div id="vid_container"></div><div id="transcode_warning" style="margin-top:15px; padding:10px; background:#1e2330; border-radius:6px; border-left:4px solid var(--warn); font-size:13px; color:#ccc;"></div></div></div><script>let current_stream_id = null; window.artPlayer = null; let current_audio_idx = "0"; let global_vid_url = ""; let global_vid_name = ""; let global_vid_fid = "";
+<div class="engine-box" style="border-color:var(--drive);"><div class="engine-title"><span style="color:var(--drive);">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px;"></span></div><div id="drive_auth_panel" style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px;"><div style="font-size:0.9em;color:#aaa;">⚠️ <b>Vault Empty:</b> Provide your Google Developer Keys below to permanently link your Google One account.</div><div class="input-group" style="margin-bottom:0;"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%;">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none; margin-bottom:15px; align-items:center; gap:10px; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"><span id="drive_email" style="color:var(--success); font-weight:bold; flex:1;">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive (Pipes precisely via RAM)..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000;">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload (Aggregates via RAM -> Uploads to Drive)..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Swarm Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to ZIP, RAR, 7z, TAR, GZ, BZ2, LZIP, XZ for Instant Extract & Stream..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Stream Contents</button></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Stream/Download Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Generate Link</button></div><div id="zip_contents" style="margin-top:10px; display:none; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"></div></div><div class="file-grid" id="files" style="margin-top:20px;"></div>
+
+<div id="video_modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:9999; justify-content:center; align-items:center; flex-direction:column;">
+<div style="width:95%; max-width:1200px; background:#14171f; border-radius:10px; padding:20px; border:1px solid #00b3ff; box-shadow: 0 10px 40px rgba(0,0,0,0.8);">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+<h3 id="video_title" style="margin:0; color:#00b3ff; word-break:break-all;">▶️ Native Core Engine Active</h3>
+<button onclick="closeVideo()" style="background:#ef4444; padding:8px 15px; margin:0; border:none; border-radius:5px; color:#fff; cursor:pointer; font-weight:bold;">❌ Close Player</button>
+</div>
+<div id="vid_container"></div>
+<div class="audio-switcher" id="audio_switcher_ui">
+    <span style="font-weight:bold; color:var(--accent);">🔊 Server Audio Track:</span>
+    <select id="audio_select"></select>
+    <button onclick="switchAudio()" style="background:var(--accent); padding:8px 15px;">Switch Audio Stream</button>
+</div>
+<div id="transcode_warning" style="margin-top:15px; padding:10px; background:#1e2330; border-radius:6px; border-left:4px solid var(--warn); font-size:13px; color:#ccc;"></div>
+</div>
+</div>
+
+<script>
+let current_stream_id = null; let current_audio_idx = "0"; let global_vid_url = ""; let global_vid_name = ""; let global_vid_fid = "";
+window.hlsInstance = null;
+
 document.addEventListener('focus', function(e) {let isFS = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;if (isFS && e.target && e.target.tagName === 'INPUT') {setTimeout(() => e.target.blur(), 1);}}, true);
+
+function switchAudio() {
+    let sel = document.getElementById('audio_select');
+    if(sel.value !== current_audio_idx) {
+        if(current_stream_id) fetch('/api/stop_hls?stream_id=' + current_stream_id);
+        playVideo(global_vid_url, global_vid_name, global_vid_fid, sel.value);
+    }
+}
+
 async function playVideo(url, name, fid, audio_idx = "0") {
     current_audio_idx = audio_idx; global_vid_url = url; global_vid_name = name; global_vid_fid = fid;
     document.getElementById('video_title').innerText = '▶️ ' + decodeURIComponent(name);
     document.getElementById('video_modal').style.display = 'flex';
     let warnBox = document.getElementById('transcode_warning');
-    if(window.artPlayer) { window.artPlayer.destroy(false); window.artPlayer = null; }
-    let vidContainer = document.getElementById('vid_container'); vidContainer.innerHTML = '';
-    warnBox.innerHTML = '⏳ <b>Probing video codec...</b> Initializing 4K HEVC Direct fMP4 Stream Pipeline (Zero CPU usage)...';
+    let vidContainer = document.getElementById('vid_container'); 
+    vidContainer.innerHTML = '';
+    document.getElementById('audio_switcher_ui').style.display = 'none';
+    
+    if(window.hlsInstance) {
+        window.hlsInstance.destroy();
+        window.hlsInstance = null;
+    }
+    
+    warnBox.innerHTML = '⏳ <b>Probing media tracks...</b> Initializing Native Pipeline (Zero CPU usage)...';
     let sessionCb = Date.now() + Math.random().toString(36).substring(7);
-    let subtitleSettings = []; let audioSettings = [];
+    
+    let subs = []; let auds = [];
     try {
         if(fid) {
             let subRes = await fetch('/api/subs_list/' + fid + '?url=' + encodeURIComponent(url));
-            let subs = await subRes.json();
-            subs.forEach((sub, i) => { subtitleSettings.push({html: sub.title + (sub.lang !== 'und' ? ` (${sub.lang})` : ''), url: `/api/sub_play/${fid}/${sub.index}.vtt?url=${encodeURIComponent(url)}&cb=${sessionCb}`}); });
+            subs = await subRes.json();
             let audRes = await fetch('/api/audio_list/' + fid + '?url=' + encodeURIComponent(url));
-            let auds = await audRes.json();
-            auds.forEach((aud, i) => { audioSettings.push({html: aud.title + (aud.lang !== 'und' ? ` (${aud.lang})` : ''), idx: aud.index}); });
+            auds = await audRes.json();
         }
     } catch(e) {}
-    fetch('/api/start_hls?url=' + encodeURIComponent(url) + '&cb=' + sessionCb + '&audio_idx=' + current_audio_idx).then(r => r.json()).then(data => {
+    
+    fetch('/api/start_hls?url=' + encodeURIComponent(url) + '&cb=' + sessionCb + '&audio_idx=' + current_audio_idx).then(r => r.json()).then(async data => {
         let playlistUrl = data.playlist_url; current_stream_id = data.stream_id;
-        let transcodeMsg = data.transcoded ? "Unsupported codec detected. Standard scaling pipeline active." : "HEVC / fMP4 Direct Copy Active. Stream copying raw 4K video directly to browser with 0% CPU overhead.";
-        warnBox.innerHTML = `<b>✅ ArtPlayer Engine Active:</b> ${transcodeMsg}`;
-        let artOptions = {
-            container: '#vid_container', url: playlistUrl, type: 'm3u8',
-            customType: {
-                m3u8: function (video, url, art) {
-                    if (Hls.isSupported()) {
-                        if (art.hls) art.hls.destroy();
-                        const hls = new Hls({maxBufferLength: 60, maxMaxBufferLength: 120, maxBufferSize: 150 * 1000 * 1000, enableWorker: true, lowLatencyMode: false});
-                        hls.loadSource(url); hls.attachMedia(video); art.hls = hls;
-                        art.on('destroy', () => hls.destroy());
-                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = url; }
-                }
-            },
-            title: decodeURIComponent(name), volume: 1, autoplay: true, pip: true, autoSize: true, setting: true, playbackRate: true, aspectRatio: true, fullscreen: true, fullscreenWeb: true, miniProgressBar: true, playsInline: true, theme: '#00b3ff',
-        };
-        artOptions.settings = [];
-        if(audioSettings.length > 1) {
-            let activeAudName = audioSettings.find(a => a.idx.toString() === current_audio_idx)?.html || "Default";
-            artOptions.settings.push({
-                width: 250, html: 'Audio Track', tooltip: activeAudName,
-                selector: audioSettings.map(a => ({ html: a.html, idx: a.idx, default: a.idx.toString() === current_audio_idx })),
-                onSelect: function (item) {
-                    if(item.idx.toString() !== current_audio_idx) {
-                        if(current_stream_id) fetch('/api/stop_hls?stream_id=' + current_stream_id);
-                        playVideo(global_vid_url, global_vid_name, global_vid_fid, item.idx.toString());
+        let transcodeMsg = data.transcoded ? "Unsupported codec detected. Standard scaling pipeline active." : "HEVC / fMP4 Direct Copy Active. Perfect Hardware Seeking Enabled.";
+        warnBox.innerHTML = `<b>✅ Native Engine Active:</b> ${transcodeMsg} <br><span style="color:#10b981; font-size:12px;">(Subtitles stream directly to OS native text track via keepalive generator).</span>`;
+        
+        let playerHtml = `<video id="vid_player" controls crossorigin="anonymous" style="width: 100%; height: 100%; outline: none; background: #000; border-radius: 8px;">`;
+        
+        if (subs.length > 0) {
+            for(let i=0; i<subs.length; i++) {
+                let subUrl = `/api/sub_play/${fid}/${subs[i].index}.vtt?url=${encodeURIComponent(url)}&cb=${Date.now()}`;
+                let label = subs[i].title || `Track ${i+1}`;
+                let lang = subs[i].lang !== 'und' ? subs[i].lang : 'en';
+                playerHtml += `<track src="${subUrl}" kind="subtitles" label="${label}" srclang="${lang}" ${i === 0 ? 'default' : ''}>`;
+            }
+        }
+        playerHtml += `</video>`;
+        vidContainer.innerHTML = playerHtml;
+        
+        const video = document.getElementById('vid_player');
+        
+        if (Hls.isSupported()) {
+            window.hlsInstance = new Hls({
+                maxBufferLength: 60,
+                maxMaxBufferLength: 600,
+                enableWorker: true,
+                lowLatencyMode: false
+            });
+            window.hlsInstance.loadSource(playlistUrl);
+            window.hlsInstance.attachMedia(video);
+            window.hlsInstance.on(Hls.Events.MANIFEST_PARSED, function() {
+                video.play().catch(e => console.log(e));
+            });
+            window.hlsInstance.on(Hls.Events.ERROR, function(event, data) {
+                if (data.fatal) {
+                    switch (data.type) {
+                        case Hls.ErrorTypes.NETWORK_ERROR:
+                            window.hlsInstance.startLoad();
+                            break;
+                        case Hls.ErrorTypes.MEDIA_ERROR:
+                            window.hlsInstance.recoverMediaError();
+                            break;
+                        default:
+                            window.hlsInstance.destroy();
+                            break;
                     }
-                    return item.html;
-                },
+                }
             });
-        }
-        if(subtitleSettings.length > 0) {
-            artOptions.subtitle = { url: subtitleSettings[0].url, type: 'vtt', encoding: 'utf-8', style: { color: '#fff', fontSize: '20px' } };
-            artOptions.settings.push({
-                width: 200, html: 'Subtitles', tooltip: subtitleSettings[0].html,
-                selector: subtitleSettings.map((s, i) => ({ html: s.html, url: s.url, default: i === 0 })),
-                onSelect: function (item) { window.artPlayer.subtitle.switch(item.url, { name: item.html }); return item.html; },
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Native Safari / Apple HLS Support
+            video.src = playlistUrl;
+            video.addEventListener('loadedmetadata', function() {
+                video.play().catch(e => console.log(e));
             });
+        } else {
+            warnBox.innerHTML = '<b>❌ Error: Your browser does not support HLS or Native MSE.</b>';
         }
-        window.artPlayer = new Artplayer(artOptions);
+        
+        if (auds.length > 1) {
+            let audSel = document.getElementById('audio_select');
+            audSel.innerHTML = '';
+            auds.forEach((aud, i) => {
+                let label = aud.title || `Audio Track ${i+1}`;
+                let opt = document.createElement('option');
+                opt.value = aud.index.toString();
+                opt.text = `${label} (${aud.lang !== 'und' ? aud.lang : 'Unknown'})`;
+                if(opt.value === current_audio_idx) opt.selected = true;
+                audSel.appendChild(opt);
+            });
+            document.getElementById('audio_switcher_ui').style.display = 'flex';
+        }
     }).catch(e => { warnBox.innerHTML = '<b>❌ Error initializing stream. Ensure target URL is active.</b>'; });
 }
-function closeVideo() {if(window.artPlayer) { window.artPlayer.destroy(false); window.artPlayer = null; } document.getElementById('vid_container').innerHTML = ''; document.getElementById('video_modal').style.display = 'none'; if(current_stream_id) { fetch('/api/stop_hls?stream_id=' + current_stream_id); current_stream_id = null; } }function checkDriveStatus(){fetch('/api/drive/status').then(r=>r.json()).then(d=>{if(d.connected){document.getElementById('drive_dot').style.background='var(--success)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--success)';document.getElementById('drive_auth_panel').style.display='none';document.getElementById('drive_connected_panel').style.display='flex';if(d.info) document.getElementById('drive_email').innerText = '✅ Drive Active | 💾 ' + d.info;} else {document.getElementById('drive_dot').style.background='var(--danger)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--danger)';document.getElementById('drive_auth_panel').style.display='flex';document.getElementById('drive_connected_panel').style.display='none';}});}checkDriveStatus();setInterval(checkDriveStatus, 60000);function connectDrive(){let cid=document.getElementById('drive_cid').value;let csec=document.getElementById('drive_csec').value;let rt=document.getElementById('drive_rt').value;if(!cid || !csec || !rt) return alert('⚠️ All 3 keys are strictly required to build the server vault!');document.getElementById('drive_dot').style.background='var(--warn)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--warn)';fetch('/api/drive/connect', {method: 'POST', headers: {'Content-Type': 'application/json'},body: JSON.stringify({client_id: cid, client_secret: csec, refresh_token: rt})}).then(r=>r.json()).then(d=>{if(d.success) checkDriveStatus();else { alert('❌ ' + d.error); checkDriveStatus(); }});}function disconnectDrive(){ fetch('/api/drive/disconnect', {method:'POST'}).then(()=>checkDriveStatus()); }function renderArchiveBox(d, targetId) {let box = document.getElementById(targetId);let btnId = targetId === 'zip_contents' ? 'url_drive_zip' : (targetId === 'swarm_zip_contents' ? 'url_swarm_zip' : 'url_direct_zip');let html = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid #333;"><div style="font-weight:bold; color:var(--success);">📦 Virtual Archive Mounted to RAM Successfully</div><button onclick="clearMountedArchive('${targetId}', '${btnId}')" class="btn-red" style="padding:5px 10px; margin:0; font-size:12px;">Clear Mount</button></div>`;d.files.forEach(f => {let mb = (f.size / (1024*1024)).toFixed(2) + ' MB';let dlLink = window.location.origin + f.url;let safeName = encodeURIComponent(f.name);html += `<div class="zip-item"><div style="flex:1; word-break:break-all; padding-right:10px;">📄 ${f.name} <span style="color:#888;font-size:12px;">(${mb})</span></div><div style="display:flex; gap:5px;"><input type="text" id="zl_${f.b64}" value="${dlLink}" readonly onclick="this.select()" style="margin:0; padding:5px; font-size:12px; width:220px;"><button onclick="copyToBox('zl_${f.b64}')" style="padding:5px 15px; margin:0; font-size:12px; background:var(--accent); color:#fff;">Copy</button><button onclick="playVideo('${dlLink}', '${safeName}', null)" style="padding:5px 15px; margin:0; font-size:12px; background:var(--purple); color:#fff;">▶️ Play</button></div></div>`;});box.innerHTML = html;box.style.display = 'block';}async function listDirectArchive(){let url = document.getElementById('url_direct_zip').value;if(!url) return;let box = document.getElementById('direct_zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Direct Archive to Server RAM... <br><span style="font-size:12px;color:#888;">(ZIP is instant. RAR/7z/GZ may take a few seconds).</span></div>';try {let r = await fetch('/api/direct_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'direct_zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}async function listSwarmArchive(){let url = document.getElementById('url_swarm_zip').value;if(!url) return;let box = document.getElementById('swarm_zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Swarm Archive to Server RAM using Multi-Threading... <br><span style="font-size:12px;color:#888;">(Aggregates stream via Swarm backend).</span></div>';try {let r = await fetch('/api/swarm_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'swarm_zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}async function listDriveArchive(){let url = document.getElementById('url_drive_zip').value;if(!url) return;let box = document.getElementById('zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Virtual Archive to Server RAM... <br><span style="font-size:12px;color:#888;">(ZIP is instant. RAR/7z/GZ may take a few seconds).</span></div>';try {let r = await fetch('/api/drive_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}document.addEventListener("DOMContentLoaded", () => {fetch('/api/get_archive_mount').then(r=>r.json()).then(d=>{if(d.mounted) {if (d.data.type === 'direct') renderArchiveBox(d.data, 'direct_zip_contents'); else if (d.data.type === 'swarm') renderArchiveBox(d.data, 'swarm_zip_contents'); else renderArchiveBox(d.data, 'zip_contents');}});});function clearMountedArchive(targetId, inputId) {fetch('/api/clear_archive_mount', {method:'POST'}).then(() => {document.getElementById(targetId).style.display = 'none';document.getElementById(inputId).value = '';});}function addFile(type){let u=document.getElementById('url_'+type).value;if(!u)return;document.getElementById('url_'+type).value='';fetch('/api/add?type='+type+'&url='+encodeURIComponent(u));}async function initUpload(type){let fi=document.getElementById('file_'+type); let f=fi.files[0];if(!f) return alert("Select a file first!");let r=await fetch('/api/upload_init', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type:type, name:f.name, size:f.size})});let d=await r.json(); fi.value='';if (type === 'p2p' || type === 'disk_relay') { checkP2PWait(d.fid, f); } }async function checkP2PWait(fid, file) {let connected = false;while (!connected) {try {let res = await fetch('/api/p2p_wait/'+fid);let data = await res.json();if (data.status === 'Stopped') return;if (data.connected) {connected = true;startGbpsP2P(fid, file);} else { await new Promise(r => setTimeout(r, 1000)); }} catch(e) { await new Promise(r => setTimeout(r, 1000)); }}}async function startGbpsP2P(fid, file) {let concurrencyLimit = 16; let activeUploads = new Set();let running = true;let P2P_CHUNK_SIZE = 1048576; let loop = setInterval(async () => {if(!running) { clearInterval(loop); return; }if(activeUploads.size >= concurrencyLimit) return;try {let res = await fetch(`/api/p2p_poll/${fid}`);if (!res.ok) { running = false; clearInterval(loop); return; }let needed = await res.json();if (needed.length === 0 && activeUploads.size === 0) {let chk = await fetch('/api/data'); let js = await chk.json();let fObj = js.files.find(x => x.id === fid);if (!fObj || fObj.status === 'Completed' || fObj.status === 'Stopped') {running = false; clearInterval(loop); return;}}for(let idx of needed) {if(!activeUploads.has(idx) && activeUploads.size < concurrencyLimit) {activeUploads.add(idx);uploadP2PChunk(fid, file, idx, P2P_CHUNK_SIZE).finally(() => { activeUploads.delete(idx); });}}} catch(e) {}}, 150); }async function uploadP2PChunk(fid, file, idx, chunkSize) {let start = idx * chunkSize;let end = Math.min(start + chunkSize, file.size);if(start >= file.size) return;let chunk = file.slice(start, end);try {await fetch(`/api/p2p_up/${fid}/${idx}`, {method: 'POST',headers: {'Content-Type': 'application/octet-stream'},body: chunk});} catch(e) {}}function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';if(!window.fSpeeds) window.fSpeeds={};let now=Date.now();data.files.forEach(f=>{let fdown=f.down||0;let ftotal=f.total||0;if(!window.fSpeeds[f.id]) window.fSpeeds[f.id]={d:fdown,t:now,s:0};let diff=fdown-window.fSpeeds[f.id].d;let secs=(now-window.fSpeeds[f.id].t)/1000;let spd=window.fSpeeds[f.id].s;if(secs>=1.0){spd=diff>0?(diff/secs/1048576):0;window.fSpeeds[f.id].s=spd;window.fSpeeds[f.id].d=fdown;window.fSpeeds[f.id].t=now;}let spdStr=spd>0?' &nbsp;⚡ '+spd.toFixed(1)+' MB/s':'';let activeTh = f.active_threads > 0 ? ` <span style="color:var(--ram);">[${f.active_threads} Active Connections]</span>` : '';let realDown=ftotal>0?Math.min(fdown,ftotal):fdown;let pctStr=ftotal?Math.min(100,Math.round((realDown/ftotal)*100))+'%':'Live';let mb=(realDown/(1024*1024)).toFixed(1);let totStr=ftotal?(ftotal/(1024*1024)).toFixed(1):'∞';let progBar=ftotal?`<progress value="${realDown}" max="${ftotal}"></progress>`:`<progress></progress>`;let safeName=encodeURIComponent(f.name);if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Transferred: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${proxyDlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='archive_pipe'){html+=`<div class="file-card type-archive"><div class="file-name">📦 [RAM CACHE STREAM] ${f.name}</div><div class="file-status">[${f.status}] - Flow: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Close Active Link</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${swarmDlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${activeTh}${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE UPLOAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive_direct'){let dlLink=window.location.origin+'/drive_direct_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🔗 [DRIVE DIRECT] ${f.name}</div><div class="file-status">[${f.status}] - Direct Stream Proxy Ready</div><div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Remove</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${activeTh}${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
+
+async function closeVideo() {
+    if(window.hlsInstance) {
+        window.hlsInstance.destroy();
+        window.hlsInstance = null;
+    }
+    const video = document.getElementById('vid_player');
+    if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+    }
+    document.getElementById('vid_container').innerHTML = ''; 
+    document.getElementById('video_modal').style.display = 'none'; 
+    document.getElementById('audio_switcher_ui').style.display = 'none';
+    if(current_stream_id) { fetch('/api/stop_hls?stream_id=' + current_stream_id); current_stream_id = null; } 
+}
+
+function checkDriveStatus(){fetch('/api/drive/status').then(r=>r.json()).then(d=>{if(d.connected){document.getElementById('drive_dot').style.background='var(--success)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--success)';document.getElementById('drive_auth_panel').style.display='none';document.getElementById('drive_connected_panel').style.display='flex';if(d.info) document.getElementById('drive_email').innerText = '✅ Drive Active | 💾 ' + d.info;} else {document.getElementById('drive_dot').style.background='var(--danger)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--danger)';document.getElementById('drive_auth_panel').style.display='flex';document.getElementById('drive_connected_panel').style.display='none';}});}checkDriveStatus();setInterval(checkDriveStatus, 60000);function connectDrive(){let cid=document.getElementById('drive_cid').value;let csec=document.getElementById('drive_csec').value;let rt=document.getElementById('drive_rt').value;if(!cid || !csec || !rt) return alert('⚠️ All 3 keys are strictly required to build the server vault!');document.getElementById('drive_dot').style.background='var(--warn)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--warn)';fetch('/api/drive/connect', {method: 'POST', headers: {'Content-Type': 'application/json'},body: JSON.stringify({client_id: cid, client_secret: csec, refresh_token: rt})}).then(r=>r.json()).then(d=>{if(d.success) checkDriveStatus();else { alert('❌ ' + d.error); checkDriveStatus(); }});}function disconnectDrive(){ fetch('/api/drive/disconnect', {method:'POST'}).then(()=>checkDriveStatus()); }function renderArchiveBox(d, targetId) {let box = document.getElementById(targetId);let btnId = targetId === 'zip_contents' ? 'url_drive_zip' : (targetId === 'swarm_zip_contents' ? 'url_swarm_zip' : 'url_direct_zip');let html = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid #333;"><div style="font-weight:bold; color:var(--success);">📦 Virtual Archive Mounted to RAM Successfully</div><button onclick="clearMountedArchive('${targetId}', '${btnId}')" class="btn-red" style="padding:5px 10px; margin:0; font-size:12px;">Clear Mount</button></div>`;d.files.forEach(f => {let mb = (f.size / (1024*1024)).toFixed(2) + ' MB';let dlLink = window.location.origin + f.url;let safeName = encodeURIComponent(f.name);html += `<div class="zip-item"><div style="flex:1; word-break:break-all; padding-right:10px;">📄 ${f.name} <span style="color:#888;font-size:12px;">(${mb})</span></div><div style="display:flex; gap:5px;"><input type="text" id="zl_${f.b64}" value="${dlLink}" readonly onclick="this.select()" style="margin:0; padding:5px; font-size:12px; width:220px;"><button onclick="copyToBox('zl_${f.b64}')" style="padding:5px 15px; margin:0; font-size:12px; background:var(--accent); color:#fff;">Copy</button><button onclick="playVideo('${dlLink}', '${safeName}', null)" style="padding:5px 15px; margin:0; font-size:12px; background:var(--purple); color:#fff;">▶️ Play</button></div></div>`;});box.innerHTML = html;box.style.display = 'block';}async function listDirectArchive(){let url = document.getElementById('url_direct_zip').value;if(!url) return;let box = document.getElementById('direct_zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Direct Archive to Server RAM... <br><span style="font-size:12px;color:#888;">(ZIP is instant. RAR/7z/GZ may take a few seconds).</span></div>';try {let r = await fetch('/api/direct_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'direct_zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}async function listSwarmArchive(){let url = document.getElementById('url_swarm_zip').value;if(!url) return;let box = document.getElementById('swarm_zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Swarm Archive to Server RAM using Multi-Threading... <br><span style="font-size:12px;color:#888;">(Aggregates stream via Swarm backend).</span></div>';try {let r = await fetch('/api/swarm_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'swarm_zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}async function listDriveArchive(){let url = document.getElementById('url_drive_zip').value;if(!url) return;let box = document.getElementById('zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Virtual Archive to Server RAM... <br><span style="font-size:12px;color:#888;">(ZIP is instant. RAR/7z/GZ may take a few seconds).</span></div>';try {let r = await fetch('/api/drive_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}document.addEventListener("DOMContentLoaded", () => {fetch('/api/get_archive_mount').then(r=>r.json()).then(d=>{if(d.mounted) {if (d.data.type === 'direct') renderArchiveBox(d.data, 'direct_zip_contents'); else if (d.data.type === 'swarm') renderArchiveBox(d.data, 'swarm_zip_contents'); else renderArchiveBox(d.data, 'zip_contents');}});});function clearMountedArchive(targetId, inputId) {fetch('/api/clear_archive_mount', {method:'POST'}).then(() => {document.getElementById(targetId).style.display = 'none';document.getElementById(inputId).value = '';});}function addFile(type){let u=document.getElementById('url_'+type).value;if(!u)return;document.getElementById('url_'+type).value='';fetch('/api/add?type='+type+'&url='+encodeURIComponent(u));}async function initUpload(type){let fi=document.getElementById('file_'+type); let f=fi.files[0];if(!f) return alert("Select a file first!");let r=await fetch('/api/upload_init', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type:type, name:f.name, size:f.size})});let d=await r.json(); fi.value='';if (type === 'p2p' || type === 'disk_relay') { checkP2PWait(d.fid, f); } }async function checkP2PWait(fid, file) {let connected = false;while (!connected) {try {let res = await fetch('/api/p2p_wait/'+fid);let data = await res.json();if (data.status === 'Stopped') return;if (data.connected) {connected = true;startGbpsP2P(fid, file);} else { await new Promise(r => setTimeout(r, 1000)); }} catch(e) { await new Promise(r => setTimeout(r, 1000)); }}}async function startGbpsP2P(fid, file) {let concurrencyLimit = 16; let activeUploads = new Set();let running = true;let P2P_CHUNK_SIZE = 1048576; let loop = setInterval(async () => {if(!running) { clearInterval(loop); return; }if(activeUploads.size >= concurrencyLimit) return;try {let res = await fetch(`/api/p2p_poll/${fid}`);if (!res.ok) { running = false; clearInterval(loop); return; }let needed = await res.json();if (needed.length === 0 && activeUploads.size === 0) {let chk = await fetch('/api/data'); let js = await chk.json();let fObj = js.files.find(x => x.id === fid);if (!fObj || fObj.status === 'Completed' || fObj.status === 'Stopped') {running = false; clearInterval(loop); return;}}for(let idx of needed) {if(!activeUploads.has(idx) && activeUploads.size < concurrencyLimit) {activeUploads.add(idx);uploadP2PChunk(fid, file, idx, P2P_CHUNK_SIZE).finally(() => { activeUploads.delete(idx); });}}} catch(e) {}}, 150); }async function uploadP2PChunk(fid, file, idx, chunkSize) {let start = idx * chunkSize;let end = Math.min(start + chunkSize, file.size);if(start >= file.size) return;let chunk = file.slice(start, end);try {await fetch(`/api/p2p_up/${fid}/${idx}`, {method: 'POST',headers: {'Content-Type': 'application/octet-stream'},body: chunk});} catch(e) {}}function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';if(!window.fSpeeds) window.fSpeeds={};let now=Date.now();data.files.forEach(f=>{let fdown=f.down||0;let ftotal=f.total||0;if(!window.fSpeeds[f.id]) window.fSpeeds[f.id]={d:fdown,t:now,s:0};let diff=fdown-window.fSpeeds[f.id].d;let secs=(now-window.fSpeeds[f.id].t)/1000;let spd=window.fSpeeds[f.id].s;if(secs>=1.0){spd=diff>0?(diff/secs/1048576):0;window.fSpeeds[f.id].s=spd;window.fSpeeds[f.id].d=fdown;window.fSpeeds[f.id].t=now;}let spdStr=spd>0?' &nbsp;⚡ '+spd.toFixed(1)+' MB/s':'';let activeTh = f.active_threads > 0 ? ` <span style="color:var(--ram);">[${f.active_threads} Active Connections]</span>` : '';let realDown=ftotal>0?Math.min(fdown,ftotal):fdown;let pctStr=ftotal?Math.min(100,Math.round((realDown/ftotal)*100))+'%':'Live';let mb=(realDown/(1024*1024)).toFixed(1);let totStr=ftotal?(ftotal/(1024*1024)).toFixed(1):'∞';let progBar=ftotal?`<progress value="${realDown}" max="${ftotal}"></progress>`:`<progress></progress>`;let safeName=encodeURIComponent(f.name);if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Transferred: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${proxyDlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='archive_pipe'){html+=`<div class="file-card type-archive"><div class="file-name">📦 [RAM CACHE STREAM] ${f.name}</div><div class="file-status">[${f.status}] - Flow: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Close Active Link</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${swarmDlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${activeTh}${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE UPLOAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive_direct'){let dlLink=window.location.origin+'/drive_direct_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🔗 [DRIVE DIRECT] ${f.name}</div><div class="file-status">[${f.status}] - Direct Stream Proxy Ready</div><div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Remove</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${activeTh}${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
 @app.route('/')
 def index():
     auth = request.cookies.get('dash_auth')
@@ -705,17 +796,15 @@ def serve_hls(stream_id, filename):
     file_path = os.path.join(HLS_DIR, stream_id, filename)
     if not os.path.exists(file_path): 
         return "Not found", 404
+    
     if filename.endswith('.m3u8'):
         with open(file_path, 'r') as f: content = f.read()
-        if '#EXT-X-START' not in content and 'master' not in filename:
-            content = content.replace('#EXT-X-TARGETDURATION', '#EXT-X-START:TIME-OFFSET=0.0\n#EXT-X-TARGETDURATION')
         resp = Response(content, mimetype='application/vnd.apple.mpegurl')
-    elif filename.endswith('.vtt'):
-        resp = send_file(file_path, mimetype='text/vtt')
     elif filename.endswith(('.mp4', '.m4s')):
         resp = send_file(file_path, mimetype='video/mp4')
     else:
         resp = send_file(file_path, mimetype='video/MP2T')
+        
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     resp.headers['Access-Control-Allow-Origin'] = '*'
     return resp
@@ -735,17 +824,21 @@ def subs_list(fid):
         if fobj['type'] in ['ram', 'swarm', 'drive_direct', 'drive_swarm'] or not os.path.exists(target):
             target = fobj.get('url', target)
     try:
-        cmd = ['ffprobe', '-v', 'error', '-show_entries', 'stream=index,codec_type:stream_tags=language,title', '-of', 'json', target]
+        cmd = ['ffprobe', '-v', 'error', '-show_entries', 'stream=index,codec_type,codec_name:stream_tags=language,title', '-of', 'json', target]
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         data = json.loads(res.stdout)
         subs = []
         sub_counter = 0
+        unsupported_codecs = ['hdmv_pgs_subtitle', 'dvd_subtitle', 'dvb_subtitle', 'dvb_teletext', 'pgs', 'xsub']
         for stream in data.get('streams', []):
             if stream.get('codec_type') == 'subtitle':
+                codec = stream.get('codec_name', '').lower()
+                if codec in unsupported_codecs:
+                    continue
                 abs_idx = stream.get('index')
                 tags = stream.get('tags', {})
                 lang = tags.get('language', 'und')
-                title = tags.get('title', f'Subtitle {sub_counter+1}')
+                title = tags.get('title', f'Track {sub_counter+1}')
                 subs.append({'index': abs_idx, 'lang': lang, 'title': title})
                 sub_counter += 1
         return jsonify(subs)
@@ -783,53 +876,6 @@ def audio_list(fid):
     except:
         return jsonify([])
 
-@app.route('/api/sub_play/<fid>/<int:idx>.vtt')
-def sub_play(fid, idx):
-    vtt_path = os.path.join(DL_DIR, f"{fid}_sub_{idx}.vtt")
-    tmp_vtt_path = os.path.join(DL_DIR, f"{fid}_sub_{idx}_tmp.vtt")
-    lock = get_sub_lock(fid, idx)
-    with lock:
-        if not os.path.exists(vtt_path):
-            target_url = request.args.get('url')
-            if target_url:
-                parsed = urllib.parse.urlparse(target_url)
-                target = f"http://127.0.0.1:8080{parsed.path}"
-                if parsed.query: target += f"?{parsed.query}"
-            else:
-                with db_lock:
-                    if fid not in db: return "Not Found", 404
-                    fobj = db[fid]
-                target = fobj.get('path', '')
-                if fobj['type'] in ['ram', 'swarm', 'drive_direct', 'drive_swarm'] or not os.path.exists(target):
-                    target = fobj.get('url', target)
-            try:
-                cmd = ['ffmpeg', '-y', '-v', 'error', '-i', target, '-map', f'0:{idx}', '-c:s', 'webvtt', '-f', 'webvtt', '-']
-                res = subprocess.run(cmd, capture_output=True, timeout=120)
-                content = res.stdout
-                if content:
-                    text = content.decode('utf-8-sig', errors='ignore').replace('\r\n', '\n').strip()
-                    if not text.startswith('WEBVTT'): 
-                        text = 'WEBVTT\n\n' + text
-                    final_data = text.encode('utf-8')
-                    with open(tmp_vtt_path, 'wb') as f:
-                        f.write(final_data)
-                    os.rename(tmp_vtt_path, vtt_path)
-            except Exception as e:
-                return str(e), 500
-    if os.path.exists(vtt_path):
-        with open(vtt_path, 'rb') as f:
-            final_content = f.read()
-        resp = Response(final_content, mimetype='text/vtt')
-        resp.headers['Content-Type'] = 'text/vtt; charset=utf-8'
-        resp.headers['Content-Length'] = str(len(final_content))
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
-        resp.headers['Pragma'] = 'no-cache'
-        resp.headers['Expires'] = '0'
-        return resp
-    else:
-        return "Subtitle extraction failed", 500
-
 @app.route('/api/start_hls')
 def start_hls():
     target_url = request.args.get('url')
@@ -854,7 +900,7 @@ def start_hls():
     is_transcoded = False
     
     if v_codec in ['hevc', 'h265']:
-        vcodec_args = ['-c:v', 'copy']
+        vcodec_args = ['-c:v', 'copy', '-tag:v', 'hvc1']
         is_transcoded = False
     elif v_codec in ['av1', 'vp9', 'unknown']:
         vcodec_args = ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '28', '-pix_fmt', 'yuv420p', '-g', '60', '-sc_threshold', '0', '-threads', '2']
@@ -872,18 +918,20 @@ def start_hls():
             '-i', local_url,
             '-map', '0:v:0?', '-map', f'0:a:{audio_idx}?', 
             *vcodec_args,
-            '-c:a', 'aac', '-ac', '2', '-b:a', '128k', '-ar', '48000',
+            '-c:a', 'aac', '-ac', '2', '-b:a', '256k', '-ar', '48000',
             '-sn',
+            '-start_at_zero', '-avoid_negative_ts', 'make_zero',
+            '-max_muxing_queue_size', '9999',
             '-f', 'hls',
-            '-hls_segment_type', 'fmp4',
             '-hls_time', '4', 
+            '-hls_segment_type', 'fmp4',
+            '-hls_flags', 'independent_segments',
             '-hls_list_size', '0', 
-            '-start_at_zero', 
-            '-avoid_negative_ts', 'make_zero',
             '-master_pl_name', 'master.m3u8',
             '-hls_segment_filename', os.path.join(stream_dir, 'seg_%04d.m4s'),
             os.path.join(stream_dir, 'index.m3u8')
         ]
+        
         hls_procs[stream_id] = subprocess.Popen(cmd)
         
         target_pl = 'index.m3u8'
@@ -915,6 +963,83 @@ def stop_hls():
         stream_dir = os.path.join(HLS_DIR, stream_id)
         shutil.rmtree(stream_dir, ignore_errors=True)
     return jsonify({'success': True})
+
+@app.route('/api/sub_play/<fid>/<int:idx>.vtt')
+def sub_play(fid, idx):
+    target_url = request.args.get('url')
+    if target_url:
+        parsed = urllib.parse.urlparse(target_url)
+        target = f"http://127.0.0.1:8080{parsed.path}"
+        if parsed.query: target += f"?{parsed.query}"
+    else:
+        with db_lock:
+            if fid not in db: return "Not Found", 404
+            fobj = db[fid]
+        target = fobj.get('path', '')
+        if fobj['type'] in ['ram', 'swarm', 'drive_direct', 'drive_swarm'] or not os.path.exists(target):
+            target = fobj.get('url', target)
+
+    try:
+        cmd_probe = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=start_time', '-of', 'default=noprint_wrappers=1:nokey=1', target]
+        start_time_str = subprocess.check_output(cmd_probe, timeout=10).decode().strip()
+        offset = float(start_time_str)
+    except:
+        offset = 0.0
+
+    def generate_vtt():
+        yield b"WEBVTT\n\n"
+        cmd = [
+            'ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-i', target,
+            '-map', f'0:{idx}',
+            '-c:s', 'webvtt',
+            '-f', 'webvtt', '-'
+        ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        
+        ts_pattern = re.compile(b'(\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s*-->\\s*(\\d{2}:\\d{2}:\\d{2}\\.\\d{3})')
+        def adjust_ts(match):
+            try:
+                def to_sec(ts):
+                    ts = ts.decode('utf-8')
+                    h, m, s = ts.split(':')
+                    return int(h)*3600 + int(m)*60 + float(s)
+                def to_ts(sec):
+                    if sec < 0: sec = 0
+                    h = int(sec // 3600)
+                    m = int((sec % 3600) // 60)
+                    s = sec % 60
+                    return f"{h:02d}:{m:02d}:{s:06.3f}".encode('utf-8')
+                s1 = to_sec(match.group(1))
+                s2 = to_sec(match.group(2))
+                return to_ts(s1 - offset) + b" --> " + to_ts(s2 - offset)
+            except:
+                return match.group(0)
+
+        while True:
+            ready, _, _ = select.select([proc.stdout], [], [], 5.0)
+            if ready:
+                line = proc.stdout.readline()
+                if not line: break
+                if b'WEBVTT' in line or b'X-TIMESTAMP' in line: continue
+                if b'-->' in line:
+                    line = ts_pattern.sub(adjust_ts, line)
+                yield line
+            else:
+                if proc.poll() is not None: break
+                yield b"NOTE keepalive\n\n"
+                
+        try: proc.wait(timeout=2)
+        except: 
+            try: proc.kill()
+            except: pass
+
+    resp = Response(generate_vtt(), mimetype='text/vtt')
+    resp.headers['Content-Type'] = 'text/vtt; charset=utf-8'
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
+    resp.headers['X-Accel-Buffering'] = 'no' 
+    return resp
 
 @app.route('/api/get_archive_mount')
 def get_archive_mount():
@@ -2271,35 +2396,11 @@ SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/de
 OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASSWORD}" | base64 -w 0)
 echo ""
 echo "====================================================================="
-echo "✅ [SUCCESS] V158 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
+echo "✅ [SUCCESS] V172 MEDIA ENGINE DEPLOYMENT COMPLETE"
 echo "====================================================================="
 echo ""
 echo "🌐 --- 1. WEB DASHBOARD INFO ---"
 echo "Direct Access: http://$SERVER_IP"
-echo "Cloudflare Worker Access: https://[your-worker-name].workers.dev"
-echo ""
-echo "====================================================================="
-echo ""
-echo "💻 --- 2. WINDOWS RDP CONNECTION INFO ---"
-echo "IP Address:  $SERVER_IP:3389"
-echo "Username:    $RDP_USERNAME"
-echo "Password:    $RDP_PASSWORD"
-echo ""
-echo "* How to bypass Linux login & set 1366x768:"
-echo "  1. Open 'Remote Desktop Connection'."
-echo "  2. Click 'Show Options' -> 'Display' -> drag to 1366 by 768."
-echo "  3. Go back to 'General', enter IP and Username ($RDP_USERNAME)."
-echo "  4. Click Connect. Windows will prompt for the password natively!"
-echo ""
-echo "====================================================================="
-echo ""
-echo "🛡️ --- 3. OUTLINE VPN (SHADOWSOCKS) INFO ---"
-echo "Port:        $VPN_PORT (TCP/UDP)"
-echo "Encryption:  chacha20-ietf-poly1305"
-echo "Password:    $VPN_PASSWORD"
-echo ""
-echo "🔑 ONE-CLICK OUTLINE CLIENT LINK (Copy & Paste this into the app):"
-echo "ss://${OUTLINE_ENCODED}@${SERVER_IP}:${VPN_PORT}#MediaEngineVPN"
 echo ""
 echo "====================================================================="
 EOF
