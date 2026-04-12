@@ -1763,7 +1763,8 @@ def multi_worker(fid):
         db[fid]['active_threads'] = 0
 
     session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32)
+    engine3_retries = Retry(total=8, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET", "HEAD", "OPTIONS"])
+    adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32, max_retries=engine3_retries)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
 
@@ -1788,7 +1789,7 @@ def multi_worker(fid):
         with open(p, 'wb') as f: f.truncate(tot)
         fd = os.open(p, os.O_WRONLY) 
 
-        chunk_size = max(8388608, min(33554432, tot // 32))
+        chunk_size = max(2097152, min(8388608, tot // 32))
         with db_lock: db[fid]['chunk_size'] = chunk_size
 
         total_chunks = (tot + chunk_size - 1) // chunk_size
@@ -1826,10 +1827,10 @@ def multi_worker(fid):
                 h['Range'] = f'bytes={start}-{end}'
                 
                 success = False
-                for _ in range(5):
+                for attempt in range(8):
                     with db_lock: db[fid]['active_threads'] += 1
                     try:
-                        res = session.get(u, headers=h, timeout=15)
+                        res = session.get(u, headers=h, timeout=(5, 25))
                         res.raise_for_status()
                         
                         os.pwrite(fd, res.content, start)
@@ -1848,7 +1849,7 @@ def multi_worker(fid):
                         break
                     except Exception:
                         with db_lock: db[fid]['active_threads'] -= 1
-                        time.sleep(1)
+                        time.sleep(1.5 ** attempt)
                 if not success:
                     error_flag.append(True)
                     break
@@ -1870,7 +1871,7 @@ def multi_worker(fid):
                 if db[fid]['status'] != 'Stopped' and not error_flag:
                     db[fid]['status'] = 'Completed'
                 elif error_flag:
-                    db[fid]['status'] = 'Error: Connection Refused'
+                    db[fid]['status'] = 'Error: Connection Dropped / Rate Limited'
 
     except Exception as e:
         with db_lock: 
@@ -2270,7 +2271,7 @@ SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/de
 OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASSWORD}" | base64 -w 0)
 echo ""
 echo "====================================================================="
-echo "✅ [SUCCESS] V157 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
+echo "✅ [SUCCESS] V158 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
 echo "====================================================================="
 echo ""
 echo "🌐 --- 1. WEB DASHBOARD INFO ---"
