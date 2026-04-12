@@ -35,28 +35,24 @@ if [ ! -f /swapfile ]; then
     sudo swapon /swapfile
     echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
     echo "✅ 4GB Swap allocated successfully."
-else
-    echo "✅ Swapfile already exists."
 fi
-echo "🛑 [1/7] Aggressive Purge of Old Systems & Disk Space Wipe..."
-sudo systemctl stop proxy desktop nginx xrdp shadowsocks-rust >/dev/null 2>&1 || true
-sudo systemctl disable proxy desktop nginx xrdp shadowsocks-rust >/dev/null 2>&1 || true
-sudo apt-get purge -y nginx nginx-common nginx-core snapd chromium-browser caddy cloudflared apache2 xvfb fluxbox x11vnc novnc websockify xrdp xfce4 xfce4-goodies xorgxrdp tigervnc-standalone-server >/dev/null 2>&1 || true
-sudo apt-get autoremove -y >/dev/null 2>&1 || true
-killall -9 python python3 node npm nginx Xvnc x11vnc websockify Xvfb openbox fluxbox brave brave-browser chrome chromium dbus-daemon autocutsel xrdp ssserver >/dev/null 2>&1 || true
-rm -rf /home/ubuntu/downloads/* /home/ubuntu/hls_cache/* /root/downloads/* /root/hls_cache/* >/dev/null 2>&1 || true
-rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
-rm -rf /root/app.py /root/start_*.sh /home/ubuntu/app.py /home/ubuntu/start_*.sh /home/ubuntu/chromium /home/ubuntu/drive_creds.json /etc/systemd/system/proxy.service /etc/systemd/system/desktop.service /usr/local/bin/ssserver /etc/shadowsocks-rust /etc/systemd/system/shadowsocks-rust.service >/dev/null 2>&1
-for p in 80 443 3389 5900 6080 8080 8081 8443; do fuser -k -9 $p/tcp >/dev/null 2>&1 || true; fuser -k -9 $p/udp >/dev/null 2>&1 || true; done; sleep 1
-echo "🛡️ [2/7] Installing Core Dependencies..."
+echo "🛑 [1/7] Aggressive Purge of Old Systems & Power Management Wipe..."
+sudo systemctl stop proxy desktop nginx xrdp shadowsocks-rust aria2c >/dev/null 2>&1 || true
+sudo apt-get purge -y light-locker xscreensaver >/dev/null 2>&1 || true
+killall -9 python python3 node npm nginx Xvnc x11vnc xrdp ssserver aria2c >/dev/null 2>&1 || true
+rm -rf /home/ubuntu/downloads/* /home/ubuntu/hls_cache/* >/dev/null 2>&1 || true
+for p in 80 443 3389 6080 8080 8081 8443 6800; do fuser -k -9 $p/tcp >/dev/null 2>&1 || true; done; sleep 1
+
+echo "🛡️ [2/7] Installing Core Dependencies & Aria2 Download Manager..."
 export DEBIAN_FRONTEND=noninteractive
 sudo ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
 sudo dpkg-reconfigure --frontend noninteractive tzdata || true
 apt-get update -y || true
-sudo apt-get -o Dpkg::Options::="--force-confmiss" install --reinstall -y nginx nginx-common nginx-core || true
+sudo apt-get install --reinstall -y nginx aria2 || true
 PY_VENV=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")' 2>/dev/null || echo "python3-venv")
 apt-get install -y python3 python3-pip python3-venv python3-full python3-psutil ffmpeg ufw iptables-persistent wget curl unzip gnupg build-essential python3-dev unrar p7zip-full tar jq xz-utils $PY_VENV || true
-echo "🖥️ [3/7] Configuring Native Windows RDP & Browsers..."
+
+echo "🖥️ [3/7] Configuring Native Windows RDP, Power Settings & Browsers..."
 apt-get install -y xfce4 xfce4-goodies dbus-x11 xrdp xorgxrdp tigervnc-standalone-server xclip xsel firefox || true
 adduser xrdp ssl-cert || true
 sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
@@ -74,6 +70,23 @@ mkdir -p /home/$RDP_USERNAME
 echo "xfce4-session" > /home/$RDP_USERNAME/.xsession
 chown $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.xsession
 chmod +x /home/$RDP_USERNAME/.xsession
+
+mkdir -p /home/$RDP_USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml
+cat > /home/$RDP_USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml << 'POWER_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-power-manager" version="1.0">
+  <property name="xfce4-power-manager" type="empty">
+    <property name="power-button-action" type="empty"/>
+    <property name="dpms-enabled" type="bool" value="false"/>
+    <property name="blank-on-ac" type="int" value="0"/>
+    <property name="dpms-on-ac-sleep" type="int" value="0"/>
+    <property name="dpms-on-ac-off" type="int" value="0"/>
+    <property name="lock-screen-suspend-hibernate" type="bool" value="false"/>
+    <property name="logind-handle-lid-switch" type="bool" value="false"/>
+  </property>
+</channel>
+POWER_EOF
+
 cat > /etc/xrdp/startwm.sh << 'STARTWM_EOF'
 #!/bin/sh
 if [ -r /etc/default/locale ]; then
@@ -83,18 +96,46 @@ fi
 export XDG_SESSION_DESKTOP=xfce
 export XDG_CURRENT_DESKTOP=xfce
 export DESKTOP_SESSION=xfce
+xset s off
+xset s noblank
+xset -dpms
 exec dbus-launch --exit-with-session xfce4-session
 STARTWM_EOF
 chmod +x /etc/xrdp/startwm.sh
-mkdir -p /home/$RDP_USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml
-cat > /home/$RDP_USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml << 'XFCE_EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xfwm4" version="1.0">
-  <property name="general" type="empty">
-    <property name="use_compositing" type="bool" value="false"/>
-  </property>
-</channel>
-XFCE_EOF
+
+mkdir -p /etc/aria2
+cat > /etc/aria2/aria2.conf << ARIA_EOF
+enable-rpc=true
+rpc-listen-all=true
+rpc-allow-origin-all=true
+max-concurrent-downloads=10
+max-connection-per-server=16
+split=16
+dir=/home/$RDP_USERNAME/Downloads
+continue=true
+disk-cache=64M
+ARIA_EOF
+cat > /etc/systemd/system/aria2c.service << SYSTEMD_ARIA_EOF
+[Unit]
+Description=Aria2c RPC Downloader
+After=network.target
+[Service]
+ExecStart=/usr/bin/aria2c --conf-path=/etc/aria2/aria2.conf
+Restart=always
+User=$RDP_USERNAME
+[Install]
+WantedBy=multi-user.target
+SYSTEMD_ARIA_EOF
+systemctl daemon-reload
+systemctl enable aria2c; systemctl restart aria2c
+
+mkdir -p /etc/brave/policies/managed
+cat > /etc/brave/policies/managed/extensions.json << 'BRAVE_POL_EOF'
+{
+  "ExtensionInstallForcelist": ["mpkodccbngfoacfalldjimigbofkhgjn;https://clients2.google.com/service/update2/crx"]
+}
+BRAVE_POL_EOF
+
 mkdir -p /home/$RDP_USERNAME/Desktop
 cat > /home/$RDP_USERNAME/Desktop/Brave.desktop << 'SHORTCUT_EOF'
 [Desktop Entry]
@@ -107,9 +148,9 @@ Terminal=false
 Categories=Network;WebBrowser;
 SHORTCUT_EOF
 chmod +x /home/$RDP_USERNAME/Desktop/Brave.desktop
-chown -R $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.config /home/$RDP_USERNAME/Desktop
+chown -R $RDP_USERNAME:$RDP_USERNAME /home/$RDP_USERNAME/.config /home/$RDP_USERNAME/Desktop /home/$RDP_USERNAME/Downloads
 systemctl restart xrdp || true
-systemctl enable xrdp || true
+
 echo "🌍 [4/7] Setting Up ISP-Throttling Evasion VPN (Shadowsocks-Rust)..."
 ARCH=$(uname -m)
 if [ "$ARCH" = "x86_64" ]; then
@@ -134,29 +175,6 @@ cat > /etc/shadowsocks-rust/config.json << EOF_JSON
     "no_delay": true
 }
 EOF_JSON
-cat > /etc/sysctl.d/99-shadowsocks-final.conf << EOF_SYSCTL
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-net.ipv4.udp_rmem_min=8192
-net.ipv4.udp_wmem_min=8192
-net.core.rmem_default=262144
-net.core.wmem_default=262144
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_mtu_probing=1
-net.ipv4.tcp_base_mss=1024
-net.ipv4.tcp_window_scaling=1
-net.ipv4.tcp_adv_win_scale=1
-net.core.rmem_max=33554432
-net.core.wmem_max=33554432
-net.ipv4.tcp_rmem=4096 87380 33554432
-net.ipv4.tcp_wmem=4096 65536 33554432
-net.core.somaxconn=65535
-net.ipv4.tcp_tw_reuse=1
-net.ipv4.tcp_fin_timeout=15
-net.ipv4.tcp_slow_start_after_idle=0
-EOF_SYSCTL
-sysctl -p /etc/sysctl.d/99-shadowsocks-final.conf >/dev/null 2>&1 || true
-modprobe tcp_bbr 2>/dev/null || true
 cat > /etc/systemd/system/shadowsocks-rust.service << EOF_SYSTEMD
 [Unit]
 Description=Shadowsocks-Rust Final
@@ -165,7 +183,6 @@ After=network.target
 Type=simple
 ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/config.json
 Restart=always
-RestartSec=3
 LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
@@ -173,11 +190,12 @@ EOF_SYSTEMD
 systemctl daemon-reload
 systemctl enable shadowsocks-rust >/dev/null 2>&1 || true
 systemctl restart shadowsocks-rust >/dev/null 2>&1 || true
+
 echo "🛡️ [5/7] Establishing Unified Master Firewall..."
 ufw --force reset >/dev/null 2>&1 || true
 ufw default deny incoming >/dev/null 2>&1 || true
 ufw default allow outgoing >/dev/null 2>&1 || true
-for p in 22 80 3389 $VPN_PORT; do 
+for p in 22 80 3389 6800 $VPN_PORT; do 
     ufw allow $p/tcp >/dev/null 2>&1 || true
     sudo iptables -I INPUT 1 -p tcp --dport $p -j ACCEPT || true
 done
@@ -185,9 +203,8 @@ ufw allow $VPN_PORT/udp >/dev/null 2>&1 || true
 sudo iptables -I INPUT 1 -p udp --dport $VPN_PORT -j ACCEPT || true
 ufw --force enable >/dev/null 2>&1 || true
 sudo netfilter-persistent save >/dev/null 2>&1 || true
+
 echo "🔀 [6/7] Configuring Nginx Port 80 Switchboard..."
-mkdir -p /etc/nginx/sites-available
-mkdir -p /etc/nginx/sites-enabled
 cat > /etc/nginx/sites-available/default << 'NGINX_EOF'
 server {
     listen 80 default_server;
@@ -208,6 +225,7 @@ server {
 NGINX_EOF
 ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 systemctl restart nginx >/dev/null 2>&1 || true
+
 echo "⚡ [7/7] Setting up Server-Side Vault Backend with ArtPlayer Engine..."
 mkdir -p /home/ubuntu/downloads
 echo "$DASH_PASS" > /home/ubuntu/.dash_pass
@@ -244,7 +262,7 @@ def get_sub_lock(fid, idx):
         return sub_extraction_locks[key]
 
 archive_session = requests.Session()
-archive_adapter = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=100)
+archive_adapter = requests.adapters.HTTPAdapter(pool_connections=200, pool_maxsize=200)
 archive_session.mount('https://', archive_adapter)
 archive_session.mount('http://', archive_adapter)
 drive_api_session = requests.Session()
@@ -268,7 +286,7 @@ class DiskStream:
         self.background = set(range(total_chunks))
 p2p_streams = {}; disk_streams = {}
 DRIVE_CREDS_FILE = "/home/ubuntu/drive_creds.json"
-CHUNK_SIZE=16777216; STREAM_CHUNK_SIZE=65536; SPOOF_AGENT='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'; HEADERS={'User-Agent':SPOOF_AGENT,'Accept':'*/*','Connection':'keep-alive'}
+STREAM_CHUNK_SIZE=65536; SPOOF_AGENT='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'; HEADERS={'User-Agent':SPOOF_AGENT,'Accept':'*/*','Connection':'keep-alive'}
 sys_data={"cpu":"Booting...","ram":"Booting...","swap":"Booting...","disk":"Booting...","net":"Booting..."}; net_p=None; net_pt=time.time()
 
 def fmt_bytes(b): return f"{b/(1024**3):.2f} GB" if b>=1024**3 else f"{b/(1024**2):.2f} MB" if b>=1024**2 else f"{b/1024:.2f} KB"
@@ -343,7 +361,85 @@ class HttpRangeFile:
         elif whence == 2: self.pos = self.size + offset
         self.pos = max(0, min(self.pos, self.size))
         return self.pos
+    def tell(self): return self.pos
+    def seekable(self): return True
+    def readable(self): return True
+    def writable(self): return False
+    def close(self): pass
 
+class SwarmRangeFile:
+    def __init__(self, url):
+        self.url = url
+        self.headers = HEADERS.copy()
+        try:
+            r = archive_session.head(url, headers=self.headers, allow_redirects=True, timeout=15)
+            cl = r.headers.get('Content-Length')
+            if not cl:
+                r = archive_session.get(url, headers=self.headers, stream=True, allow_redirects=True, timeout=15)
+                cl = r.headers.get('Content-Length', 0)
+                self.url = r.url
+                r.close()
+            else:
+                self.url = r.url
+            self.size = int(cl)
+        except: self.size = 0
+        self.pos = 0
+        self.chunk_size = 8388608 
+        self.file_id = hashlib.md5(self.url.encode()).hexdigest()
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+    def _get_chunk(self, chunk_idx):
+        cache_key = f"swarm_{self.file_id}_{chunk_idx}"
+        with shared_drive_lock:
+            if cache_key in shared_drive_cache:
+                shared_drive_cache.move_to_end(cache_key)
+                return shared_drive_cache[cache_key]
+        start = chunk_idx * self.chunk_size
+        end = min(start + self.chunk_size - 1, self.size - 1)
+        if start >= self.size: return b''
+        
+        part_size = 2097152 
+        def fetch_part(p_idx):
+            p_start = start + p_idx * part_size
+            p_end = min(p_start + part_size - 1, end)
+            if p_start > end: return b''
+            h = self.headers.copy()
+            h['Range'] = f'bytes={p_start}-{p_end}'
+            for _ in range(3):
+                try:
+                    r = archive_session.get(self.url, headers=h, timeout=10)
+                    if r.status_code in [200, 206]: return r.content
+                except: time.sleep(0.5)
+            return b''
+            
+        parts = list(self.executor.map(fetch_part, range(4)))
+        data = b''.join(parts)
+        with shared_drive_lock:
+            shared_drive_cache[cache_key] = data
+            while len(shared_drive_cache) > 64:
+                shared_drive_cache.popitem(last=False)
+        return data
+
+    def read(self, size=-1):
+        if self.pos >= self.size: return b''
+        if size < 0 or self.pos + size > self.size: size = self.size - self.pos
+        result = bytearray()
+        while size > 0 and self.pos < self.size:
+            chunk_idx = self.pos // self.chunk_size
+            chunk_offset = self.pos % self.chunk_size
+            chunk_data = self._get_chunk(chunk_idx)
+            if not chunk_data: break
+            take = min(size, len(chunk_data) - chunk_offset)
+            result.extend(chunk_data[chunk_offset : chunk_offset + take])
+            self.pos += take
+            size -= take
+        return bytes(result)
+    def seek(self, offset, whence=0):
+        if whence == 0: self.pos = offset
+        elif whence == 1: self.pos += offset
+        elif whence == 2: self.pos = self.size + offset
+        self.pos = max(0, min(self.pos, self.size))
+        return self.pos
     def tell(self): return self.pos
     def seekable(self): return True
     def readable(self): return True
@@ -518,11 +614,80 @@ HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="
 <div id="direct_zip_contents" style="margin-top:10px; display:none; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--ram);"></div>
 </div>
 
-<div class="engine-box"><div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge</span></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000;">Multi-Thread DL</button></div></div>
+<div class="engine-box"><div class="engine-title"><span style="color:var(--multi);">🚀 Engine 3: Multi-Thread Forge (32x Gbps Threading)</span></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000;">Multi-Thread DL</button></div></div>
 
-<div class="engine-box"><div class="engine-title"><span style="color:var(--swarm);text-shadow:0 0 5px rgba(236,72,153,0.4);">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_swarm" placeholder="Paste throttled link to aggregate speed smoothly via RAM..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff;">Initialize Swarm</button></div></div>
+<div class="engine-box"><div class="engine-title"><span style="color:var(--swarm);text-shadow:0 0 5px rgba(236,72,153,0.4);">🌪️ Engine 4: 32x RAM Swarm (Archive Multi-Threader)</span></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_swarm" placeholder="Box 1: Paste throttled link to aggregate speed smoothly via RAM..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff;">Initialize Swarm</button></div>
+<div class="input-group" style="margin-bottom:0;"><input type="text" id="url_swarm_zip" placeholder="Box 2: Direct Link to ZIP, RAR, MKV etc. for Multi-Connection Swarm Streaming..."><button onclick="listSwarmArchive()" style="background:var(--swarm);color:#fff;box-shadow: 0 0 10px var(--swarm);">Swarm Stream</button></div>
+<div id="swarm_zip_contents" style="margin-top:10px; display:none; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--swarm);"></div>
+</div>
 
-<div class="engine-box" style="border-color:var(--drive);"><div class="engine-title"><span style="color:var(--drive);">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px;"></span></div><div id="drive_auth_panel" style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px;"><div style="font-size:0.9em;color:#aaa;">⚠️ <b>Vault Empty:</b> Provide your Google Developer Keys below to permanently link your Google One account.</div><div class="input-group" style="margin-bottom:0;"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%;">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none; margin-bottom:15px; align-items:center; gap:10px; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"><span id="drive_email" style="color:var(--success); font-weight:bold; flex:1;">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive (Pipes precisely via RAM)..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000;">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload (Aggregates via RAM -> Uploads to Drive)..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Swarm Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to ZIP, RAR, 7z, TAR, GZ, BZ2, LZIP, XZ for Instant Extract & Stream..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Stream Contents</button></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Stream/Download Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Generate Link</button></div><div id="zip_contents" style="margin-top:10px; display:none; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"></div></div><div class="file-grid" id="files" style="margin-top:20px;"></div><div id="video_modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:9999; justify-content:center; align-items:center; flex-direction:column;"><div style="width:95%; max-width:1200px; background:#14171f; border-radius:10px; padding:20px; border:1px solid #00b3ff; box-shadow: 0 10px 40px rgba(0,0,0,0.8);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;"><h3 id="video_title" style="margin:0; color:#00b3ff; word-break:break-all;">▶️ Web Player Active</h3><button onclick="closeVideo()" style="background:#ef4444; padding:8px 15px; margin:0; border:none; border-radius:5px; color:#fff; cursor:pointer; font-weight:bold;">❌ Close Player</button></div><div id="vid_container"></div><div id="transcode_warning" style="margin-top:15px; padding:10px; background:#1e2330; border-radius:6px; border-left:4px solid var(--warn); font-size:13px; color:#ccc;"></div></div></div><script>let current_stream_id = null;window.artPlayer = null;document.addEventListener('focus', function(e) {let isFS = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;if (isFS && e.target && e.target.tagName === 'INPUT') {setTimeout(() => e.target.blur(), 1);}}, true);async function playVideo(url, name, fid) {document.getElementById('video_title').innerText = '▶️ ' + decodeURIComponent(name);document.getElementById('video_modal').style.display = 'flex';let warnBox = document.getElementById('transcode_warning');if(window.artPlayer) { window.artPlayer.destroy(false); window.artPlayer = null; }let vidContainer = document.getElementById('vid_container');vidContainer.innerHTML = '';warnBox.innerHTML = '⏳ <b>Probing video codec...</b> Heavy 4K/HEVC files may take 10-15 seconds to initialize native resolution hardware pipeline. Please wait...';let sessionCb = Date.now() + Math.random().toString(36).substring(7);let subtitleSettings = [];try {if(fid) {let subRes = await fetch('/api/subs_list/' + fid + '?url=' + encodeURIComponent(url));let subs = await subRes.json();subs.forEach((sub, i) => {subtitleSettings.push({html: sub.title + (sub.lang !== 'und' ? ` (${sub.lang})` : ''),url: `/api/sub_play/${fid}/${sub.index}.vtt?url=${encodeURIComponent(url)}&cb=${sessionCb}`});});}} catch(e) {}fetch('/api/start_hls?url=' + encodeURIComponent(url) + '&cb=' + sessionCb).then(r => r.json()).then(data => {let playlistUrl = data.playlist_url;current_stream_id = data.stream_id;let transcodeMsg = data.transcoded ? "HEVC/Unsupported codec detected. Dual-Core Optimized 4K H.264 Pipeline active. Hls.js massive buffer deployed." : "Standard codec detected. Copying raw video stream.";warnBox.innerHTML = `<b>✅ ArtPlayer Engine Active:</b> ${transcodeMsg} Subtitles strictly rendered via HTML/CSS (completely bypassing Apple DOM caching bugs).`;let artOptions = {container: '#vid_container',url: playlistUrl,type: 'm3u8',customType: {m3u8: function (video, url, art) {if (Hls.isSupported()) {if (art.hls) art.hls.destroy();const hls = new Hls({maxBufferLength: 60, maxMaxBufferLength: 120, maxBufferSize: 150 * 1000 * 1000, enableWorker: true, lowLatencyMode: false});hls.loadSource(url);hls.attachMedia(video);art.hls = hls;art.on('destroy', () => hls.destroy());} else if (video.canPlayType('application/vnd.apple.mpegurl')) {video.src = url;}}},title: decodeURIComponent(name),volume: 1,autoplay: true,pip: true,autoSize: true,setting: true,playbackRate: true,aspectRatio: true,fullscreen: true,fullscreenWeb: true,miniProgressBar: true,playsInline: true,theme: '#00b3ff',};if(subtitleSettings.length > 0) {artOptions.subtitle = {url: subtitleSettings[0].url,type: 'vtt',encoding: 'utf-8',style: { color: '#fff', fontSize: '20px' }};artOptions.settings = [{width: 200,html: 'Subtitles',tooltip: subtitleSettings[0].html,selector: subtitleSettings.map((s, i) => ({html: s.html,url: s.url,default: i === 0})),onSelect: function (item) {window.artPlayer.subtitle.switch(item.url, { name: item.html });return item.html;},}];}window.artPlayer = new Artplayer(artOptions);}).catch(e => {warnBox.innerHTML = '<b>❌ Error initializing stream. Ensure target URL is active.</b>';});}function closeVideo() {if(window.artPlayer) { window.artPlayer.destroy(false); window.artPlayer = null; }document.getElementById('vid_container').innerHTML = '';document.getElementById('video_modal').style.display = 'none';if(current_stream_id) {fetch('/api/stop_hls?stream_id=' + current_stream_id);current_stream_id = null;}}function checkDriveStatus(){fetch('/api/drive/status').then(r=>r.json()).then(d=>{if(d.connected){document.getElementById('drive_dot').style.background='var(--success)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--success)';document.getElementById('drive_auth_panel').style.display='none';document.getElementById('drive_connected_panel').style.display='flex';if(d.info) document.getElementById('drive_email').innerText = '✅ Drive Active | 💾 ' + d.info;} else {document.getElementById('drive_dot').style.background='var(--danger)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--danger)';document.getElementById('drive_auth_panel').style.display='flex';document.getElementById('drive_connected_panel').style.display='none';}});}checkDriveStatus();setInterval(checkDriveStatus, 60000);function connectDrive(){let cid=document.getElementById('drive_cid').value;let csec=document.getElementById('drive_csec').value;let rt=document.getElementById('drive_rt').value;if(!cid || !csec || !rt) return alert('⚠️ All 3 keys are strictly required to build the server vault!');document.getElementById('drive_dot').style.background='var(--warn)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--warn)';fetch('/api/drive/connect', {method: 'POST', headers: {'Content-Type': 'application/json'},body: JSON.stringify({client_id: cid, client_secret: csec, refresh_token: rt})}).then(r=>r.json()).then(d=>{if(d.success) checkDriveStatus();else { alert('❌ ' + d.error); checkDriveStatus(); }});}function disconnectDrive(){ fetch('/api/drive/disconnect', {method:'POST'}).then(()=>checkDriveStatus()); }function renderArchiveBox(d, targetId) {let box = document.getElementById(targetId);let btnId = targetId === 'zip_contents' ? 'url_drive_zip' : 'url_direct_zip';let html = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid #333;"><div style="font-weight:bold; color:var(--success);">📦 Virtual Archive Mounted to RAM Successfully</div><button onclick="clearMountedArchive('${targetId}', '${btnId}')" class="btn-red" style="padding:5px 10px; margin:0; font-size:12px;">Clear Mount</button></div>`;d.files.forEach(f => {let mb = (f.size / (1024*1024)).toFixed(2) + ' MB';let dlLink = window.location.origin + f.url;let safeName = encodeURIComponent(f.name);html += `<div class="zip-item"><div style="flex:1; word-break:break-all; padding-right:10px;">📄 ${f.name} <span style="color:#888;font-size:12px;">(${mb})</span></div><div style="display:flex; gap:5px;"><input type="text" id="zl_${f.b64}" value="${dlLink}" readonly onclick="this.select()" style="margin:0; padding:5px; font-size:12px; width:220px;"><button onclick="copyToBox('zl_${f.b64}')" style="padding:5px 15px; margin:0; font-size:12px; background:var(--accent); color:#fff;">Copy</button><button onclick="playVideo('${dlLink}', '${safeName}', null)" style="padding:5px 15px; margin:0; font-size:12px; background:var(--purple); color:#fff;">▶️ Play</button></div></div>`;});box.innerHTML = html;box.style.display = 'block';}async function listDirectArchive(){let url = document.getElementById('url_direct_zip').value;if(!url) return;let box = document.getElementById('direct_zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Direct Archive to Server RAM... <br><span style="font-size:12px;color:#888;">(ZIP is instant. RAR/7z/GZ may take a few seconds).</span></div>';try {let r = await fetch('/api/direct_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'direct_zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}async function listDriveArchive(){let url = document.getElementById('url_drive_zip').value;if(!url) return;let box = document.getElementById('zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Virtual Archive to Server RAM... <br><span style="font-size:12px;color:#888;">(ZIP is instant. RAR/7z/GZ may take a few seconds).</span></div>';try {let r = await fetch('/api/drive_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}document.addEventListener("DOMContentLoaded", () => {fetch('/api/get_archive_mount').then(r=>r.json()).then(d=>{if(d.mounted) {if (d.data.type === 'direct') renderArchiveBox(d.data, 'direct_zip_contents');else renderArchiveBox(d.data, 'zip_contents');}});});function clearMountedArchive(targetId, inputId) {fetch('/api/clear_archive_mount', {method:'POST'}).then(() => {document.getElementById(targetId).style.display = 'none';document.getElementById(inputId).value = '';});}function addFile(type){let u=document.getElementById('url_'+type).value;if(!u)return;document.getElementById('url_'+type).value='';fetch('/api/add?type='+type+'&url='+encodeURIComponent(u));}async function initUpload(type){let fi=document.getElementById('file_'+type); let f=fi.files[0];if(!f) return alert("Select a file first!");let r=await fetch('/api/upload_init', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type:type, name:f.name, size:f.size})});let d=await r.json(); fi.value='';if (type === 'p2p' || type === 'disk_relay') { checkP2PWait(d.fid, f); } }async function checkP2PWait(fid, file) {let connected = false;while (!connected) {try {let res = await fetch('/api/p2p_wait/'+fid);let data = await res.json();if (data.status === 'Stopped') return;if (data.connected) {connected = true;startGbpsP2P(fid, file);} else { await new Promise(r => setTimeout(r, 1000)); }} catch(e) { await new Promise(r => setTimeout(r, 1000)); }}}async function startGbpsP2P(fid, file) {let concurrencyLimit = 16; let activeUploads = new Set();let running = true;let P2P_CHUNK_SIZE = 1048576; let loop = setInterval(async () => {if(!running) { clearInterval(loop); return; }if(activeUploads.size >= concurrencyLimit) return;try {let res = await fetch(`/api/p2p_poll/${fid}`);if (!res.ok) { running = false; clearInterval(loop); return; }let needed = await res.json();if (needed.length === 0 && activeUploads.size === 0) {let chk = await fetch('/api/data'); let js = await chk.json();let fObj = js.files.find(x => x.id === fid);if (!fObj || fObj.status === 'Completed' || fObj.status === 'Stopped') {running = false; clearInterval(loop); return;}}for(let idx of needed) {if(!activeUploads.has(idx) && activeUploads.size < concurrencyLimit) {activeUploads.add(idx);uploadP2PChunk(fid, file, idx, P2P_CHUNK_SIZE).finally(() => { activeUploads.delete(idx); });}}} catch(e) {}}, 150); }async function uploadP2PChunk(fid, file, idx, chunkSize) {let start = idx * chunkSize;let end = Math.min(start + chunkSize, file.size);if(start >= file.size) return;let chunk = file.slice(start, end);try {await fetch(`/api/p2p_up/${fid}/${idx}`, {method: 'POST',headers: {'Content-Type': 'application/octet-stream'},body: chunk});} catch(e) {}}function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';if(!window.fSpeeds) window.fSpeeds={};let now=Date.now();data.files.forEach(f=>{let fdown=f.down||0;let ftotal=f.total||0;if(!window.fSpeeds[f.id]) window.fSpeeds[f.id]={d:fdown,t:now,s:0};let diff=fdown-window.fSpeeds[f.id].d;let secs=(now-window.fSpeeds[f.id].t)/1000;let spd=window.fSpeeds[f.id].s;if(secs>=1.0){spd=diff>0?(diff/secs/1048576):0;window.fSpeeds[f.id].s=spd;window.fSpeeds[f.id].d=fdown;window.fSpeeds[f.id].t=now;}let spdStr=spd>0?' &nbsp;⚡ '+spd.toFixed(1)+' MB/s':'';let realDown=ftotal>0?Math.min(fdown,ftotal):fdown;let pctStr=ftotal?Math.min(100,Math.round((realDown/ftotal)*100))+'%':'Live';let mb=(realDown/(1024*1024)).toFixed(1);let totStr=ftotal?(ftotal/(1024*1024)).toFixed(1):'∞';let progBar=ftotal?`<progress value="${realDown}" max="${ftotal}"></progress>`:`<progress></progress>`;let safeName=encodeURIComponent(f.name);if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Transferred: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${proxyDlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='archive_pipe'){html+=`<div class="file-card type-archive"><div class="file-name">📦 [RAM CACHE STREAM] ${f.name}</div><div class="file-status">[${f.status}] - Flow: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Close Active Link</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${swarmDlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE UPLOAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive_direct'){let dlLink=window.location.origin+'/drive_direct_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🔗 [DRIVE DIRECT] ${f.name}</div><div class="file-status">[${f.status}] - Direct Stream Proxy Ready</div><div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Remove</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
+<div class="engine-box" style="border-color:var(--drive);"><div class="engine-title"><span style="color:var(--drive);">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px;"></span></div><div id="drive_auth_panel" style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px;"><div style="font-size:0.9em;color:#aaa;">⚠️ <b>Vault Empty:</b> Provide your Google Developer Keys below to permanently link your Google One account.</div><div class="input-group" style="margin-bottom:0;"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0;"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%;">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none; margin-bottom:15px; align-items:center; gap:10px; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"><span id="drive_email" style="color:var(--success); font-weight:bold; flex:1;">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive (Pipes precisely via RAM)..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000;">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload (Aggregates via RAM -> Uploads to Drive)..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Swarm Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px;"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to ZIP, RAR, 7z, TAR, GZ, BZ2, LZIP, XZ for Instant Extract & Stream..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Stream Contents</button></div><div class="input-group" style="margin-bottom:0;"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Stream/Download Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000;box-shadow: 0 0 10px var(--drive);">Generate Link</button></div><div id="zip_contents" style="margin-top:10px; display:none; background:#0d1117; padding:15px; border-radius:8px; border:1px solid var(--success);"></div></div><div class="file-grid" id="files" style="margin-top:20px;"></div><div id="video_modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:9999; justify-content:center; align-items:center; flex-direction:column;"><div style="width:95%; max-width:1200px; background:#14171f; border-radius:10px; padding:20px; border:1px solid #00b3ff; box-shadow: 0 10px 40px rgba(0,0,0,0.8);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;"><h3 id="video_title" style="margin:0; color:#00b3ff; word-break:break-all;">▶️ Web Player Active</h3><button onclick="closeVideo()" style="background:#ef4444; padding:8px 15px; margin:0; border:none; border-radius:5px; color:#fff; cursor:pointer; font-weight:bold;">❌ Close Player</button></div><div id="vid_container"></div><div id="transcode_warning" style="margin-top:15px; padding:10px; background:#1e2330; border-radius:6px; border-left:4px solid var(--warn); font-size:13px; color:#ccc;"></div></div></div><script>let current_stream_id = null; window.artPlayer = null; let current_audio_idx = "0"; let global_vid_url = ""; let global_vid_name = ""; let global_vid_fid = "";
+document.addEventListener('focus', function(e) {let isFS = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;if (isFS && e.target && e.target.tagName === 'INPUT') {setTimeout(() => e.target.blur(), 1);}}, true);
+async function playVideo(url, name, fid, audio_idx = "0") {
+    current_audio_idx = audio_idx; global_vid_url = url; global_vid_name = name; global_vid_fid = fid;
+    document.getElementById('video_title').innerText = '▶️ ' + decodeURIComponent(name);
+    document.getElementById('video_modal').style.display = 'flex';
+    let warnBox = document.getElementById('transcode_warning');
+    if(window.artPlayer) { window.artPlayer.destroy(false); window.artPlayer = null; }
+    let vidContainer = document.getElementById('vid_container'); vidContainer.innerHTML = '';
+    warnBox.innerHTML = '⏳ <b>Probing video codec...</b> Initializing 4K HEVC Direct fMP4 Stream Pipeline (Zero CPU usage)...';
+    let sessionCb = Date.now() + Math.random().toString(36).substring(7);
+    let subtitleSettings = []; let audioSettings = [];
+    try {
+        if(fid) {
+            let subRes = await fetch('/api/subs_list/' + fid + '?url=' + encodeURIComponent(url));
+            let subs = await subRes.json();
+            subs.forEach((sub, i) => { subtitleSettings.push({html: sub.title + (sub.lang !== 'und' ? ` (${sub.lang})` : ''), url: `/api/sub_play/${fid}/${sub.index}.vtt?url=${encodeURIComponent(url)}&cb=${sessionCb}`}); });
+            let audRes = await fetch('/api/audio_list/' + fid + '?url=' + encodeURIComponent(url));
+            let auds = await audRes.json();
+            auds.forEach((aud, i) => { audioSettings.push({html: aud.title + (aud.lang !== 'und' ? ` (${aud.lang})` : ''), idx: aud.index}); });
+        }
+    } catch(e) {}
+    fetch('/api/start_hls?url=' + encodeURIComponent(url) + '&cb=' + sessionCb + '&audio_idx=' + current_audio_idx).then(r => r.json()).then(data => {
+        let playlistUrl = data.playlist_url; current_stream_id = data.stream_id;
+        let transcodeMsg = data.transcoded ? "Unsupported codec detected. Standard scaling pipeline active." : "HEVC / fMP4 Direct Copy Active. Stream copying raw 4K video directly to browser with 0% CPU overhead.";
+        warnBox.innerHTML = `<b>✅ ArtPlayer Engine Active:</b> ${transcodeMsg}`;
+        let artOptions = {
+            container: '#vid_container', url: playlistUrl, type: 'm3u8',
+            customType: {
+                m3u8: function (video, url, art) {
+                    if (Hls.isSupported()) {
+                        if (art.hls) art.hls.destroy();
+                        const hls = new Hls({maxBufferLength: 60, maxMaxBufferLength: 120, maxBufferSize: 150 * 1000 * 1000, enableWorker: true, lowLatencyMode: false});
+                        hls.loadSource(url); hls.attachMedia(video); art.hls = hls;
+                        art.on('destroy', () => hls.destroy());
+                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = url; }
+                }
+            },
+            title: decodeURIComponent(name), volume: 1, autoplay: true, pip: true, autoSize: true, setting: true, playbackRate: true, aspectRatio: true, fullscreen: true, fullscreenWeb: true, miniProgressBar: true, playsInline: true, theme: '#00b3ff',
+        };
+        artOptions.settings = [];
+        if(audioSettings.length > 1) {
+            let activeAudName = audioSettings.find(a => a.idx.toString() === current_audio_idx)?.html || "Default";
+            artOptions.settings.push({
+                width: 250, html: 'Audio Track', tooltip: activeAudName,
+                selector: audioSettings.map(a => ({ html: a.html, idx: a.idx, default: a.idx.toString() === current_audio_idx })),
+                onSelect: function (item) {
+                    if(item.idx.toString() !== current_audio_idx) {
+                        if(current_stream_id) fetch('/api/stop_hls?stream_id=' + current_stream_id);
+                        playVideo(global_vid_url, global_vid_name, global_vid_fid, item.idx.toString());
+                    }
+                    return item.html;
+                },
+            });
+        }
+        if(subtitleSettings.length > 0) {
+            artOptions.subtitle = { url: subtitleSettings[0].url, type: 'vtt', encoding: 'utf-8', style: { color: '#fff', fontSize: '20px' } };
+            artOptions.settings.push({
+                width: 200, html: 'Subtitles', tooltip: subtitleSettings[0].html,
+                selector: subtitleSettings.map((s, i) => ({ html: s.html, url: s.url, default: i === 0 })),
+                onSelect: function (item) { window.artPlayer.subtitle.switch(item.url, { name: item.html }); return item.html; },
+            });
+        }
+        window.artPlayer = new Artplayer(artOptions);
+    }).catch(e => { warnBox.innerHTML = '<b>❌ Error initializing stream. Ensure target URL is active.</b>'; });
+}
+function closeVideo() {if(window.artPlayer) { window.artPlayer.destroy(false); window.artPlayer = null; } document.getElementById('vid_container').innerHTML = ''; document.getElementById('video_modal').style.display = 'none'; if(current_stream_id) { fetch('/api/stop_hls?stream_id=' + current_stream_id); current_stream_id = null; } }function checkDriveStatus(){fetch('/api/drive/status').then(r=>r.json()).then(d=>{if(d.connected){document.getElementById('drive_dot').style.background='var(--success)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--success)';document.getElementById('drive_auth_panel').style.display='none';document.getElementById('drive_connected_panel').style.display='flex';if(d.info) document.getElementById('drive_email').innerText = '✅ Drive Active | 💾 ' + d.info;} else {document.getElementById('drive_dot').style.background='var(--danger)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--danger)';document.getElementById('drive_auth_panel').style.display='flex';document.getElementById('drive_connected_panel').style.display='none';}});}checkDriveStatus();setInterval(checkDriveStatus, 60000);function connectDrive(){let cid=document.getElementById('drive_cid').value;let csec=document.getElementById('drive_csec').value;let rt=document.getElementById('drive_rt').value;if(!cid || !csec || !rt) return alert('⚠️ All 3 keys are strictly required to build the server vault!');document.getElementById('drive_dot').style.background='var(--warn)';document.getElementById('drive_dot').style.boxShadow='0 0 8px var(--warn)';fetch('/api/drive/connect', {method: 'POST', headers: {'Content-Type': 'application/json'},body: JSON.stringify({client_id: cid, client_secret: csec, refresh_token: rt})}).then(r=>r.json()).then(d=>{if(d.success) checkDriveStatus();else { alert('❌ ' + d.error); checkDriveStatus(); }});}function disconnectDrive(){ fetch('/api/drive/disconnect', {method:'POST'}).then(()=>checkDriveStatus()); }function renderArchiveBox(d, targetId) {let box = document.getElementById(targetId);let btnId = targetId === 'zip_contents' ? 'url_drive_zip' : (targetId === 'swarm_zip_contents' ? 'url_swarm_zip' : 'url_direct_zip');let html = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid #333;"><div style="font-weight:bold; color:var(--success);">📦 Virtual Archive Mounted to RAM Successfully</div><button onclick="clearMountedArchive('${targetId}', '${btnId}')" class="btn-red" style="padding:5px 10px; margin:0; font-size:12px;">Clear Mount</button></div>`;d.files.forEach(f => {let mb = (f.size / (1024*1024)).toFixed(2) + ' MB';let dlLink = window.location.origin + f.url;let safeName = encodeURIComponent(f.name);html += `<div class="zip-item"><div style="flex:1; word-break:break-all; padding-right:10px;">📄 ${f.name} <span style="color:#888;font-size:12px;">(${mb})</span></div><div style="display:flex; gap:5px;"><input type="text" id="zl_${f.b64}" value="${dlLink}" readonly onclick="this.select()" style="margin:0; padding:5px; font-size:12px; width:220px;"><button onclick="copyToBox('zl_${f.b64}')" style="padding:5px 15px; margin:0; font-size:12px; background:var(--accent); color:#fff;">Copy</button><button onclick="playVideo('${dlLink}', '${safeName}', null)" style="padding:5px 15px; margin:0; font-size:12px; background:var(--purple); color:#fff;">▶️ Play</button></div></div>`;});box.innerHTML = html;box.style.display = 'block';}async function listDirectArchive(){let url = document.getElementById('url_direct_zip').value;if(!url) return;let box = document.getElementById('direct_zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Direct Archive to Server RAM... <br><span style="font-size:12px;color:#888;">(ZIP is instant. RAR/7z/GZ may take a few seconds).</span></div>';try {let r = await fetch('/api/direct_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'direct_zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}async function listSwarmArchive(){let url = document.getElementById('url_swarm_zip').value;if(!url) return;let box = document.getElementById('swarm_zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Swarm Archive to Server RAM using Multi-Threading... <br><span style="font-size:12px;color:#888;">(Aggregates stream via Swarm backend).</span></div>';try {let r = await fetch('/api/swarm_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'swarm_zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}async function listDriveArchive(){let url = document.getElementById('url_drive_zip').value;if(!url) return;let box = document.getElementById('zip_contents');box.style.display = 'block';box.innerHTML = '<div style="color:var(--accent);">🔍 Mounting Virtual Archive to Server RAM... <br><span style="font-size:12px;color:#888;">(ZIP is instant. RAR/7z/GZ may take a few seconds).</span></div>';try {let r = await fetch('/api/drive_archive_list?url=' + encodeURIComponent(url));let d = await r.json();if(d.error) { box.innerHTML = '<div style="color:var(--danger);">❌ ' + d.error + '</div>'; return; }renderArchiveBox(d, 'zip_contents');} catch(e) { box.innerHTML = '<div style="color:var(--danger);">❌ Network Error building Virtual Archive.</div>'; }}document.addEventListener("DOMContentLoaded", () => {fetch('/api/get_archive_mount').then(r=>r.json()).then(d=>{if(d.mounted) {if (d.data.type === 'direct') renderArchiveBox(d.data, 'direct_zip_contents'); else if (d.data.type === 'swarm') renderArchiveBox(d.data, 'swarm_zip_contents'); else renderArchiveBox(d.data, 'zip_contents');}});});function clearMountedArchive(targetId, inputId) {fetch('/api/clear_archive_mount', {method:'POST'}).then(() => {document.getElementById(targetId).style.display = 'none';document.getElementById(inputId).value = '';});}function addFile(type){let u=document.getElementById('url_'+type).value;if(!u)return;document.getElementById('url_'+type).value='';fetch('/api/add?type='+type+'&url='+encodeURIComponent(u));}async function initUpload(type){let fi=document.getElementById('file_'+type); let f=fi.files[0];if(!f) return alert("Select a file first!");let r=await fetch('/api/upload_init', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type:type, name:f.name, size:f.size})});let d=await r.json(); fi.value='';if (type === 'p2p' || type === 'disk_relay') { checkP2PWait(d.fid, f); } }async function checkP2PWait(fid, file) {let connected = false;while (!connected) {try {let res = await fetch('/api/p2p_wait/'+fid);let data = await res.json();if (data.status === 'Stopped') return;if (data.connected) {connected = true;startGbpsP2P(fid, file);} else { await new Promise(r => setTimeout(r, 1000)); }} catch(e) { await new Promise(r => setTimeout(r, 1000)); }}}async function startGbpsP2P(fid, file) {let concurrencyLimit = 16; let activeUploads = new Set();let running = true;let P2P_CHUNK_SIZE = 1048576; let loop = setInterval(async () => {if(!running) { clearInterval(loop); return; }if(activeUploads.size >= concurrencyLimit) return;try {let res = await fetch(`/api/p2p_poll/${fid}`);if (!res.ok) { running = false; clearInterval(loop); return; }let needed = await res.json();if (needed.length === 0 && activeUploads.size === 0) {let chk = await fetch('/api/data'); let js = await chk.json();let fObj = js.files.find(x => x.id === fid);if (!fObj || fObj.status === 'Completed' || fObj.status === 'Stopped') {running = false; clearInterval(loop); return;}}for(let idx of needed) {if(!activeUploads.has(idx) && activeUploads.size < concurrencyLimit) {activeUploads.add(idx);uploadP2PChunk(fid, file, idx, P2P_CHUNK_SIZE).finally(() => { activeUploads.delete(idx); });}}} catch(e) {}}, 150); }async function uploadP2PChunk(fid, file, idx, chunkSize) {let start = idx * chunkSize;let end = Math.min(start + chunkSize, file.size);if(start >= file.size) return;let chunk = file.slice(start, end);try {await fetch(`/api/p2p_up/${fid}/${idx}`, {method: 'POST',headers: {'Content-Type': 'application/octet-stream'},body: chunk});} catch(e) {}}function copyToBox(inputId){let copyText=document.getElementById(inputId);copyText.select();copyText.setSelectionRange(0,99999);try{document.execCommand("copy");alert("✅ Link Copied!");}catch(err){alert("Please manually copy from the box.");}}function triggerAction(fid,act){fetch('/api/action/'+fid+'/'+act);}setInterval(()=>{fetch('/api/data').then(r=>r.json()).then(data=>{document.getElementById('cpu').innerText=data.sys.cpu;document.getElementById('ram').innerText=data.sys.ram;document.getElementById('swap').innerText=data.sys.swap;document.getElementById('disk').innerText=data.sys.disk;document.getElementById('net').innerHTML=data.sys.net;let html='';if(!window.fSpeeds) window.fSpeeds={};let now=Date.now();data.files.forEach(f=>{let fdown=f.down||0;let ftotal=f.total||0;if(!window.fSpeeds[f.id]) window.fSpeeds[f.id]={d:fdown,t:now,s:0};let diff=fdown-window.fSpeeds[f.id].d;let secs=(now-window.fSpeeds[f.id].t)/1000;let spd=window.fSpeeds[f.id].s;if(secs>=1.0){spd=diff>0?(diff/secs/1048576):0;window.fSpeeds[f.id].s=spd;window.fSpeeds[f.id].d=fdown;window.fSpeeds[f.id].t=now;}let spdStr=spd>0?' &nbsp;⚡ '+spd.toFixed(1)+' MB/s':'';let activeTh = f.active_threads > 0 ? ` <span style="color:var(--ram);">[${f.active_threads} Active Connections]</span>` : '';let realDown=ftotal>0?Math.min(fdown,ftotal):fdown;let pctStr=ftotal?Math.min(100,Math.round((realDown/ftotal)*100))+'%':'Live';let mb=(realDown/(1024*1024)).toFixed(1);let totStr=ftotal?(ftotal/(1024*1024)).toFixed(1):'∞';let progBar=ftotal?`<progress value="${realDown}" max="${ftotal}"></progress>`:`<progress></progress>`;let safeName=encodeURIComponent(f.name);if(f.type==='p2p'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #10b981;"><div class="file-name">📡 [P2P RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Transferred: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='disk_relay'){let dlLink=window.location.origin+'/relay_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card" style="border-left:5px solid #059669;"><div class="file-name">💾 [DISK RELAY] ${f.name}</div><div class="file-status">[${f.status}] - Server Disk: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort & Delete File</button></div></div>`;}else if(f.type==='ram'){let proxyDlLink=window.location.origin+'/proxy_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-ram"><div class="file-name">⚡ [RAM] ${f.name}</div><div class="file-status">[Proxy Active] - Stream direct from source</div><div class="link-box"><input type="text" id="link_${f.id}" value="${proxyDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${proxyDlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='archive_pipe'){html+=`<div class="file-card type-archive"><div class="file-name">📦 [RAM CACHE STREAM] ${f.name}</div><div class="file-status">[${f.status}] - Flow: ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Close Active Link</button></div></div>`;}else if(f.type==='swarm'){let swarmDlLink=window.location.origin+'/swarm_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-swarm"><div class="file-name">🌪️ [SWARM RAM] ${f.name}</div><div class="file-status">[${f.status}] - Aggregating Flow...</div><div class="link-box"><input type="text" id="link_${f.id}" value="${swarmDlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${swarmDlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else if(f.type==='drive_swarm'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🚀☁️ [DRIVE SWARM] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${activeTh}${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive'){let proxyDlLink=window.location.origin+'/drive_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">☁️ [DRIVE UPLOAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Operation</button></div></div>`;}else if(f.type==='drive_direct'){let dlLink=window.location.origin+'/drive_direct_dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-drive"><div class="file-name">🔗 [DRIVE DIRECT] ${f.name}</div><div class="file-status">[${f.status}] - Direct Stream Proxy Ready</div><div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Remove</button></div></div>`;}else if(f.type==='multi'){let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-multi"><div class="file-name">🚀 [MULTI-THREAD] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${activeTh}${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}else{let dlLink=window.location.origin+'/dl/'+f.id+'/'+encodeURIComponent(f.name);html+=`<div class="file-card type-disk"><div class="file-name">💿 [DISK] ${f.name}</div><div class="file-status">[${f.status}] - ${pctStr} (${mb} MB / ${totStr} MB)${spdStr}</div>${progBar}<div class="link-box"><input type="text" id="link_${f.id}" value="${dlLink}" readonly onclick="this.select()"><button style="margin:0;" onclick="copyToBox('link_${f.id}')">📋 Copy Backend Link</button><button style="margin:0; background:var(--purple); color:#fff;" onclick="playVideo('${dlLink}', '${safeName}', '${f.id}')">▶️ Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${f.id}', 'stop')">🛑 Abort Transfer</button></div></div>`;}});if(html==='')html='<div style="text-align:center;color:#555;padding:20px;">No active engines. Paste a URL to begin.</div>';document.getElementById('files').innerHTML=html;}).catch(e=>{});},1000);</script></body></html>"""
 @app.route('/')
 def index():
     auth = request.cookies.get('dash_auth')
@@ -547,6 +712,8 @@ def serve_hls(stream_id, filename):
         resp = Response(content, mimetype='application/vnd.apple.mpegurl')
     elif filename.endswith('.vtt'):
         resp = send_file(file_path, mimetype='text/vtt')
+    elif filename.endswith(('.mp4', '.m4s')):
+        resp = send_file(file_path, mimetype='video/mp4')
     else:
         resp = send_file(file_path, mimetype='video/MP2T')
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -585,11 +752,41 @@ def subs_list(fid):
     except:
         return jsonify([])
 
+@app.route('/api/audio_list/<fid>')
+def audio_list(fid):
+    target_url = request.args.get('url')
+    if target_url:
+        parsed = urllib.parse.urlparse(target_url)
+        target = f"http://127.0.0.1:8080{parsed.path}"
+        if parsed.query: target += f"?{parsed.query}"
+    else:
+        with db_lock:
+            if fid not in db: return jsonify([])
+            fobj = db[fid]
+        target = fobj.get('path', '')
+        if fobj['type'] in ['ram', 'swarm', 'drive_direct', 'drive_swarm'] or not os.path.exists(target):
+            target = fobj.get('url', target)
+    try:
+        cmd = ['ffprobe', '-v', 'error', '-show_entries', 'stream=index,codec_type:stream_tags=language,title', '-of', 'json', target]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        data = json.loads(res.stdout)
+        auds = []
+        aud_counter = 0
+        for stream in data.get('streams', []):
+            if stream.get('codec_type') == 'audio':
+                tags = stream.get('tags', {})
+                lang = tags.get('language', 'und')
+                title = tags.get('title', f'Audio Track {aud_counter+1}')
+                auds.append({'index': aud_counter, 'lang': lang, 'title': title})
+                aud_counter += 1
+        return jsonify(auds)
+    except:
+        return jsonify([])
+
 @app.route('/api/sub_play/<fid>/<int:idx>.vtt')
 def sub_play(fid, idx):
     vtt_path = os.path.join(DL_DIR, f"{fid}_sub_{idx}.vtt")
     tmp_vtt_path = os.path.join(DL_DIR, f"{fid}_sub_{idx}_tmp.vtt")
-    
     lock = get_sub_lock(fid, idx)
     with lock:
         if not os.path.exists(vtt_path):
@@ -605,25 +802,20 @@ def sub_play(fid, idx):
                 target = fobj.get('path', '')
                 if fobj['type'] in ['ram', 'swarm', 'drive_direct', 'drive_swarm'] or not os.path.exists(target):
                     target = fobj.get('url', target)
-                    
             try:
                 cmd = ['ffmpeg', '-y', '-v', 'error', '-i', target, '-map', f'0:{idx}', '-c:s', 'webvtt', '-f', 'webvtt', '-']
                 res = subprocess.run(cmd, capture_output=True, timeout=120)
                 content = res.stdout
-                
                 if content:
                     text = content.decode('utf-8-sig', errors='ignore').replace('\r\n', '\n').strip()
                     if not text.startswith('WEBVTT'): 
                         text = 'WEBVTT\n\n' + text
-                    
                     final_data = text.encode('utf-8')
-                    
                     with open(tmp_vtt_path, 'wb') as f:
                         f.write(final_data)
                     os.rename(tmp_vtt_path, vtt_path)
             except Exception as e:
                 return str(e), 500
-            
     if os.path.exists(vtt_path):
         with open(vtt_path, 'rb') as f:
             final_content = f.read()
@@ -642,9 +834,10 @@ def sub_play(fid, idx):
 def start_hls():
     target_url = request.args.get('url')
     session_cb = request.args.get('cb', str(time.time()))
+    audio_idx = request.args.get('audio_idx', '0')
     if not target_url: return jsonify({'error': 'No URL'}), 400
     
-    stream_id = hashlib.md5(f"{target_url}_{session_cb}".encode()).hexdigest()
+    stream_id = hashlib.md5(f"{target_url}_{session_cb}_{audio_idx}".encode()).hexdigest()
     stream_dir = os.path.join(HLS_DIR, stream_id)
     parsed = urllib.parse.urlparse(target_url)
     local_url = f"http://127.0.0.1:8080{parsed.path}"
@@ -660,17 +853,11 @@ def start_hls():
     vcodec_args = ['-c:v', 'copy']
     is_transcoded = False
     
-    if v_codec in ['hevc', 'h265', 'av1', 'vp9', 'unknown']:
-        vcodec_args = [
-            '-c:v', 'libx264', 
-            '-preset', 'ultrafast', 
-            '-tune', 'zerolatency',
-            '-crf', '28',
-            '-pix_fmt', 'yuv420p', 
-            '-g', '60',
-            '-sc_threshold', '0',
-            '-threads', '2'
-        ]
+    if v_codec in ['hevc', 'h265']:
+        vcodec_args = ['-c:v', 'copy']
+        is_transcoded = False
+    elif v_codec in ['av1', 'vp9', 'unknown']:
+        vcodec_args = ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '28', '-pix_fmt', 'yuv420p', '-g', '60', '-sc_threshold', '0', '-threads', '2']
         is_transcoded = True
 
     if stream_id not in hls_procs or hls_procs[stream_id].poll() is not None:
@@ -683,17 +870,18 @@ def start_hls():
             'ffmpeg', '-hide_banner', '-loglevel', 'error',
             '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
             '-i', local_url,
-            '-map', '0:v:0?', '-map', '0:a:0?', 
+            '-map', '0:v:0?', '-map', f'0:a:{audio_idx}?', 
             *vcodec_args,
             '-c:a', 'aac', '-ac', '2', '-b:a', '128k', '-ar', '48000',
             '-sn',
             '-f', 'hls',
-            '-hls_time', '3', 
+            '-hls_segment_type', 'fmp4',
+            '-hls_time', '4', 
             '-hls_list_size', '0', 
             '-start_at_zero', 
             '-avoid_negative_ts', 'make_zero',
             '-master_pl_name', 'master.m3u8',
-            '-hls_segment_filename', os.path.join(stream_dir, 'seg_%04d.ts'),
+            '-hls_segment_filename', os.path.join(stream_dir, 'seg_%04d.m4s'),
             os.path.join(stream_dir, 'index.m3u8')
         ]
         hls_procs[stream_id] = subprocess.Popen(cmd)
@@ -747,15 +935,11 @@ def direct_archive_list():
         hrf = HttpRangeFile(url)
         if hrf.size == 0:
             return jsonify({'error': 'Target URL does not provide Content-Length. Cannot mount virtual archive.'})
-        
         parsed = urllib.parse.urlparse(hrf.url)
         arch_name = urllib.parse.unquote(os.path.basename(parsed.path)).lower()
-        if not any(arch_name.endswith(ext) for ext in ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.lz']):
-            arch_name = '.zip'
-
+        if not any(arch_name.endswith(ext) for ext in ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.lz', '.mkv']): arch_name = '.zip'
         files = []
         b64_url = base64.urlsafe_b64encode(url.encode('utf-8')).decode('utf-8')
-        
         if arch_name.endswith('.zip'):
             with zipfile.ZipFile(hrf) as zf:
                 for info in zf.infolist():
@@ -788,13 +972,60 @@ def direct_archive_list():
                         b64_name = base64.urlsafe_b64encode(info.name.encode('utf-8')).decode('utf-8')
                         safe_name = urllib.parse.quote(os.path.basename(info.name))
                         files.append({'name': info.name, 'size': info.size, 'b64': b64_name, 'url': f'/direct_archive_dl/{b64_url}/{b64_name}/{safe_name}?ext={mode.replace(":", "_")}&sz={info.size}'})
-        else:
-            return jsonify({'error': 'Unsupported archive format. Supported formats: .zip, .rar, .7z, .tar, .gz, etc.'})
-        
+        else: return jsonify({'error': 'Unsupported archive format.'})
         global_mounted_data = {'files': files, 'type': 'direct'}
         return jsonify(global_mounted_data)
-    except Exception as e:
-        return jsonify({'error': f'Failed to map direct virtual archive: {str(e)}'})
+    except Exception as e: return jsonify({'error': f'Failed to map direct virtual archive: {str(e)}'})
+
+@app.route('/api/swarm_archive_list')
+def swarm_archive_list():
+    global global_mounted_data
+    url = request.args.get('url')
+    if not url: return jsonify({'error': 'No URL provided'})
+    try:
+        srf = SwarmRangeFile(url)
+        if srf.size == 0: return jsonify({'error': 'Target URL does not provide Content-Length. Cannot mount swarm archive.'})
+        parsed = urllib.parse.urlparse(srf.url)
+        arch_name = urllib.parse.unquote(os.path.basename(parsed.path)).lower()
+        if not any(arch_name.endswith(ext) for ext in ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.lz', '.mkv']): arch_name = '.zip'
+        files = []
+        b64_url = base64.urlsafe_b64encode(url.encode('utf-8')).decode('utf-8')
+        if arch_name.endswith('.zip'):
+            with zipfile.ZipFile(srf) as zf:
+                for info in zf.infolist():
+                    if not info.is_dir():
+                        b64_name = base64.urlsafe_b64encode(info.filename.encode('utf-8')).decode('utf-8')
+                        safe_name = urllib.parse.quote(os.path.basename(info.filename))
+                        files.append({'name': info.filename, 'size': info.file_size, 'b64': b64_name, 'url': f'/swarm_archive_dl/{b64_url}/{b64_name}/{safe_name}?ext=zip&sz={info.file_size}'})
+        elif arch_name.endswith('.rar') and rarfile:
+            with rarfile.RarFile(srf) as rf:
+                for info in rf.infolist():
+                    if not info.isdir():
+                        b64_name = base64.urlsafe_b64encode(info.filename.encode('utf-8')).decode('utf-8')
+                        safe_name = urllib.parse.quote(os.path.basename(info.filename))
+                        files.append({'name': info.filename, 'size': info.file_size, 'b64': b64_name, 'url': f'/swarm_archive_dl/{b64_url}/{b64_name}/{safe_name}?ext=rar&sz={info.file_size}'})
+        elif arch_name.endswith('.7z') and py7zr:
+            with py7zr.SevenZipFile(srf, mode='r') as szf:
+                for info in szf.list():
+                    if not info.is_directory:
+                        b64_name = base64.urlsafe_b64encode(info.filename.encode('utf-8')).decode('utf-8')
+                        safe_name = urllib.parse.quote(os.path.basename(info.filename))
+                        files.append({'name': info.filename, 'size': info.uncompressed, 'b64': b64_name, 'url': f'/swarm_archive_dl/{b64_url}/{b64_name}/{safe_name}?ext=7z&sz={info.uncompressed}'})
+        elif arch_name.endswith(('.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.tar.lz', '.tar')):
+            if arch_name.endswith('gz'): mode = 'r:gz'
+            elif 'bz2' in arch_name: mode = 'r:bz2'
+            elif 'xz' in arch_name or 'lz' in arch_name: mode = 'r:xz'
+            else: mode = 'r:'
+            with tarfile.open(fileobj=srf, mode=mode) as tf:
+                for info in tf:
+                    if info.isfile():
+                        b64_name = base64.urlsafe_b64encode(info.name.encode('utf-8')).decode('utf-8')
+                        safe_name = urllib.parse.quote(os.path.basename(info.name))
+                        files.append({'name': info.name, 'size': info.size, 'b64': b64_name, 'url': f'/swarm_archive_dl/{b64_url}/{b64_name}/{safe_name}?ext={mode.replace(":", "_")}&sz={info.size}'})
+        else: return jsonify({'error': 'Unsupported archive format.'})
+        global_mounted_data = {'files': files, 'type': 'swarm'}
+        return jsonify(global_mounted_data)
+    except Exception as e: return jsonify({'error': f'Failed to map swarm virtual archive: {str(e)}'})
 
 @app.route('/api/drive_archive_list')
 def drive_archive_list():
@@ -808,11 +1039,9 @@ def drive_archive_list():
     try:
         meta_url = f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=id,name,size&supportsAllDrives=true'
         meta_res = drive_api_session.get(meta_url, headers={'Authorization': f'Bearer {access_token}'}, timeout=15).json()
-        if 'error' in meta_res:
-            return jsonify({'error': f"Drive API Error: {meta_res['error'].get('message', 'Unknown Error')}"})
+        if 'error' in meta_res: return jsonify({'error': f"Drive API Error: {meta_res['error'].get('message', 'Unknown Error')}"})
         size_str = meta_res.get('size')
-        if not size_str or not size_str.isdigit(): 
-            return jsonify({'error': 'Cannot determine file size. Ensure you linked a compressed archive, not a Google Doc/Folder.'})
+        if not size_str or not size_str.isdigit(): return jsonify({'error': 'Cannot determine file size.'})
         total_size = int(size_str)
         arch_name = meta_res.get('name', '.zip').lower()
         drf = DriveRangeFile(file_id, access_token, total_size)
@@ -849,19 +1078,15 @@ def drive_archive_list():
                         b64_name = base64.urlsafe_b64encode(info.name.encode('utf-8')).decode('utf-8')
                         safe_name = urllib.parse.quote(os.path.basename(info.name))
                         files.append({'name': info.name, 'size': info.size, 'b64': b64_name, 'url': f'/drive_archive_dl/{file_id}/{b64_name}/{safe_name}?ext={mode.replace(":", "_")}&sz={info.size}'})
-        else:
-            return jsonify({'error': 'Unsupported archive format. Supported: .zip, .rar, .7z, .tar, .gz, .bz2, .xz, .lz'})
+        else: return jsonify({'error': 'Unsupported archive format.'})
         global_mounted_data = {'files': files, 'type': 'drive'}
         return jsonify(global_mounted_data)
-    except Exception as e:
-        return jsonify({'error': f'Failed to map virtual archive: {str(e)}'})
+    except Exception as e: return jsonify({'error': f'Failed to map virtual archive: {str(e)}'})
 
 def stream_extracted_file(f, start_byte, length_to_send, fid):
     try:
-        if hasattr(f, 'seek') and callable(getattr(f, 'seek', None)):
-            f.seek(start_byte)
-        else:
-            raise Exception("No Seek")
+        if hasattr(f, 'seek') and callable(getattr(f, 'seek', None)): f.seek(start_byte)
+        else: raise Exception("No Seek")
     except Exception:
         skipped = 0
         while skipped < start_byte:
@@ -882,17 +1107,22 @@ def stream_extracted_file(f, start_byte, length_to_send, fid):
         sent += len(chunk)
         yield chunk
 
-@app.route('/direct_archive_dl/<b64_url>/<b64_name>/<path:filename>')
+@app.route('/direct_archive_dl/<b64_url>/<b64_name>/<path:filename>', methods=['GET', 'HEAD'])
 def direct_archive_dl(b64_url, b64_name, filename):
     try:
         url = base64.urlsafe_b64decode(b64_url.encode('utf-8')).decode('utf-8')
         ext = request.args.get('ext', 'zip')
         file_size = int(request.args.get('sz', 0))
         internal_filename = base64.urlsafe_b64decode(b64_name.encode('utf-8')).decode('utf-8')
-        
-        hrf = HttpRangeFile(url)
-        
         mt = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        encoded_name = urllib.parse.quote(os.path.basename(internal_filename))
+        
+        if request.method == 'HEAD':
+            hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_name}"}
+            if file_size > 0: hdrs['Content-Length'] = str(file_size)
+            return Response(status=200, headers=hdrs)
+            
+        hrf = HttpRangeFile(url)
         rh = request.headers.get('Range')
         start_byte = 0
         end_byte = file_size - 1 if file_size > 0 else 0
@@ -905,28 +1135,19 @@ def direct_archive_dl(b64_url, b64_name, filename):
                 is_range = True
         length_to_send = end_byte - start_byte + 1 if file_size > 0 else 0
         fid = hashlib.md5(f"direct_archive_{url}_{b64_name}".encode()).hexdigest()[:8]
-        
         with db_lock:
-            if fid not in db:
-                db[fid] = {
-                    'id': fid, 'name': os.path.basename(internal_filename),
-                    'status': 'Piping from Direct HTTP LRU RAM...', 'down': 0, 'total': file_size,
-                    'type': 'archive_pipe', 'start': time.time(), 'url': ''
-                }
-            else:
-                db[fid]['status'] = 'Piping from Direct HTTP LRU RAM...'
+            if fid not in db: db[fid] = {'id': fid, 'name': os.path.basename(internal_filename), 'status': 'Piping from Direct HTTP LRU RAM...', 'down': 0, 'total': file_size, 'type': 'archive_pipe', 'start': time.time(), 'url': ''}
+            else: db[fid]['status'] = 'Piping from Direct HTTP LRU RAM...'
 
         def generate_zip():
             try:
                 with zipfile.ZipFile(hrf) as zf:
-                    with zf.open(internal_filename) as f:
-                        yield from stream_extracted_file(f, start_byte, length_to_send, fid)
+                    with zf.open(internal_filename) as f: yield from stream_extracted_file(f, start_byte, length_to_send, fid)
             except Exception as e: pass
         def generate_rar():
             try:
                 with rarfile.RarFile(hrf) as rf:
-                    with rf.open(internal_filename) as f:
-                        yield from stream_extracted_file(f, start_byte, length_to_send, fid)
+                    with rf.open(internal_filename) as f: yield from stream_extracted_file(f, start_byte, length_to_send, fid)
             except Exception as e: pass
         def generate_7z():
             try:
@@ -943,38 +1164,102 @@ def direct_archive_dl(b64_url, b64_name, filename):
                     yield from stream_extracted_file(f, start_byte, length_to_send, fid)
             except Exception as e: pass
 
-        encoded_name = urllib.parse.quote(os.path.basename(internal_filename))
-        hdrs = {
-            'Content-Type': mt,
-            'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_name}",
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-store',
-            'Access-Control-Allow-Origin': '*'
-        }
+        hdrs = {'Content-Type': mt, 'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_name}", 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*'}
         if file_size > 0:
             hdrs['Content-Length'] = str(length_to_send)
-            if is_range:
-                hdrs['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
-                
+            if is_range: hdrs['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
         if ext == 'zip': return Response(generate_zip(), status=206 if is_range else 200, headers=hdrs)
         elif ext == 'rar': return Response(generate_rar(), status=206 if is_range else 200, headers=hdrs)
         elif ext == '7z': return Response(generate_7z(), status=206 if is_range else 200, headers=hdrs)
         else: return Response(generate_tar(), status=206 if is_range else 200, headers=hdrs)
     except Exception as e: return str(e), 500
 
-@app.route('/drive_archive_dl/<file_id>/<b64_name>/<path:filename>')
+@app.route('/swarm_archive_dl/<b64_url>/<b64_name>/<path:filename>', methods=['GET', 'HEAD'])
+def swarm_archive_dl(b64_url, b64_name, filename):
+    try:
+        url = base64.urlsafe_b64decode(b64_url.encode('utf-8')).decode('utf-8')
+        ext = request.args.get('ext', 'zip')
+        file_size = int(request.args.get('sz', 0))
+        internal_filename = base64.urlsafe_b64decode(b64_name.encode('utf-8')).decode('utf-8')
+        mt = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        encoded_name = urllib.parse.quote(os.path.basename(internal_filename))
+        
+        if request.method == 'HEAD':
+            hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_name}"}
+            if file_size > 0: hdrs['Content-Length'] = str(file_size)
+            return Response(status=200, headers=hdrs)
+            
+        srf = SwarmRangeFile(url)
+        rh = request.headers.get('Range')
+        start_byte = 0
+        end_byte = file_size - 1 if file_size > 0 else 0
+        is_range = False
+        if rh and file_size > 0:
+            m = re.search(r'bytes=(\d+)-(\d*)', rh)
+            if m:
+                start_byte = int(m.group(1))
+                if m.group(2): end_byte = int(m.group(2))
+                is_range = True
+        length_to_send = end_byte - start_byte + 1 if file_size > 0 else 0
+        fid = hashlib.md5(f"swarm_archive_{url}_{b64_name}".encode()).hexdigest()[:8]
+        with db_lock:
+            if fid not in db: db[fid] = {'id': fid, 'name': os.path.basename(internal_filename), 'status': 'Piping Swarm Array to RAM...', 'down': 0, 'total': file_size, 'type': 'archive_pipe', 'start': time.time(), 'url': ''}
+            else: db[fid]['status'] = 'Piping Swarm Array to RAM...'
+
+        def generate_zip():
+            try:
+                with zipfile.ZipFile(srf) as zf:
+                    with zf.open(internal_filename) as f: yield from stream_extracted_file(f, start_byte, length_to_send, fid)
+            except Exception as e: pass
+        def generate_rar():
+            try:
+                with rarfile.RarFile(srf) as rf:
+                    with rf.open(internal_filename) as f: yield from stream_extracted_file(f, start_byte, length_to_send, fid)
+            except Exception as e: pass
+        def generate_7z():
+            try:
+                with py7zr.SevenZipFile(srf, mode='r') as szf:
+                    f = szf.read([internal_filename])[internal_filename]
+                    yield from stream_extracted_file(f, start_byte, length_to_send, fid)
+            except Exception as e: pass
+        def generate_tar():
+            try:
+                mode = ext.replace('_', ':')
+                with tarfile.open(fileobj=srf, mode=mode) as tf:
+                    f = tf.extractfile(internal_filename)
+                    if not f: return
+                    yield from stream_extracted_file(f, start_byte, length_to_send, fid)
+            except Exception as e: pass
+
+        hdrs = {'Content-Type': mt, 'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_name}", 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*'}
+        if file_size > 0:
+            hdrs['Content-Length'] = str(length_to_send)
+            if is_range: hdrs['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
+        if ext == 'zip': return Response(generate_zip(), status=206 if is_range else 200, headers=hdrs)
+        elif ext == 'rar': return Response(generate_rar(), status=206 if is_range else 200, headers=hdrs)
+        elif ext == '7z': return Response(generate_7z(), status=206 if is_range else 200, headers=hdrs)
+        else: return Response(generate_tar(), status=206 if is_range else 200, headers=hdrs)
+    except Exception as e: return str(e), 500
+
+@app.route('/drive_archive_dl/<file_id>/<b64_name>/<path:filename>', methods=['GET', 'HEAD'])
 def drive_archive_dl(file_id, b64_name, filename):
     try:
         ext = request.args.get('ext', 'zip')
         file_size = int(request.args.get('sz', 0))
         internal_filename = base64.urlsafe_b64decode(b64_name.encode('utf-8')).decode('utf-8')
+        mt = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        encoded_name = urllib.parse.quote(os.path.basename(internal_filename))
+        if request.method == 'HEAD':
+            hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_name}"}
+            if file_size > 0: hdrs['Content-Length'] = str(file_size)
+            return Response(status=200, headers=hdrs)
+            
         access_token, err = get_drive_auth()
         if err: return "Drive Auth Error", 500
         meta_url = f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=size&supportsAllDrives=true'
         meta_res = drive_api_session.get(meta_url, headers={'Authorization': f'Bearer {access_token}'}, timeout=15).json()
         total_size = int(meta_res.get('size', 0))
         drf = DriveRangeFile(file_id, access_token, total_size)
-        mt = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
         rh = request.headers.get('Range')
         start_byte = 0
         end_byte = file_size - 1 if file_size > 0 else 0
@@ -988,25 +1273,18 @@ def drive_archive_dl(file_id, b64_name, filename):
         length_to_send = end_byte - start_byte + 1 if file_size > 0 else 0
         fid = hashlib.md5(f"archive_{file_id}_{b64_name}".encode()).hexdigest()[:8]
         with db_lock:
-            if fid not in db:
-                db[fid] = {
-                    'id': fid, 'name': os.path.basename(internal_filename),
-                    'status': 'Piping from Shared LRU RAM...', 'down': 0, 'total': file_size,
-                    'type': 'archive_pipe', 'start': time.time(), 'url': ''
-                }
-            else:
-                db[fid]['status'] = 'Piping from Shared LRU RAM...'
+            if fid not in db: db[fid] = {'id': fid, 'name': os.path.basename(internal_filename), 'status': 'Piping from Shared LRU RAM...', 'down': 0, 'total': file_size, 'type': 'archive_pipe', 'start': time.time(), 'url': ''}
+            else: db[fid]['status'] = 'Piping from Shared LRU RAM...'
+            
         def generate_zip():
             try:
                 with zipfile.ZipFile(drf) as zf:
-                    with zf.open(internal_filename) as f:
-                        yield from stream_extracted_file(f, start_byte, length_to_send, fid)
+                    with zf.open(internal_filename) as f: yield from stream_extracted_file(f, start_byte, length_to_send, fid)
             except Exception as e: pass
         def generate_rar():
             try:
                 with rarfile.RarFile(drf) as rf:
-                    with rf.open(internal_filename) as f:
-                        yield from stream_extracted_file(f, start_byte, length_to_send, fid)
+                    with rf.open(internal_filename) as f: yield from stream_extracted_file(f, start_byte, length_to_send, fid)
             except Exception as e: pass
         def generate_7z():
             try:
@@ -1022,23 +1300,17 @@ def drive_archive_dl(file_id, b64_name, filename):
                     if not f: return
                     yield from stream_extracted_file(f, start_byte, length_to_send, fid)
             except Exception as e: pass
-        encoded_name = urllib.parse.quote(os.path.basename(internal_filename))
-        hdrs = {
-            'Content-Type': mt,
-            'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_name}",
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-store',
-            'Access-Control-Allow-Origin': '*'
-        }
+
+        hdrs = {'Content-Type': mt, 'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_name}", 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*'}
         if file_size > 0:
             hdrs['Content-Length'] = str(length_to_send)
-            if is_range:
-                hdrs['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
+            if is_range: hdrs['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
         if ext == 'zip': return Response(generate_zip(), status=206 if is_range else 200, headers=hdrs)
         elif ext == 'rar': return Response(generate_rar(), status=206 if is_range else 200, headers=hdrs)
         elif ext == '7z': return Response(generate_7z(), status=206 if is_range else 200, headers=hdrs)
         else: return Response(generate_tar(), status=206 if is_range else 200, headers=hdrs)
     except Exception as e: return str(e), 500
+
 @app.route('/drive_direct_dl/<fid>/<path:fname>')
 def drive_direct_dl(fid, fname):
     with db_lock:
@@ -1062,6 +1334,7 @@ def drive_direct_dl(fid, fname):
         return resp
     except Exception as e:
         return str(e), 500
+
 @app.route('/api/upload_init', methods=['POST'])
 def upload_init():
  d=request.json; fid=str(uuid.uuid4())[:8]; t=d.get('type'); nm=d.get('name','unnamed'); sz=int(d.get('size',0))
@@ -1072,6 +1345,7 @@ def upload_init():
      disk_streams[fid] = DiskStream(fid, sz)
      with open(db[fid]['path'], 'wb') as f: f.truncate(sz) 
  return jsonify({'fid':fid})
+
 @app.route('/api/p2p_wait/<fid>')
 def p2p_wait(fid):
  with db_lock:
@@ -1082,6 +1356,7 @@ def p2p_wait(fid):
  if fid in p2p_streams: is_connected = p2p_streams[fid].connected
  elif fid in disk_streams: is_connected = disk_streams[fid].connected
  return jsonify({'status': st, 'connected': is_connected})
+
 @app.route('/api/p2p_poll/<fid>')
 def p2p_poll(fid):
     with db_lock:
@@ -1125,6 +1400,7 @@ def p2p_poll(fid):
                     stream.active[idx] = now
                     ret.append(idx)
     return jsonify(ret)
+
 @app.route('/api/p2p_up/<fid>/<int:idx>', methods=['POST'])
 def p2p_up(fid, idx):
     with db_lock:
@@ -1164,6 +1440,7 @@ def p2p_up(fid, idx):
                 with db_lock:
                     if db[fid]['status'] != 'Stopped': db[fid]['status'] = 'Completed'
     return "OK"
+
 @app.route('/relay_dl/<fid>/<path:fname>', methods=['GET', 'HEAD'])
 def relay_dl(fid,fname):
  with db_lock:
@@ -1279,6 +1556,7 @@ def relay_dl(fid,fname):
     hdrs['Content-Range'] = f'bytes {sb}-{eb}/{ts}'
     return Response(gen_disk(), status=206, headers=hdrs)
   return Response(gen_disk(), status=200, headers=hdrs)
+
 @app.route('/api/drive/status')
 def drive_status():
     if not os.path.exists(DRIVE_CREDS_FILE): return jsonify({'connected': False})
@@ -1298,6 +1576,7 @@ def drive_status():
             return jsonify({'connected': True, 'info': info})
     except: pass
     return jsonify({'connected': False})
+
 @app.route('/api/drive/connect', methods=['POST'])
 def drive_connect():
     data = request.json
@@ -1313,11 +1592,12 @@ def drive_connect():
         return jsonify({'success': False, 'error': 'Google rejected keys. Ensure Client Secret & Refresh Token are valid.'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/api/drive/disconnect', methods=['POST'])
 def drive_disconnect():
     if os.path.exists(DRIVE_CREDS_FILE): os.remove(DRIVE_CREDS_FILE)
     return jsonify({'success': True})
-CHUNK_SIZE_MULTI = 1048576 * 4
+
 @app.route('/dl/<fid>/<path:fname>', methods=['GET', 'HEAD'])
 def download(fid,fname):
  with db_lock:
@@ -1366,6 +1646,7 @@ def download(fid,fname):
      ftype = db[fid]['type']
      written = db[fid].get('written', set())
      src_url = db[fid].get('url')
+     c_size = db[fid].get('chunk_size', 4194304) 
     if cst in ['Completed', 'Stopped'] or 'Error' in cst:
      c = lf.read(min(STREAM_CHUNK_SIZE, l - bytes_read))
      if c:
@@ -1378,8 +1659,8 @@ def download(fid,fname):
     if ftype in ['disk', 'drive_swarm']:
      if os.path.getsize(fp) > curr_pos: can_read = True
     elif ftype == 'multi':
-     chunk_start = (curr_pos // CHUNK_SIZE_MULTI) * CHUNK_SIZE_MULTI
-     chunk_idx = curr_pos // CHUNK_SIZE_MULTI
+     chunk_start = (curr_pos // c_size) * c_size
+     chunk_idx = curr_pos // c_size
      if chunk_start in written: 
       can_read = True
      else:
@@ -1413,11 +1694,13 @@ def download(fid,fname):
     time.sleep(0.5)
     lf.seek(curr_pos)
  return Response(gen(),status=206 if rh else 200,headers=hdrs)
+
 @app.route('/api/data')
 def api_data():
  with db_lock:
-  sf=[{'id':str(k),'name':str(v.get('name','Unknown')),'status':str(v.get('status','Pending')),'down':int(v.get('down',0)),'total':int(v.get('total',0)),'type':str(v.get('type','disk'))} for k,v in db.items()]
+  sf=[{'id':str(k),'name':str(v.get('name','Unknown')),'status':str(v.get('status','Pending')),'down':int(v.get('down',0)),'total':int(v.get('total',0)),'type':str(v.get('type','disk')),'active_threads':int(v.get('active_threads',0))} for k,v in db.items()]
  return jsonify({"sys":sys_data,"files":sf})
+
 def update_file_metadata(fid, r):
     cd = r.headers.get('content-disposition', '')
     new_name = None
@@ -1445,6 +1728,7 @@ def update_file_metadata(fid, r):
                 db[fid]['path'] = new_path
                 if os.path.exists(old_path) and old_path != new_path:
                     os.rename(old_path, new_path)
+
 def dl_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -1471,32 +1755,48 @@ def dl_worker(fid):
         r.close()
     except Exception as e:
         with db_lock: db[fid]['status'] = f'Error: {str(e)[:40]}'
+
 def multi_worker(fid):
     with db_lock:
         if fid not in db: return
         u = db[fid]['url']
+        db[fid]['active_threads'] = 0
+
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+
     try:
-        r = requests.get(u, headers=HEADERS, stream=True, timeout=15, allow_redirects=True)
+        r = session.get(u, headers=HEADERS, stream=True, timeout=15, allow_redirects=True)
         r.raise_for_status()
         update_file_metadata(fid, r)
         tot = int(r.headers.get('content-length', 0))
         supports_range = r.headers.get('accept-ranges') == 'bytes' or r.headers.get('Content-Range') or r.headers.get('content-length')
         r.close()
+
         with db_lock: 
             db[fid]['total'] = tot
             db[fid]['written'] = set()
-            db[fid]['priority'] = set()
+            db[fid]['priority'] = {0} 
             p = db[fid]['path']
+
         if tot == 0 or not supports_range:
             dl_worker(fid)
             return
+
         with open(p, 'wb') as f: f.truncate(tot)
-        total_chunks = (tot + CHUNK_SIZE_MULTI - 1) // CHUNK_SIZE_MULTI
+        fd = os.open(p, os.O_WRONLY) 
+
+        chunk_size = max(8388608, min(33554432, tot // 32))
+        with db_lock: db[fid]['chunk_size'] = chunk_size
+
+        total_chunks = (tot + chunk_size - 1) // chunk_size
         pending_chunks = set(range(total_chunks))
         active_chunks = set()
         lock = threading.Lock()
-        file_write_lock = threading.Lock()
         error_flag = []
+
         def get_next_chunk():
             with lock:
                 with db_lock:
@@ -1510,25 +1810,30 @@ def multi_worker(fid):
                         active_chunks.add(c)
                         return c
                 return None
+
         def worker():
             while True:
                 if error_flag: break
                 with db_lock:
                     if fid not in db or db[fid]['status'] == 'Stopped': break
+                
                 c_idx = get_next_chunk()
                 if c_idx is None: break
-                start = c_idx * CHUNK_SIZE_MULTI
-                end = min(start + CHUNK_SIZE_MULTI - 1, tot - 1)
-                h = HEADERS.copy(); h['Range'] = f'bytes={start}-{end}'
+                
+                start = c_idx * chunk_size
+                end = min(start + chunk_size - 1, tot - 1)
+                h = HEADERS.copy()
+                h['Range'] = f'bytes={start}-{end}'
+                
                 success = False
                 for _ in range(5):
+                    with db_lock: db[fid]['active_threads'] += 1
                     try:
-                        res = requests.get(u, headers=h, timeout=15, allow_redirects=True)
+                        res = session.get(u, headers=h, timeout=15)
                         res.raise_for_status()
-                        with file_write_lock:
-                            with open(p, 'r+b') as f:
-                                f.seek(start)
-                                f.write(res.content)
+                        
+                        os.pwrite(fd, res.content, start)
+                        
                         with db_lock: 
                             if fid in db:
                                 db[fid]['down'] += len(res.content)
@@ -1539,27 +1844,38 @@ def multi_worker(fid):
                             pending_chunks.remove(c_idx)
                             active_chunks.remove(c_idx)
                         success = True
+                        with db_lock: db[fid]['active_threads'] -= 1
                         break
                     except Exception:
+                        with db_lock: db[fid]['active_threads'] -= 1
                         time.sleep(1)
                 if not success:
                     error_flag.append(True)
                     break
+
+        max_threads = 32
         threads = []
-        for _ in range(8):
+        for _ in range(max_threads):
             t = threading.Thread(target=worker)
             t.start()
             threads.append(t)
+            
         for t in threads: t.join()
+        
+        os.close(fd) 
+        
         with db_lock:
             if fid in db:
+                db[fid]['active_threads'] = 0
                 if db[fid]['status'] != 'Stopped' and not error_flag:
                     db[fid]['status'] = 'Completed'
                 elif error_flag:
                     db[fid]['status'] = 'Error: Connection Refused'
+
     except Exception as e:
         with db_lock: 
             if fid in db: db[fid]['status'] = f'Error: {str(e)[:40]}'
+
 def ram_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -1576,6 +1892,7 @@ def ram_worker(fid):
     except Exception as e:
         with db_lock: 
             if fid in db: db[fid]['status'] = f'Error: {str(e)[:40]}'
+
 def swarm_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -1592,6 +1909,7 @@ def swarm_worker(fid):
     except Exception as e:
         with db_lock: 
             if fid in db: db[fid]['status'] = f'Error: {str(e)[:40]}'
+
 def drive_direct_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -1617,6 +1935,7 @@ def drive_direct_worker(fid):
     except Exception as e:
         with db_lock: 
             if fid in db: db[fid]['status'] = f'Error: {str(e)[:40]}'
+
 def drive_worker(fid):
     with db_lock:
         if fid not in db: return
@@ -1641,7 +1960,7 @@ def drive_worker(fid):
         )
         init_res.raise_for_status()
         upload_url = init_res.headers['Location']
-        chunk_size = 67108864 # 64MB Buffer strictly enforced for gigabit Drive API chunking
+        chunk_size = 67108864
         start_byte = 0
         file_id = None
         buf = bytearray()
@@ -1680,11 +1999,13 @@ def drive_worker(fid):
                 db[fid]['file_id'] = file_id
     except Exception as e:
         with db_lock: db[fid]['status'] = f'Error: {str(e)[:40]}'
+
 def drive_swarm_worker(fid):
     with db_lock:
         if fid not in db: return
         u = db[fid]['url']
         db[fid]['status'] = 'Swarm Piping to Drive (RAM)...'
+        db[fid]['active_threads'] = 0
     try:
         token, err = get_drive_auth()
         if err: raise Exception(err)
@@ -1724,14 +2045,17 @@ def drive_swarm_worker(fid):
             eb = min(sb + chunk_size - 1, tot - 1)
             th = HEADERS.copy(); th['Range'] = f'bytes={sb}-{eb}'
             for _ in range(5):
+                with db_lock: db[fid]['active_threads'] += 1
                 try:
                     res = session.get(u, headers=th, timeout=(5, 30))
                     if res.status_code in [200, 206]:
                         with cv: 
                             buffer[idx] = res.content
                             cv.notify_all()
+                        with db_lock: db[fid]['active_threads'] -= 1
                         return
                 except: time.sleep(0.5)
+                with db_lock: db[fid]['active_threads'] -= 1
             with cv: 
                 buffer[idx] = b'ERR'
                 cv.notify_all()
@@ -1770,6 +2094,7 @@ def drive_swarm_worker(fid):
                 if next_fetch < total_chunks: executor.submit(fetch, next_fetch)
                 curr += 1
             with db_lock:
+                db[fid]['active_threads'] = 0
                 if db[fid]['status'] != 'Stopped': 
                     db[fid]['status'] = 'Completed'
                     db[fid]['type'] = 'drive_direct'
@@ -1779,6 +2104,7 @@ def drive_swarm_worker(fid):
             executor.shutdown(wait=False, cancel_futures=True)
     except Exception as e:
         with db_lock: db[fid]['status'] = f'Error: {str(e)[:40]}'
+
 @app.route('/api/add')
 def add():
  u=request.args.get('url'); t=request.args.get('type','disk')
@@ -1793,6 +2119,7 @@ def add():
  elif t=='drive_swarm': threading.Thread(target=drive_swarm_worker,args=(fid,)).start()
  elif t=='drive_direct': threading.Thread(target=drive_direct_worker,args=(fid,)).start()
  return "OK"
+
 @app.route('/api/action/<fid>/<act>')
 def action(fid,act):
  with db_lock:
@@ -1817,6 +2144,7 @@ def action(fid,act):
    del db[fid]
  gc.collect() 
  return "OK"
+
 @app.route('/proxy_stream/<fid>')
 def proxy_stream(fid):
  with db_lock:
@@ -1830,6 +2158,7 @@ def proxy_stream(fid):
   hdrs['Content-Type'] = mt
   return Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c),status=r.status_code,headers=hdrs)
  except: return "Error",500
+
 @app.route('/proxy_dl/<fid>/<path:fname>')
 def proxy_dl(fid,fname):
  with db_lock:
@@ -1845,7 +2174,8 @@ def proxy_dl(fid,fname):
   resp.headers['Content-Disposition']=f"attachment; filename*=UTF-8''{urllib.parse.quote(n)}"
   return resp
  except: return "Error",500
-@app.route('/swarm_dl/<fid>/<path:fname>')
+
+@app.route('/swarm_dl/<fid>/<path:fname>', methods=['GET', 'HEAD'])
 def swarm_dl(fid,fname):
  with db_lock:
   if fid not in db or db[fid]['type']!='swarm': return "404",404
@@ -1857,6 +2187,12 @@ def swarm_dl(fid,fname):
   if m:
    user_start=int(m.group(1))
    if m.group(2): user_end=int(m.group(2))
+   
+ if request.method == 'HEAD':
+  hdrs={'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f"attachment; filename*=UTF-8''{urllib.parse.quote(nm)}"}
+  if ts: hdrs['Content-Length'] = str(ts)
+  return Response(status=200, headers=hdrs)
+  
  if ts == 0:
   try: 
    r=requests.get(u,headers=HEADERS,stream=True,timeout=10)
@@ -1906,10 +2242,12 @@ def swarm_dl(fid,fname):
  hdrs={'Content-Type':mt,'Accept-Ranges':'bytes','Cache-Control': 'no-store'}
  if ts: hdrs.update({'Content-Length':str(user_end-user_start+1),'Content-Range':f'bytes {user_start}-{user_end}/{ts}'})
  return Response(generate_swarm(),status=206 if rh else 200,headers=hdrs)
+
 if __name__=='__main__': 
     from waitress import serve
     serve(app, host='127.0.0.1', port=8080, threads=32)
 PYTHON_EOF
+
 cat > /etc/systemd/system/proxy.service << 'PROXY_EOF'
 [Unit]
 Description=Ultimate Media Engine
@@ -1925,13 +2263,14 @@ PROXY_EOF
 systemctl daemon-reload
 systemctl enable proxy nginx >/dev/null 2>&1 || true
 systemctl restart proxy nginx >/dev/null 2>&1 || true
+
 echo "🔍 Fetching precise public IP Address..."
 sleep 3
 SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASSWORD}" | base64 -w 0)
 echo ""
 echo "====================================================================="
-echo "✅ [SUCCESS] V155 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
+echo "✅ [SUCCESS] V157 MEDIA ENGINE, RDP & SHADOWSOCKS DEPLOYMENT COMPLETE"
 echo "====================================================================="
 echo ""
 echo "🌐 --- 1. WEB DASHBOARD INFO ---"
