@@ -4,7 +4,7 @@ cat > setup.sh << 'EOF'
 clear
 set -e
 echo "===================================================="
-echo "🚀 INITIATING MEDIA ENGINE (V172 + PERSISTENT VAULT)"
+echo "🚀 INITIATING MEDIA ENGINE (V172 + VLC SWARM FIX)"
 echo "===================================================="
 generate_password() {
     PASSWORD=$(cat /dev/urandom | tr -dc 'A-Za-z0-9!@#$%^&*()_+-=' | fold -w 10 | head -n 1)
@@ -464,7 +464,7 @@ class SwarmRangeFile:
 
 class DriveRangeFile:
     def __init__(self, file_id, access_token, size):
-        self.url = f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true'
+        self.url = f'<https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true>'
         self.headers = {'Authorization': f'Bearer {access_token}', 'User-Agent': SPOOF_AGENT}
         self.size = size
         self.pos = 0
@@ -585,7 +585,7 @@ def drive_token_refresher():
     if os.path.exists(DRIVE_CREDS_FILE):
      with open(DRIVE_CREDS_FILE, 'r') as f: creds = json.load(f)
      if 'client_id' in creds and 'refresh_token' in creds:
-      r = drive_api_session.post('https://oauth2.googleapis.com/token', data={'client_id': creds['client_id'], 'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'}, timeout=15)
+      r = drive_api_session.post('<https://oauth2.googleapis.com/token>', data={'client_id': creds['client_id'], 'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'}, timeout=15)
       if r.status_code == 200:
        creds['access_token'] = r.json()['access_token']; creds['expires_at'] = time.time() + 3500
        with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(creds, f)
@@ -599,7 +599,7 @@ def get_drive_auth():
    with open(DRIVE_CREDS_FILE, 'r') as f: creds = json.load(f)
    now = time.time()
    if 'access_token' in creds and 'expires_at' in creds and now < creds['expires_at']: return creds['access_token'], None
-   r = drive_api_session.post('https://oauth2.googleapis.com/token', data={'client_id': creds['client_id'], 'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'}, timeout=15)
+   r = drive_api_session.post('<https://oauth2.googleapis.com/token>', data={'client_id': creds['client_id'], 'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'}, timeout=15)
    if r.status_code != 200: return None, "Google rejected Refresh Token. Please generate a new one."
    new_token = r.json()['access_token']; creds['access_token'] = new_token; creds['expires_at'] = now + 3500 
    with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(creds, f)
@@ -1238,7 +1238,7 @@ def drive_archive_list():
     access_token, err = get_drive_auth()
     if err: return jsonify({'error': 'Vault Empty. Connect your Google account first.'})
     try:
-        meta_url = f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=id,name,size,mimeType&supportsAllDrives=true'
+        meta_url = f'<https://www.googleapis.com/drive/v3/files/{file_id}?fields=id,name,size,mimeType&supportsAllDrives=true>'
         meta_res = drive_api_session.get(meta_url, headers={'Authorization': f'Bearer {access_token}'}, timeout=15).json()
         if 'error' in meta_res: return jsonify({'error': f"Drive API Error: {meta_res['error'].get('message', 'Unknown Error')}"})
         
@@ -1479,7 +1479,7 @@ def drive_archive_dl(file_id, b64_name, filename):
             
         access_token, err = get_drive_auth()
         if err: return "Drive Auth Error", 500
-        meta_url = f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=size&supportsAllDrives=true'
+        meta_url = f'<https://www.googleapis.com/drive/v3/files/{file_id}?fields=size&supportsAllDrives=true>'
         meta_res = drive_api_session.get(meta_url, headers={'Authorization': f'Bearer {access_token}'}, timeout=15).json()
         total_size = int(meta_res.get('size', 0))
         drf = DriveRangeFile(file_id, access_token, total_size)
@@ -1538,7 +1538,7 @@ def drive_archive_dl(file_id, b64_name, filename):
 def drive_folder_dl(file_id, fname):
     token, err = get_drive_auth()
     if err: return "Auth Error", 500
-    url = f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true'
+    url = f'<https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true>'
     req_headers = {'Authorization': f'Bearer {token}', 'User-Agent': SPOOF_AGENT}
     rh = request.headers.get('Range')
     if rh: req_headers['Range'] = rh
@@ -1577,7 +1577,7 @@ def drive_direct_dl(fid, fname):
     if not file_id: return "Error", 400
     token, err = get_drive_auth()
     if err: return "Auth Error", 500
-    url = f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true'
+    url = f'<https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true>'
     req_headers = {'Authorization': f'Bearer {token}', 'User-Agent': SPOOF_AGENT}
     rh = request.headers.get('Range')
     if rh: req_headers['Range'] = rh
@@ -1835,51 +1835,6 @@ def relay_dl(fid,fname):
     hdrs['Content-Range'] = f'bytes {sb}-{eb}/{ts}'
     return Response(gen_disk(), status=206, headers=hdrs)
   return Response(gen_disk(), status=200, headers=hdrs)
-
-@app.route('/api/drive/status')
-def drive_status():
-    with drive_creds_lock:
-        if not os.path.exists(DRIVE_CREDS_FILE): return jsonify({'connected': False})
-    try:
-        access_token, err = get_drive_auth()
-        if err: return jsonify({'connected': False, 'error': err})
-        r = drive_api_session.get('https://www.googleapis.com/drive/v3/about?fields=storageQuota', headers={'Authorization': f'Bearer {access_token}'}, timeout=15)
-        if r.status_code == 200:
-            sq = r.json().get('storageQuota', {})
-            limit = int(sq.get('limit', 0))
-            usage = int(sq.get('usage', 0))
-            if limit > 0:
-                avail = limit - usage
-                info = f"{avail / (1024**3):.1f} GB Available"
-            else:
-                info = "Unlimited / Shared Drive"
-            return jsonify({'connected': True, 'info': info})
-    except: pass
-    return jsonify({'connected': False})
-
-@app.route('/api/drive/connect', methods=['POST'])
-def drive_connect():
-    data = request.json
-    cid, csec, rt = data.get('client_id'), data.get('client_secret'), data.get('refresh_token')
-    try:
-        r = drive_api_session.post('https://oauth2.googleapis.com/token', data={'client_id': cid, 'client_secret': csec, 'refresh_token': rt, 'grant_type': 'refresh_token'}, timeout=15)
-        if r.status_code == 200:
-            now = time.time()
-            data['access_token'] = r.json()['access_token']
-            data['expires_at'] = now + 3500
-            with drive_creds_lock:
-                with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(data, f)
-            return jsonify({'success': True})
-        error_detail = r.json().get('error_description', 'Ensure Client Secret & Refresh Token are valid.')
-        return jsonify({'success': False, 'error': f'Google rejected keys: {error_detail}'}), 400
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/drive/disconnect', methods=['POST'])
-def drive_disconnect():
-    with drive_creds_lock:
-        if os.path.exists(DRIVE_CREDS_FILE): os.remove(DRIVE_CREDS_FILE)
-    return jsonify({'success': True})
 
 @app.route('/dl/<fid>/<path:fname>', methods=['GET', 'HEAD'])
 def download(fid,fname):
@@ -2670,31 +2625,52 @@ def swarm_dl(fid,fname):
   u=db[fid]['url']; ts=db[fid].get('total',0); nm=db[fid]['name']
  mt,_ = mimetypes.guess_type(nm); mt=mt or 'application/octet-stream'
  rh=request.headers.get('Range',None); user_start=0; user_end=ts-1 if ts else None
+ is_range = False
  if rh and ts:
   m=re.search(r'bytes=(\d+)-(\d*)',rh)
   if m:
    user_start=int(m.group(1))
    if m.group(2): user_end=int(m.group(2))
+   is_range = True
    
  if request.method == 'HEAD':
   hdrs={'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f"attachment; filename*=UTF-8''{urllib.parse.quote(nm)}"}
   if ts: hdrs['Content-Length'] = str(ts)
-  return Response(status=200, headers=hdrs)
+  return Response(status=206 if is_range else 200, headers=hdrs)
   
+ req_length = (user_end - user_start + 1) if ts else 0
+
+ # FAST PATH: For VLC Seeking / Probes (< 20MB requests) bypass the heavy Swarm engine to avoid Webtor rate-limits
+ if is_range and req_length > 0 and req_length <= 20971520:
+  def generate_direct():
+   th = HEADERS.copy()
+   th['Range'] = f'bytes={user_start}-{user_end}'
+   try:
+    with requests.get(u, headers=th, stream=True, timeout=10) as r:
+     for chunk in r.iter_content(STREAM_CHUNK_SIZE):
+      if chunk: yield chunk
+   except: pass
+  hdrs={'Content-Type':mt,'Accept-Ranges':'bytes','Cache-Control': 'no-store'}
+  if ts: hdrs.update({'Content-Length':str(req_length),'Content-Range':f'bytes {user_start}-{user_end}/{ts}'})
+  return Response(generate_direct(), status=206, headers=hdrs)
+ 
  if ts == 0:
   try: 
    r=requests.get(u,headers=HEADERS,stream=True,timeout=10)
    return Response((c for c in r.iter_content(STREAM_CHUNK_SIZE) if c),status=200,headers={'Content-Type':mt})
   except: return "Error",500
+
+ # FULL SWARM LOGIC FOR HEAVY CONTINUOUS STREAMING
  def generate_swarm():
-  chunk_size = 1024 * 1024 
-  max_workers = 32
+  chunk_size = 2097152 # 2MB chunks for better alignment
+  max_workers = 8 # Lower max concurrency to prevent webtor 429/503 limits
   session = requests.Session()
   adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers*2, pool_maxsize=max_workers*2)
   session.mount('http://', adapter); session.mount('https://', adapter)
   buffer = {}; cv = threading.Condition(); stop_event = threading.Event()
   start_idx = user_start // chunk_size
   end_idx = user_end // chunk_size if user_end else (ts - 1) // chunk_size
+  
   def fetch(idx):
    if stop_event.is_set(): return
    sb = idx * chunk_size
@@ -2702,15 +2678,17 @@ def swarm_dl(fid,fname):
    th = HEADERS.copy(); th['Range'] = f'bytes={sb}-{eb}'
    for _ in range(5):
     try:
-     r = session.get(u, headers=th, timeout=(3, 10))
+     r = session.get(u, headers=th, timeout=(5, 15))
      if r.status_code in [200, 206]:
       with cv: buffer[idx] = r.content; cv.notify_all()
       return
-    except: time.sleep(0.2)
+    except: time.sleep(0.5)
    with cv: buffer[idx] = b'ERR'; cv.notify_all()
+   
   executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
   for i in range(start_idx, min(start_idx + max_workers, end_idx + 1)): executor.submit(fetch, i)
   curr = start_idx
+  
   try:
    while curr <= end_idx:
     with cv:
@@ -2727,8 +2705,9 @@ def swarm_dl(fid,fname):
     curr += 1
   finally:
    stop_event.set(); executor.shutdown(wait=False, cancel_futures=True)
+   
  hdrs={'Content-Type':mt,'Accept-Ranges':'bytes','Cache-Control': 'no-store'}
- if ts: hdrs.update({'Content-Length':str(user_end-user_start+1),'Content-Range':f'bytes {user_start}-{user_end}/{ts}'})
+ if ts: hdrs.update({'Content-Length':str(req_length),'Content-Range':f'bytes {user_start}-{user_end}/{ts}'})
  return Response(generate_swarm(),status=206 if rh else 200,headers=hdrs)
 
 if __name__=='__main__': 
@@ -2757,24 +2736,34 @@ sleep 3
 SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASSWORD}" | base64 -w 0)
 
+CRED_FILE="/root/engine_credentials.txt"
+cat > $CRED_FILE << CREDEOF
+=====================================================================
+🎯 V172 MEDIA ENGINE - SYSTEM CREDENTIALS
+=====================================================================
+
+🌐 --- 1. MAIN WEBPAGE URL ---
+Direct IP Access: http://$SERVER_IP
+Cloudflare Worker Example: https://your-worker-name.workers.dev/?url=http://$SERVER_IP
+Dashboard Password: $DASH_PASS
+
+🖥️ --- 2. RDP (REMOTE DESKTOP) INFO ---
+IP Address: $SERVER_IP
+Username:   $RDP_USERNAME
+Password:   $RDP_PASSWORD
+
+🛡️ --- 3. OUTLINE VPN / SHADOWSOCKS LINK ---
+Access Link: ss://${OUTLINE_ENCODED}@${SERVER_IP}:${VPN_PORT}/?outline=1
+
+=====================================================================
+CREDEOF
+chmod 600 $CRED_FILE
+
 echo ""
 echo "====================================================================="
 echo "🎯 [SUCCESS] V172 MEDIA ENGINE DEPLOYMENT COMPLETE"
 echo "====================================================================="
-echo ""
-echo "🌐 --- 1. MAIN WEBPAGE URL ---"
-echo "Direct IP Access: http://$SERVER_IP"
-echo "Cloudflare Worker Example: https://your-worker-name.workers.dev/?url=http://$SERVER_IP"
-echo "Dashboard Password: $DASH_PASS"
-echo ""
-echo "🖥️ --- 2. RDP (REMOTE DESKTOP) INFO ---"
-echo "IP Address: $SERVER_IP"
-echo "Username:   $RDP_USERNAME"
-echo "Password:   $RDP_PASSWORD"
-echo ""
-echo "🛡️ --- 3. OUTLINE VPN / SHADOWSOCKS LINK ---"
-echo "Access Link: ss://${OUTLINE_ENCODED}@${SERVER_IP}:${VPN_PORT}/?outline=1"
-echo ""
-echo "====================================================================="
+cat $CRED_FILE
+echo "⚠️  All these credentials have also been securely saved to: $CRED_FILE"
 EOF
 bash setup.sh
