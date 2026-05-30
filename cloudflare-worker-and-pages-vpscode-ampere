@@ -15,24 +15,33 @@ RED='\033[1;31m'
 NC='\033[0m'
 
 echo -e "${CYAN}=================================================================${NC}"
-echo -e "${GREEN} 🚀 INITIATING V183-ULTRA-PRO (SYNTAX FIXED & SMART CACHE) ${NC}"
+echo -e "${GREEN} 🚀 INITIATING V183-ULTRA-PRO (PURE TRANSFER + FOLDER UPLOAD) ${NC}"
 echo -e "${CYAN}=================================================================${NC}\n"
 
 echo -e "${YELLOW}⚙️ [1/7] Initializing System Prep & Port Sanitization...${NC}"
 sudo apt-get update -qq >/dev/null 2>&1 || true
-sudo apt-get install -y psmisc lsof curl >/dev/null 2>&1 || true
+sudo apt-get install -y --no-install-recommends psmisc lsof curl >/dev/null 2>&1 || true
 
 for PORT in 80 3389 8443; do
     sudo fuser -k -9 $PORT/tcp >/dev/null 2>&1 || true
     sudo fuser -k -9 $PORT/udp >/dev/null 2>&1 || true
 done
 
+echo -e "${YELLOW}⚙️ [2/7] Injecting Anti-Throttling TCP Network Optimizations...${NC}"
+sudo sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+sudo sysctl -w net.ipv4.tcp_fastopen=3 >/dev/null 2>&1 || true
+sudo sysctl -w net.core.rmem_max=67108864 >/dev/null 2>&1 || true
+sudo sysctl -w net.core.wmem_max=67108864 >/dev/null 2>&1 || true
+sudo sysctl -w net.ipv4.tcp_rmem="4096 87380 67108864" >/dev/null 2>&1 || true
+sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 67108864" >/dev/null 2>&1 || true
+sudo sysctl -w net.core.netdev_max_backlog=250000 >/dev/null 2>&1 || true
+
 if command -v docker &> /dev/null; then
     sudo docker system prune -f >/dev/null 2>&1 || true
-    sudo docker builder prune -f >/dev/null 2>&1 || true
 fi
 
-mkdir -p media_stack/{nginx,engine,rdp,downloads/hls_cache,downloads/subs}
+mkdir -p media_stack/{nginx,engine,rdp,downloads}
 sudo touch /opt/media_engine_drive.json
 sudo chmod 666 /opt/media_engine_drive.json
 cd media_stack
@@ -52,7 +61,7 @@ ENVEOF
 fi
 source .env
 
-echo -e "${YELLOW}⚙️ [2/7] Writing Docker & Nginx Configurations...${NC}"
+echo -e "${YELLOW}⚙️ [3/7] Writing Docker & Nginx Configurations...${NC}"
 
 cat > docker-compose.yml << 'YMLEOF'
 services:
@@ -61,25 +70,29 @@ services:
     volumes: ['./downloads:/downloads', '/opt/media_engine_drive.json:/opt/media_engine_drive.json']
     environment: ['DASH_PASS=${DASH_PASS}']
     restart: unless-stopped
+    mem_limit: 800m
     networks: [media_net]
   rdp:
     build: ./rdp
     environment: ['RDP_PASS=${RDP_PASS}']
     ports: ['3389:3389']
     volumes: ['./downloads:/downloads']
-    shm_size: '2g'
+    shm_size: '512m'
+    mem_limit: 1200m
     restart: unless-stopped
     networks: [media_net]
   vpn:
     image: ghcr.io/shadowsocks/ssserver-rust:latest
     ports: ["${VPN_PORT}:${VPN_PORT}/tcp", "${VPN_PORT}:${VPN_PORT}/udp"]
     command: ssserver -s "0.0.0.0:${VPN_PORT}" -m "chacha20-ietf-poly1305" -k "${VPN_PASS}" -U --fast-open
+    mem_limit: 200m
     restart: unless-stopped
   nginx:
     image: nginx:alpine
     ports: ['80:80']
     volumes: ['./nginx/nginx.conf:/etc/nginx/nginx.conf:ro', './downloads:/downloads:ro']
     depends_on: [engine]
+    mem_limit: 150m
     restart: unless-stopped
     networks: [media_net]
 networks:
@@ -90,19 +103,10 @@ YMLEOF
 cat > nginx/nginx.conf << 'NGINXEOF'
 events { worker_connections 8192; multi_accept on; }
 http {
-    sendfile on; tcp_nopush on; tcp_nodelay on;
+    sendfile on; tcp_nopush on; tcp_nodelay on; keepalive_timeout 65;
     resolver 127.0.0.11 valid=10s ipv6=off;
     server {
         listen 80 default_server; client_max_body_size 0;
-        location /hls/ {
-            alias /downloads/hls_cache/; add_header Cache-Control "no-store, max-age=0";
-            add_header Access-Control-Allow-Origin "*"; add_header Accept-Ranges "bytes";
-            types { application/vnd.apple.mpegurl m3u8; video/mp2t ts; text/vtt vtt; }
-        }
-        location /subs/ {
-            alias /downloads/subs/; add_header Access-Control-Allow-Origin "*";
-            types { text/vtt vtt; text/plain srt; }
-        }
         location / { 
             set $backend http://engine:8080;
             proxy_pass $backend; 
@@ -118,7 +122,14 @@ NGINXEOF
 cat > rdp/Dockerfile << 'RDPEOF'
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && apt-get update -qq && apt-get install -y --no-install-recommends xfce4 xfce4-goodies xrdp xorgxrdp dbus-x11 sudo curl wget unzip gnupg ca-certificates aria2 && curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg "https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg" && echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" > /etc/apt/sources.list.d/brave-browser-release.list && apt-get update -qq && apt-get install -y --no-install-recommends brave-browser && wget -q https://github.com/mayswind/AriaNg/releases/download/1.3.7/AriaNg-1.3.7-AllInOne.zip && unzip -q AriaNg-1.3.7-AllInOne.zip -d /opt/ariang && rm AriaNg-1.3.7-AllInOne.zip && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/force-unsafe-io && \
+    echo 'Acquire::http::Pipeline-Depth "100"; Acquire::Retries "3";' > /etc/apt/apt.conf.d/99speedup && \
+    apt-get update -qq && apt-get install -y --no-install-recommends xfce4 xfce4-goodies xrdp xorgxrdp dbus-x11 sudo curl wget unzip gnupg ca-certificates aria2 && \
+    curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg "https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg" && \
+    echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" > /etc/apt/sources.list.d/brave-browser-release.list && \
+    apt-get update -qq && apt-get install -y --no-install-recommends brave-browser && \
+    wget -q https://github.com/mayswind/AriaNg/releases/download/1.3.7/AriaNg-1.3.7-AllInOne.zip && unzip -q AriaNg-1.3.7-AllInOne.zip -d /opt/ariang && rm AriaNg-1.3.7-AllInOne.zip && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/*
 RUN mkdir -p /etc/opt/chrome/policies/managed && echo '{"ExtensionInstallForcelist": ["mpkodccbngfoacfalldjghnnfkfcnkfh;https://clients2.google.com/service/update2/crx"]}' > /etc/opt/chrome/policies/managed/extensions.json
 RUN adduser xrdp ssl-cert && sed -i 's/test -x \/etc\/X11\/Xsession && exec \/etc\/X11\/Xsession/startxfce4/' /etc/xrdp/startwm.sh && sed -i 's/exec \/bin\/sh \/etc\/X11\/Xsession/startxfce4/' /etc/xrdp/startwm.sh
 COPY entrypoint.sh /entrypoint.sh
@@ -145,24 +156,25 @@ rm -f /var/run/xrdp/xrdp*.pid
 xrdp-sesman --nodaemon & exec xrdp --nodaemon
 RDPENTEOF
 
-echo -e "${YELLOW}⚙️ [3/7] Generating Python Backend Engine...${NC}"
+echo -e "${YELLOW}⚙️ [4/7] Generating Python Backend Engine...${NC}"
 
 cat > engine/Dockerfile << 'ENGEOF'
 FROM python:3.10-slim-bookworm
 WORKDIR /app
-RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
+RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/force-unsafe-io && \
+    echo 'Acquire::http::Pipeline-Depth "100"; Acquire::Retries "3";' > /etc/apt/apt.conf.d/99speedup && \
+    sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update -qq && \
-    apt-get install -y --no-install-recommends ffmpeg aria2 unrar p7zip-full && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-RUN pip install --prefer-binary --no-cache-dir flask requests psutil waitress
-RUN pip install --prefer-binary --no-cache-dir rarfile py7zr cloudscraper curl_cffi || true
+    apt-get install -y --no-install-recommends aria2 unrar p7zip-full && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/*
+RUN pip install --prefer-binary --no-cache-dir flask requests psutil waitress rarfile py7zr cloudscraper curl_cffi || true
 COPY app.py .
 CMD ["python3", "-u", "app.py"]
 ENGEOF
 
 cat > engine/app.py << 'ENGPYEOF'
-import os, time, uuid, threading, subprocess, shutil, re, mimetypes, concurrent.futures, hashlib, json, gc, zipfile, base64, collections, urllib.parse
-from flask import Flask, jsonify, render_template_string, request, Response, send_file
+import os, time, uuid, threading, shutil, re, mimetypes, concurrent.futures, hashlib, json, gc, zipfile, base64, collections, urllib.parse
+from flask import Flask, jsonify, render_template_string, request, Response
 import psutil, requests
 from requests.adapters import HTTPAdapter
 from collections import OrderedDict
@@ -178,26 +190,24 @@ except: archive_session = requests.Session()
 try: from curl_cffi import requests as creq; rqk = {"impersonate": "chrome"}
 except: creq, rqk = requests, {}
 
-archive_adapter = requests.adapters.HTTPAdapter(pool_connections=200, pool_maxsize=200)
+archive_adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16)
 archive_session.mount('https://', archive_adapter); archive_session.mount('http://', archive_adapter)
 
 app = Flask(__name__)
 DL_DIR = "/downloads"; os.makedirs(DL_DIR, exist_ok=True)
-SUB_DIR = os.path.join(DL_DIR, "subs"); os.makedirs(SUB_DIR, exist_ok=True)
 db = {}; db_lock = threading.Lock(); global_mounted_data = None
 shared_drive_cache = collections.OrderedDict(); shared_drive_lock = threading.Lock()
 active_mount_streams = set(); DRIVE_CREDS_FILE = "/opt/media_engine_drive.json"; drive_creds_lock = threading.Lock()
 
 drive_api_session = requests.Session()
-_retry_strategy = Retry(total=5, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-_api_adapter = HTTPAdapter(max_retries=_retry_strategy, pool_connections=100, pool_maxsize=100)
+_retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+_api_adapter = HTTPAdapter(max_retries=_retry_strategy, pool_connections=16, pool_maxsize=16)
 drive_api_session.mount("https://", _api_adapter); drive_api_session.mount("http://", _api_adapter)
 
 DASH_PASS = os.environ.get('DASH_PASS', 'admin'); P2P_CHUNK_SIZE = 1048576; STREAM_CHUNK_SIZE = 2097152
 SPOOF_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 HEADERS = {'User-Agent': SPOOF_AGENT, 'Accept': '*/*', 'Connection': 'keep-alive', 'Accept-Encoding': 'identity'}
 sys_data = {"cpu": "Booting...", "ram": "Booting...", "swap": "Booting...", "disk": "Booting...", "net": "Booting..."}; net_p = None; net_pt = time.time()
-hls_procs = {}
 
 class P2PStream:
     def __init__(self, fid, total_size):
@@ -255,7 +265,7 @@ class HttpRangeFile:
         except: data = b''
         with shared_drive_lock:
             shared_drive_cache[ck] = data
-            while len(shared_drive_cache) > 128: shared_drive_cache.popitem(last=False)
+            while len(shared_drive_cache) > 16: shared_drive_cache.popitem(last=False)
         return data
     def read(self, size=-1):
         if self.pos >= self.size: return b''
@@ -302,8 +312,10 @@ class SwarmRangeFile(HttpRangeFile):
         data = b''.join(list(self.executor.map(fetch_part, range(4))))
         with shared_drive_lock:
             shared_drive_cache[ck] = data
-            while len(shared_drive_cache) > 64: shared_drive_cache.popitem(last=False)
+            while len(shared_drive_cache) > 16: shared_drive_cache.popitem(last=False)
         return data
+    def close(self):
+        if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
 
 class DriveRangeFile(HttpRangeFile):
     def __init__(self, file_id, access_token, size):
@@ -321,75 +333,16 @@ class DriveRangeFile(HttpRangeFile):
         except: data = b''
         with shared_drive_lock:
             shared_drive_cache[ck] = data
-            while len(shared_drive_cache) > 128: shared_drive_cache.popitem(last=False)
+            while len(shared_drive_cache) > 16: shared_drive_cache.popitem(last=False)
         return data
 
 LOGIN_HTML = r"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Restricted Area</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#14171f;padding:40px;border-radius:12px;border:1px solid #2d3748;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5);width:100%;max-width:350px}input{padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;margin-bottom:20px;width:100%;box-sizing:border-box;font-size:16px;outline:none;text-align:center}input:focus{border-color:#00b3ff}button{padding:15px;background:#00b3ff;border:none;color:#fff;border-radius:8px;cursor:pointer;width:100%;font-size:16px;font-weight:bold;transition:0.2s}button:hover{background:#0099cc}h2{margin-top:0;margin-bottom:25px}</style></head><body><div class="box"><h2>🔒 Secure Engine Master</h2><form onsubmit="event.preventDefault(); document.cookie='dash_auth='+encodeURIComponent(document.getElementById('pw').value)+'; path=/; max-age=2592000'; window.location.reload();"><input type="password" id="pw" placeholder="Enter Password" autofocus required><button type="submit">Unlock Dashboard</button></form></div></body></html>"""
-PLAYER_HTML = r"""<!DOCTYPE html><html><head><title>ArtPlayer - {{ name }}</title><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{margin:0;padding:0;background:#000;height:100vh;display:flex;flex-direction:column;font-family:sans-serif;}#header{padding:10px 20px;background:#111;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #333;}.btn-back{background:#ef4444;color:#fff;border:none;padding:10px 20px;cursor:pointer;border-radius:5px;font-weight:bold;text-decoration:none;transition:0.2s;}.btn-back:hover{background:#dc2626;}.title{color:#fff;font-size:16px;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;}#app{flex:1;width:100%;}</style><script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script><script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script></head><body><div id="header"><a href="#" id="backBtn" class="btn-back">⬅ Back & Stop Transcoder</a><div class="title">{{ name }}</div><div style="width:150px;"></div></div><div id="app"></div><script>let fid="{{ fid }}";let internal_url="{{ url }}";let streamId=null;let c_aud="0",c_sub="none";let art=null;let aud_tr=[{html:'Default Audio',aud:'0'}];let sub_tr=[{html:'No Subtitles',sub:'none'}];let dyn_sub_url="";document.getElementById('backBtn').addEventListener('click',async(e)=>{e.preventDefault();if(streamId){await fetch("/api/stop_hls?stream_id="+streamId);}window.location.href='/';});window.addEventListener("beforeunload",()=>{if(streamId)navigator.sendBeacon("/api/stop_hls?stream_id="+streamId);});async function init(){let r=await fetch("/api/media_info/"+fid+"?url="+encodeURIComponent(internal_url));if(r.ok){let d=await r.json();if(d.audio&&d.audio.length>0)aud_tr=d.audio.map(a=>({html:a.title+" ("+a.lang+")",aud:a.index.toString()}));if(d.subs&&d.subs.length>0)sub_tr=[{html:'No Subtitles',sub:'none'}].concat(d.subs.map(s=>({html:s.title+" ("+s.lang+")",sub:s.index.toString()})));}play();}async function play(){if(art){art.destroy(false);art=null;}let sub_obj={};if(c_sub!=="none"){dyn_sub_url="/api/subtitle/"+fid+"/"+c_sub+"?url="+encodeURIComponent(internal_url);sub_obj={url:dyn_sub_url,type:'vtt',encoding:'utf-8',style:{color:'#fff',fontSize:'24px'}};}document.getElementById("app").innerHTML='<div style="color:#00b3ff;padding:20px;text-align:center;margin-top:10%;font-size:18px;">⚙️ Engine Direct Stream Initializing...</div>';try{art=new Artplayer({container:"#app",url:internal_url,title:"{{ name }}",theme:"#00b3ff",autoplay:true,fullscreen:true,autoSize:true,playbackRate:true,setting:true,pip:true,subtitle:sub_obj,controls:[{position:'right',html:'Audio',selector:aud_tr,onSelect:function(i){if(c_aud!==i.aud){c_aud=i.aud;switchMediaHLS();}return i.html;}},{position:'right',html:'Subs',selector:sub_tr,onSelect:function(i){if(c_sub!==i.sub){c_sub=i.sub;switchMedia();}return i.html;}}]});art.on('ready',()=>{art.notice.show="Native Stream Engine Active";});art.on('error',()=>{console.log("Direct stream failed codec check. Booting FFmpeg Hardware Transcoder...");switchMediaHLS();});}catch(e){switchMediaHLS();}}async function switchMediaHLS(){if(art){art.destroy(false);art=null;}document.getElementById("app").innerHTML='<div style="color:#00b3ff;padding:20px;text-align:center;margin-top:10%;font-size:18px;">⚙️ Booting FFmpeg Hardware Transcoder Engine... Please wait.</div>';let cb=Date.now();let r=await fetch("/api/start_hls?url="+encodeURIComponent(internal_url)+"&cb="+cb+"&audio_idx="+c_aud+"&sub_idx="+c_sub+"&fid="+fid);let d=await r.json();streamId=d.stream_id;document.getElementById("app").innerHTML="";art=new Artplayer({container:"#app",url:d.playlist_url,title:"{{ name }}",type:"m3u8",theme:"#00b3ff",autoplay:true,fullscreen:true,autoSize:true,playbackRate:true,setting:true,pip:true,customType:{m3u8:function(v,m,a){if(Hls.isSupported()){const h=new Hls({maxMaxBufferLength:120,maxBufferLength:60});h.loadSource(m);h.attachMedia(v);a.hls=h;a.on('destroy',()=>h.destroy());}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=m;}}},controls:[{position:'right',html:'Audio',selector:aud_tr,onSelect:function(i){if(c_aud!==i.aud){c_aud=i.aud;switchMediaHLS();}return i.html;}},{position:'right',html:'Subs',selector:sub_tr,onSelect:function(i){if(c_sub!==i.sub){c_sub=i.sub;switchMediaHLS();}return i.html;}}]});art.on('ready',()=>{art.notice.show="FFmpeg Hardware Transcoder Active";});}async function switchMedia(){if(streamId)await fetch("/api/stop_hls?stream_id="+streamId);play();}window.onload=init;</script></body></html>"""
-HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engine Dashboard</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--drive:#10b981}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:.3s}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:700;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px}input,select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;transition:.2s;white-space:nowrap}button:hover{opacity:.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748}.monitor-value{font-size:15px;font-weight:700;margin-top:8px;color:var(--accent);white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.file-name{font-weight:700;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333}</style></head><body><h2><span>🚀 Unified 5-Engine Master</span><span style="font-size:14px;color:#888">Port 80 <span class="status-dot" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success)"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram)">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--warn)">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success)">--</div></div><div class="monitor-card network-card"><div>Network Traffic (WAN)</div><div class="monitor-value" id="net" style="color:var(--success)">--</div></div></div><div class="engine-box" style="border-color:#10b981"><div class="engine-title"><span style="color:#10b981">📡 Engine 5: Direct Transfer (P2P RAM & Disk Relay)</span></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 1: Direct P2P</div><input type="file" id="file_p2p" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('p2p')" style="background:#10b981;color:#000">Generate P2P Link</button></div><div class="input-group" style="margin-bottom:0"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 2: Disk Buffered</div><input type="file" id="file_disk_relay" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('disk_relay')" style="background:#059669;color:#fff">Generate Disk Link</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--purple)">💿 Engine 1: Disk Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple)">Send to Disk</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--ram)">⚡ Engine 2: RAM Proxy & Direct Archive Extractor</span></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_ram" placeholder="Box 1: Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000">Start RAM Proxy</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_direct_zip" placeholder="Box 2: Direct Link to ZIP, RAR, 7z..."><button onclick="listDirectArchive()" style="background:var(--ram);color:#000">Stream Contents</button></div><div id="direct_zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--ram)"></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--multi)">🚀 Engine 3: Hyper-Thread Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000">Multi-Thread DL</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--swarm)">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_swarm" placeholder="Box 1: Paste throttled link to aggregate..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff">Initialize Swarm</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_swarm_zip" placeholder="Box 2: Direct Link to ZIP, RAR, MKV etc..."><button onclick="listSwarmArchive()" style="background:var(--swarm);color:#fff">Swarm Stream</button></div><div id="swarm_zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--swarm)"></div></div><div class="engine-box" style="border-color:var(--drive)"><div class="engine-title"><span style="color:var(--drive)">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px"></span></div><div id="drive_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"><span id="drive_email" style="color:var(--success);font-weight:700;flex:1">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload to Drive..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000">Swarm Upload</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to Drive Folder, ZIP, RAR..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000">Stream Contents</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000">Generate Link</button></div><div id="zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"></div></div><div class="file-grid" id="files" style="margin-top:20px"></div><script>function playVideo(u,n,f){window.open("/player/"+encodeURIComponent(f)+"/"+encodeURIComponent(n)+"?url="+encodeURIComponent(u),'_blank')}function checkDriveStatus(){fetch("/api/drive/status").then(e=>e.json()).then(e=>{e.connected?(document.getElementById("drive_dot").style.background="var(--success)",document.getElementById("drive_auth_panel").style.display="none",document.getElementById("drive_connected_panel").style.display="flex",document.getElementById("drive_email").innerText="✅ Drive Active | 💾 "+(e.info||"")):(document.getElementById("drive_dot").style.background="var(--danger)",document.getElementById("drive_auth_panel").style.display="flex",document.getElementById("drive_connected_panel").style.display="none")})}function connectDrive(){let e=document.getElementById("drive_cid").value,t=document.getElementById("drive_csec").value,l=document.getElementById("drive_rt").value;if(!e||!t||!l)return alert("All keys required!");fetch("/api/drive/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({client_id:e,client_secret:t,refresh_token:l})}).then(e=>e.json()).then(e=>{e.success?checkDriveStatus():alert("Failed: "+e.error)})}function disconnectDrive(){fetch("/api/drive/disconnect",{method:"POST"}).then(()=>checkDriveStatus())}function renderArchiveBox(e,t){let l=document.getElementById(t),d=t==="zip_contents"?"url_drive_zip":t==="swarm_zip_contents"?"url_swarm_zip":"url_direct_zip",n=e.mount_id||"none";let i=`<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #333"><button onclick="clearMountedArchive('${t}','${d}')" class="btn-red">Clear Mount</button></div>`;e.files.forEach(s=>{let c=window.location.origin+s.url,u=encodeURIComponent(s.name);i+=`<div class="zip-item">📄 ${s.name} <div style="display:flex;gap:5px"><input type="text" id="zl_${s.b64}" value="${c}" readonly onclick="this.select()"><button onclick="copyToBox('zl_${s.b64}')" style="background:var(--accent);color:#fff">Copy</button><button onclick="playVideo('${c}','${u}','${n}')" style="background:var(--purple);color:#fff">Play</button></div></div>`});l.innerHTML=i;l.style.display="block"}async function listDirectArchive(){let e=document.getElementById("url_direct_zip").value;if(e){let t=document.getElementById("direct_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/direct_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"direct_zip_contents")}}async function listSwarmArchive(){let e=document.getElementById("url_swarm_zip").value;if(e){let t=document.getElementById("swarm_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/swarm_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"swarm_zip_contents")}}async function listDriveArchive(){let e=document.getElementById("url_drive_zip").value;if(e){let t=document.getElementById("zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/drive_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"zip_contents")}}function clearMountedArchive(e,t){fetch("/api/clear_archive_mount",{method:"POST"}).then(()=>{document.getElementById(e).style.display="none";document.getElementById(t).value=""})}function addFile(e){let t=document.getElementById("url_"+e).value;if(t){document.getElementById("url_"+e).value="";fetch("/api/add?type="+e+"&url="+encodeURIComponent(t))}}async function initUpload(e){let t=document.getElementById("file_"+e),l=t.files;if(0===l.length)return;for(let d=0;d<l.length;d++){let n=l[d],o=await fetch("/api/upload_init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:e,name:n.name,size:n.size})}),a=await o.json();startGbpsP2P(a.fid,n,true)}t.value=""}async function startGbpsP2P(e,t,l){let n=1048576,o=Math.ceil(t.size/n),a=[],i=new Set,s=true,r=0;async function c(){while(s){let u=await fetch("/api/p2p_poll/"+e);if(!u.ok){s=false;break}let m=await u.json();for(let g of m)if(!i.has(g)&&!a.includes(g))a.push(g);await new Promise(k=>setTimeout(k,1000))}}async function v(){while(s){let E=-1;if(a.length>0)E=a.shift();else if(l&&r<o){while(i.has(r)&&r<o)r++;if(r<o)E=r++}if(E!==-1){i.add(E);let w=E*n,S=Math.min(w+n,t.size),C=t.slice(w,S);for(let x=0;x<3;x++){let L=await fetch(`/api/p2p_up/${e}/${E}`,{method:"POST",body:C});if(L.ok)break;await new Promise(I=>setTimeout(I,500))}i.delete(E)}else await new Promise(T=>setTimeout(T,200))}}c();for(let q=0;q<8;q++)v()}function copyToBox(e){let t=document.getElementById(e);t.select();document.execCommand("copy");alert("Copied!")}function triggerAction(e,t){fetch("/api/action/"+e+"/"+t)}checkDriveStatus();setInterval(checkDriveStatus,60000);setInterval(()=>{fetch("/api/data").then(e=>e.json()).then(e=>{document.getElementById("cpu").innerText=e.sys.cpu;document.getElementById("ram").innerText=e.sys.ram;document.getElementById("swap").innerText=e.sys.swap;document.getElementById("disk").innerText=e.sys.disk;document.getElementById("net").innerText=e.sys.net;let t="";let now=Date.now();if(!window.sp)window.sp={};e.files.forEach(d=>{let stx="";let downMB=(d.down/1048576).toFixed(2);let totMB=d.total?(d.total/1048576).toFixed(2):"∞";if(d.total>0&&d.down<d.total){if(!window.sp[d.id])window.sp[d.id]={d:d.down,t:now,s:0};let dd=d.down-window.sp[d.id].d,dt=(now-window.sp[d.id].t)/1e3;if(dt>=1){window.sp[d.id].s=dd>0?dd/dt/1048576:0;window.sp[d.id].d=d.down;window.sp[d.id].t=now}if(window.sp[d.id].s>0)stx=" ⚡ "+window.sp[d.id].s.toFixed(1)+" MB/s"}let th=d.active_threads>0?` <span style="color:#06b6d4">[${d.active_threads} Threads]</span>`:"";let m=d.total?Math.min(100,Math.round((d.down/d.total)*100))+"%":"Live";let f=d.total?`<progress value="${d.down}" max="${d.total}"></progress>`:"";let u=encodeURIComponent(d.name);let y=window.location.origin+"/stream/"+d.id+"/"+u;t+=`<div class="file-card"><div class="file-name">[${d.type.toUpperCase()}] ${d.name}</div><div class="file-status">${d.status} - ${m} (${downMB} MB / ${totMB} MB)${stx}${th}</div>${f}<div class="link-box"><input type="text" id="l_${d.id}" value="${y}" readonly onclick="this.select()"><button onclick="copyToBox('l_${d.id}')">Copy</button><button onclick="playVideo('${y}','${u}','${d.id}')" style="background:var(--purple)">Play</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${d.id}','stop')">Abort</button></div></div>`});document.getElementById("files").innerHTML=t||'<div style="color:#555">No active tasks.</div>'})},1000)</script></body></html>"""
+HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engine Dashboard</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--drive:#10b981}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:.3s}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:700;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px}input,select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;transition:.2s;white-space:nowrap}button:hover{opacity:.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748}.monitor-value{font-size:15px;font-weight:700;margin-top:8px;color:var(--accent);white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.file-name{font-weight:700;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333}</style></head><body><h2><span>🚀 Unified 5-Engine Master</span><span style="font-size:14px;color:#888">Port 80 <span class="status-dot" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success)"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram)">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--warn)">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success)">--</div></div><div class="monitor-card network-card"><div>Network Traffic (WAN)</div><div class="monitor-value" id="net" style="color:var(--success)">--</div></div></div><div class="engine-box" style="border-color:#10b981"><div class="engine-title"><span style="color:#10b981">📡 Engine 5: Direct Transfer (P2P RAM & Disk Relay)</span></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 1: Direct P2P</div><input type="file" id="file_p2p" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('p2p')" style="background:#10b981;color:#000">Generate P2P Link</button></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 2: Disk Buffered</div><input type="file" id="file_disk_relay" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('disk_relay')" style="background:#059669;color:#fff">Generate Disk Link</button></div><div class="input-group" style="margin-bottom:0"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 3: Direct Folder Upload</div><input type="file" id="file_folder" webkitdirectory directory multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('folder')" style="background:#047857;color:#fff">Upload Folder</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--purple)">💿 Engine 1: Disk Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple)">Send to Disk</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--ram)">⚡ Engine 2: RAM Proxy & Direct Archive Extractor</span></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_ram" placeholder="Box 1: Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000">Start RAM Proxy</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_direct_zip" placeholder="Box 2: Direct Link to ZIP, RAR, 7z..."><button onclick="listDirectArchive()" style="background:var(--ram);color:#000">Stream Contents</button></div><div id="direct_zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--ram)"></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--multi)">🚀 Engine 3: Hyper-Thread Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000">Multi-Thread DL</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--swarm)">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_swarm" placeholder="Box 1: Paste throttled link to aggregate..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff">Initialize Swarm</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_swarm_zip" placeholder="Box 2: Direct Link to ZIP, RAR, MKV etc..."><button onclick="listSwarmArchive()" style="background:var(--swarm);color:#fff">Swarm Stream</button></div><div id="swarm_zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--swarm)"></div></div><div class="engine-box" style="border-color:var(--drive)"><div class="engine-title"><span style="color:var(--drive)">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px"></span></div><div id="drive_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"><span id="drive_email" style="color:var(--success);font-weight:700;flex:1">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload to Drive..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000">Swarm Upload</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to Drive Folder, ZIP, RAR..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000">Stream Contents</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000">Generate Link</button></div><div id="zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"></div></div><div class="file-grid" id="files" style="margin-top:20px"></div><script>function checkDriveStatus(){fetch("/api/drive/status").then(e=>e.json()).then(e=>{e.connected?(document.getElementById("drive_dot").style.background="var(--success)",document.getElementById("drive_auth_panel").style.display="none",document.getElementById("drive_connected_panel").style.display="flex",document.getElementById("drive_email").innerText="✅ Drive Active | 💾 "+(e.info||"")):(document.getElementById("drive_dot").style.background="var(--danger)",document.getElementById("drive_auth_panel").style.display="flex",document.getElementById("drive_connected_panel").style.display="none")})}function connectDrive(){let e=document.getElementById("drive_cid").value,t=document.getElementById("drive_csec").value,l=document.getElementById("drive_rt").value;if(!e||!t||!l)return alert("All keys required!");fetch("/api/drive/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({client_id:e,client_secret:t,refresh_token:l})}).then(e=>e.json()).then(e=>{e.success?checkDriveStatus():alert("Failed: "+e.error)})}function disconnectDrive(){fetch("/api/drive/disconnect",{method:"POST"}).then(()=>checkDriveStatus())}function renderArchiveBox(e,t){let l=document.getElementById(t),d=t==="zip_contents"?"url_drive_zip":t==="swarm_zip_contents"?"url_swarm_zip":"url_direct_zip",n=e.mount_id||"none";let i=`<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #333"><button onclick="clearMountedArchive('${t}','${d}')" class="btn-red">Clear Mount</button></div>`;e.files.forEach(s=>{let c=window.location.origin+s.url,u=encodeURIComponent(s.name);i+=`<div class="zip-item">📄 ${s.name} <div style="display:flex;gap:5px"><input type="text" id="zl_${s.b64}" value="${c}" readonly onclick="this.select()"><button onclick="copyToBox('zl_${s.b64}')" style="background:var(--accent);color:#fff">Copy</button></div></div>`});l.innerHTML=i;l.style.display="block"}async function listDirectArchive(){let e=document.getElementById("url_direct_zip").value;if(e){let t=document.getElementById("direct_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/direct_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"direct_zip_contents")}}async function listSwarmArchive(){let e=document.getElementById("url_swarm_zip").value;if(e){let t=document.getElementById("swarm_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/swarm_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"swarm_zip_contents")}}async function listDriveArchive(){let e=document.getElementById("url_drive_zip").value;if(e){let t=document.getElementById("zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/drive_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"zip_contents")}}function clearMountedArchive(e,t){fetch("/api/clear_archive_mount",{method:"POST"}).then(()=>{document.getElementById(e).style.display="none";document.getElementById(t).value=""})}function addFile(e){let t=document.getElementById("url_"+e).value;if(t){document.getElementById("url_"+e).value="";fetch("/api/add?type="+e+"&url="+encodeURIComponent(t))}}async function initUpload(e){let t=document.getElementById("file_"+e),l=t.files;if(0===l.length)return;for(let d=0;d<l.length;d++){let n=l[d],rp=n.webkitRelativePath||n.name;let o=await fetch("/api/upload_init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:e,name:n.name,size:n.size,relative_path:rp})}),a=await o.json();startGbpsP2P(a.fid,n,true)}t.value=""}async function startGbpsP2P(e,t,l){let n=1048576,o=Math.ceil(t.size/n),a=[],i=new Set,s=true,r=0;async function c(){while(s){let u=await fetch("/api/p2p_poll/"+e);if(!u.ok){s=false;break}let m=await u.json();for(let g of m)if(!i.has(g)&&!a.includes(g))a.push(g);await new Promise(k=>setTimeout(k,1000))}}async function v(){while(s){let E=-1;if(a.length>0)E=a.shift();else if(l&&r<o){while(i.has(r)&&r<o)r++;if(r<o)E=r++}if(E!==-1){i.add(E);let w=E*n,S=Math.min(w+n,t.size),C=t.slice(w,S);for(let x=0;x<3;x++){let L=await fetch(`/api/p2p_up/${e}/${E}`,{method:"POST",body:C});if(L.ok)break;await new Promise(I=>setTimeout(I,500))}i.delete(E)}else await new Promise(T=>setTimeout(T,200))}}c();for(let q=0;q<8;q++)v()}function copyToBox(e){let t=document.getElementById(e);t.select();document.execCommand("copy");alert("Copied!")}function triggerAction(e,t){fetch("/api/action/"+e+"/"+t)}checkDriveStatus();setInterval(checkDriveStatus,60000);setInterval(()=>{fetch("/api/data").then(e=>e.json()).then(e=>{document.getElementById("cpu").innerText=e.sys.cpu;document.getElementById("ram").innerText=e.sys.ram;document.getElementById("swap").innerText=e.sys.swap;document.getElementById("disk").innerText=e.sys.disk;document.getElementById("net").innerText=e.sys.net;let t="";let now=Date.now();if(!window.sp)window.sp={};e.files.forEach(d=>{let stx="";let downMB=(d.down/1048576).toFixed(2);let totMB=d.total?(d.total/1048576).toFixed(2):"∞";if(d.total>0&&d.down<d.total){if(!window.sp[d.id])window.sp[d.id]={d:d.down,t:now,s:0};let dd=d.down-window.sp[d.id].d,dt=(now-window.sp[d.id].t)/1e3;if(dt>=1){window.sp[d.id].s=dd>0?dd/dt/1048576:0;window.sp[d.id].d=d.down;window.sp[d.id].t=now}if(window.sp[d.id].s>0)stx=" ⚡ "+window.sp[d.id].s.toFixed(1)+" MB/s"}let th=d.active_threads>0?` <span style="color:#06b6d4">[${d.active_threads} Threads]</span>`:"";let m=d.total?Math.min(100,Math.round((d.down/d.total)*100))+"%":"Live";let f=d.total?`<progress value="${d.down}" max="${d.total}"></progress>`:"";let u=encodeURIComponent(d.name);let y=window.location.origin+"/stream/"+d.id+"/"+u;t+=`<div class="file-card"><div class="file-name">[${d.type.toUpperCase()}] ${d.name}</div><div class="file-status">${d.status} - ${m} (${downMB} MB / ${totMB} MB)${stx}${th}</div>${f}<div class="link-box"><input type="text" id="l_${d.id}" value="${y}" readonly onclick="this.select()"><button onclick="copyToBox('l_${d.id}')">Copy</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${d.id}','stop')">Abort</button></div></div>`});document.getElementById("files").innerHTML=t||'<div style="color:#555">No active tasks.</div>'})},1000)</script></body></html>"""
 
 @app.route('/')
 def index():
     if request.cookies.get('dash_auth') != DASH_PASS: return Response(render_template_string(LOGIN_HTML), headers={'Cache-Control': 'no-store'})
     return Response(render_template_string(HTML), headers={'Cache-Control': 'no-store'})
-
-@app.route('/player/<fid>/<path:fname>')
-def player(fid, fname):
-    u = request.args.get('url') or f"{request.host_url}stream/{fid}/{urllib.parse.quote(fname)}"
-    return render_template_string(PLAYER_HTML, fid=fid, name=urllib.parse.unquote(fname), url=u)
-
-@app.route('/api/media_info/<fid>')
-def media_info(fid):
-    try:
-        cmd = ['ffprobe', '-v', 'error', '-show_entries', 'stream=index,codec_type:stream_tags=language,title', '-of', 'json', request.args.get('url')]
-        d, a, s, ai, si = json.loads(subprocess.check_output(cmd, timeout=30).decode()), [], [], 0, 0
-        for st in d.get('streams', []):
-            tg = st.get('tags', {})
-            if st.get('codec_type') == 'audio': a.append({'index': ai, 'lang': tg.get('language', 'und'), 'title': tg.get('title', f'Audio {ai+1}')}); ai += 1
-            elif st.get('codec_type') == 'subtitle': s.append({'index': si, 'lang': tg.get('language', 'und'), 'title': tg.get('title', f'Sub {si+1}')}); si += 1
-        return jsonify({'audio': a, 'subs': s})
-    except Exception as e: return jsonify({'error': str(e)}), 500
-
-@app.route('/api/start_hls')
-def start_hls():
-    try:
-        t, cb, ai, si, fid = request.args.get('url'), request.args.get('cb', str(time.time())), request.args.get('audio_idx', '0'), request.args.get('sub_idx', 'none'), request.args.get('fid', 'none')
-        sid = hashlib.md5(f"{fid}_{cb}_{ai}_{si}".encode()).hexdigest(); sdir = os.path.join(HLS_DIR, sid)
-        if fid != 'none' and fid != 'null':
-            with db_lock:
-                if fid in db:
-                    if 'hls_streams' not in db[fid]: db[fid]['hls_streams'] = set()
-                    db[fid]['hls_streams'].add(sid)
-        def _prob(x):
-            try: return subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', x, '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', t], timeout=10).decode().strip().lower()
-            except: return "unknown"
-        vc, ac, sc = _prob('v:0'), _prob(f'a:{ai}'), _prob(f's:{si}') if si != 'none' else 'none'
-        ibs = sc in ['dvd_subtitle', 'hdmv_pgs_subtitle', 'pgssub', 'dvdsub', 'xsub']
-        vca = ['-c:v', 'copy', '-tag:v', 'hvc1'] if vc in ['hevc', 'h265'] else (['-c:v', 'copy'] if vc in ['h264', 'avc'] else ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23'])
-        aca = ['-c:a', 'copy'] if ac in ['aac', 'mp3', 'ac3'] else ['-c:a', 'aac', '-ac', '2', '-b:a', '192k', '-ar', '48000']
-        mps, ea = ['-map', '0:v:0?', '-map', f'0:a:{ai}?'], []
-        if si != 'none':
-            if ibs: vca = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23']; ea.extend(['-filter_complex', f'[0:v:0][0:s:{si}]overlay=format=yuv420p[vout]', '-sn']); mps = ['-map', '[vout]', '-map', f'0:a:{ai}?']
-            else: mps.extend(['-map', f'0:s:{si}?']); ea.extend(['-c:s', 'webvtt'])
-        else: ea.extend(['-sn'])
-        if sid not in hls_procs or hls_procs[sid].poll() is not None:
-            os.makedirs(sdir, exist_ok=True); [os.remove(os.path.join(sdir, f)) for f in os.listdir(sdir)]
-            hls_procs[sid] = subprocess.Popen(['ffmpeg', '-hide_banner', '-loglevel', 'warning', '-fflags', '+genpts+discardcorrupt', '-i', t] + (ea if ibs else []) + mps + vca + aca + (ea if not ibs else []) + ['-f', 'hls', '-hls_time', '4', '-hls_list_size', '6', '-master_pl_name', 'master.m3u8', os.path.join(sdir, 'index.m3u8')], stderr=open(os.path.join(sdir, 'ffmpeg.log'), 'w'))
-            for _ in range(150):
-                if os.path.exists(os.path.join(sdir, 'master.m3u8')): break
-                if hls_procs[sid].poll() is not None: return jsonify({'error': 'FFmpeg Crash'}), 500
-                time.sleep(0.1)
-        return jsonify({'playlist_url': f'/hls/{sid}/master.m3u8', 'stream_id': sid, 'transcoded': ibs or vc not in ['h264', 'avc', 'hevc', 'h265']})
-    except Exception as e: return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stop_hls', methods=['GET', 'POST'])
-def stop_hls():
-    sid = request.args.get('stream_id')
-    if sid and sid in hls_procs:
-        try: hls_procs[sid].terminate(); hls_procs[sid].wait(2)
-        except: hls_procs[sid].kill()
-        del hls_procs[sid]; shutil.rmtree(os.path.join(HLS_DIR, sid), ignore_errors=True)
-    return jsonify({'success': True})
 
 @app.route('/api/get_archive_mount')
 def get_archive_mount(): return jsonify({'mounted': bool(global_mounted_data), 'data': global_mounted_data})
@@ -398,12 +351,6 @@ def get_archive_mount(): return jsonify({'mounted': bool(global_mounted_data), '
 def clear_archive_mount():
     global global_mounted_data
     with db_lock:
-        for sid in list(active_mount_streams):
-            if sid in hls_procs:
-                try: hls_procs[sid].kill()
-                except: pass
-                del hls_procs[sid]
-                shutil.rmtree(os.path.join(HLS_DIR, sid), ignore_errors=True)
         active_mount_streams.clear()
     global_mounted_data = None; return jsonify({'success': True})
 
@@ -491,9 +438,26 @@ def drive_archive_list():
 @app.route('/api/upload_init', methods=['POST'])
 def upload_init():
     d = request.json; fid = str(uuid.uuid4())[:8]; t = d.get('type'); nm = d.get('name', 'unnamed').replace('"', ''); sz = int(d.get('size', 0))
-    with db_lock: db[fid] = {'id': fid, 'url': '', 'name': nm, 'path': os.path.join(DL_DIR, f"{fid}_{nm}"), 'down': 0, 'total': sz, 'status': d.get('init_status') or 'Starting...', 'start': time.time(), 'type': t}
+    
+    # Secure Directory Mapping for Box 3
+    rp = d.get('relative_path', nm).replace('"', '')
+    safe_rp = os.path.normpath(rp).lstrip('/')
+    if '..' in safe_rp or safe_rp.startswith('/'):
+        safe_rp = nm
+        
+    fp = os.path.join(DL_DIR, safe_rp if t == 'folder' else f"{fid}_{nm}")
+    
+    # Auto-generate local folders if path exists
+    if t == 'folder':
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        
+    with db_lock: db[fid] = {'id': fid, 'url': '', 'name': safe_rp if t == 'folder' else nm, 'path': fp, 'down': 0, 'total': sz, 'status': d.get('init_status') or 'Starting...', 'start': time.time(), 'type': t}
+    
     if t == 'p2p': p2p_streams[fid] = P2PStream(fid, sz)
-    elif t == 'disk_relay': disk_streams[fid] = DiskStream(fid, sz); open(db[fid]['path'], 'wb').truncate(sz)
+    elif t in ['disk_relay', 'folder']: 
+        disk_streams[fid] = DiskStream(fid, sz)
+        open(db[fid]['path'], 'wb').truncate(sz)
+        
     return jsonify({'fid': fid})
 
 @app.route('/api/p2p_wait/<fid>')
@@ -517,7 +481,7 @@ def p2p_poll(fid):
             for idx in list(st.needed):
                 if len(ret) >= 64: break
                 st.needed.remove(idx); st.active[idx] = now; ret.append(idx)
-    elif ft == 'disk_relay' and fid in disk_streams:
+    elif ft in ['disk_relay', 'folder'] and fid in disk_streams:
         st = disk_streams[fid]
         with st.lock:
             for i in [i for i, t in st.active.items() if now - t > 10]: del st.active[i]; st.prioritized.add(i) if i not in st.written_chunks else None
@@ -545,7 +509,7 @@ def p2p_up(fid, idx):
             if len(st.chunks) > 500: del st.chunks[next(iter(st.chunks))]
             st.cond.notify_all()
         with db_lock: db[fid]['down'] += len(d)
-    elif ft == 'disk_relay' and fid in disk_streams:
+    elif ft in ['disk_relay', 'folder'] and fid in disk_streams:
         st = disk_streams[fid]; sb = idx * P2P_CHUNK_SIZE
         if len(d) != min(P2P_CHUNK_SIZE, st.total_size - sb) and st.total_size > 0: return "Inc", 400
         with open(fp, 'r+b') as f: f.seek(sb); f.write(d); f.flush()
@@ -559,7 +523,7 @@ def p2p_up(fid, idx):
 
 @app.route('/api/data')
 def api_data():
-    with db_lock: sf = [{'id': str(k), 'name': str(v.get('name', 'Unknown')), 'status': str(v.get('status', 'Pending')), 'down': int(v.get('down', 0)), 'total': int(v.get('total', 0)), 'type': str(v.get('type', 'disk')), 'active_threads': int(v.get('active_threads', 0))} for k, v in db.items()]
+    with db_lock: sf = [{'id': str(k), 'name': str(v.get('name', 'Unknown')), 'status': str(v.get('status', 'Pending')), 'down': int(v.get('down', 0)), 'total': int(v.get('total', 0)), 'type': str(v.get('type', 'disk')).upper(), 'active_threads': int(v.get('active_threads', 0))} for k, v in db.items()]
     return jsonify({"sys": sys_data, "files": sf})
 
 @app.route('/stream/<fid>/<path:fname>', methods=['GET', 'HEAD'])
@@ -776,7 +740,7 @@ def worker_core(fid, mode):
             csz = max(262144, min(2097152, tot // 512 if tot > 0 else 2097152))
             with db_lock: db[fid]['chunk_size'] = csz
             tc = (tot + csz - 1) // csz; pc, ac, lk, ef = set(range(tc)), set(), threading.Lock(), []
-            sc, ma, ll, ss, aw, let = 256, 4, False, True, 0, time.time()
+            sc, ma, ll, ss, aw, let = 128, 8, False, True, 0, time.time()
             def get_nc():
                 with lk:
                     with db_lock:
@@ -848,10 +812,10 @@ def worker_core(fid, mode):
                 with lk:
                     if not pc and not ac: break
                     ca = aw
-                if ll and (time.time() - let > 30): ll, sc = False, min(256, sc + 1)
-                if pl > 0: ll = False; ma = min(sc, ma + 64) if ma < sc else ma
+                if ll and (time.time() - let > 30): ll, sc = False, min(128, sc + 1)
+                if pl > 0: ll = False; ma = min(sc, ma + 32) if ma < sc else ma
                 if ca < ma:
-                    sp = min(32, ma - ca)
+                    sp = min(16, ma - ca)
                     for _ in range(sp): t = threading.Thread(target=mw, daemon=True); t.start(); ths.append(t)
                     with db_lock: db[fid]['status'] = f'Hyper-Scaling ({ca+sp} Threads)...' if fid in db else ""
                     time.sleep(0.02)
@@ -921,9 +885,12 @@ def drive_worker(fid, swarm=False):
         r.close()
         with db_lock: db[fid]['status'] = 'Swarming to Buffer Disk...'
         worker_core(fid, 'multi')
+        
         with db_lock:
             if db[fid].get('status') != 'Completed': raise Exception("Buffer Download Failed.")
             db[fid]['status'], db[fid]['down'] = 'Piping Buffer to Drive...', 0
+            p = db[fid]['path']
+            
         with open(p, 'rb') as f:
             cz, sb, fi = 67108864, 0, None
             while sb < tot:
@@ -958,19 +925,21 @@ def action(fid, act):
     with db_lock:
         if fid not in db: return "OK"
         if act == 'stop':
-            db[fid]['status'] = 'Stopped'; ft, ptd, stk = db[fid].get('type'), db[fid].get('path'), list(db[fid].get('hls_streams', set()))
-            for sid in stk:
-                if sid in hls_procs:
-                    try: hls_procs[sid].kill()
-                    except: pass
-                    del hls_procs[sid]
-                shutil.rmtree(os.path.join(HLS_DIR, sid), ignore_errors=True)
+            db[fid]['status'] = 'Stopped'; ft, ptd = db[fid].get('type'), db[fid].get('path')
+            u = db[fid].get('url', ''); u_hash = hashlib.md5(u.encode()).hexdigest() if u else ''; sw_hash = hashlib.md5(f"sw_{u}".encode()).hexdigest() if u else ''
+            file_id = db[fid].get('file_id', '')
+
             if ft == 'p2p' and fid in p2p_streams:
                 with p2p_streams[fid].lock: p2p_streams[fid].cond.notify_all()
                 p2p_streams[fid].chunks.clear(); del p2p_streams[fid]
-            elif ft == 'disk_relay' and fid in disk_streams:
+            elif ft in ['disk_relay', 'folder'] and fid in disk_streams:
                 with disk_streams[fid].lock: disk_streams[fid].cond.notify_all()
                 del disk_streams[fid]
+            
+            with shared_drive_lock:
+                keys_to_del = [k for k in shared_drive_cache.keys() if (file_id and file_id in k) or (u_hash and u_hash in k) or (sw_hash and sw_hash in k) or fid in k]
+                for k in keys_to_del: del shared_drive_cache[k]
+
             del db[fid]
             if ptd: threading.Thread(target=lambda p: (time.sleep(2), shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else (os.remove(p) if os.path.exists(p) else None)), args=(ptd,), daemon=True).start()
     gc.collect(); return "OK"
@@ -1010,19 +979,8 @@ def cleaner():
                     if fid in p2p_streams: p2p_streams[fid].chunks.clear(); del p2p_streams[fid]
                     if fid in disk_streams: del disk_streams[fid]
                     del db[fid]
-        try:
-            for d in os.listdir(HLS_DIR):
-                dp = os.path.join(HLS_DIR, d)
-                if os.path.isdir(dp) and now - os.path.getmtime(dp) > 86400:
-                    if d in hls_procs:
-                        try: hls_procs[d].kill()
-                        except: pass
-                        del hls_procs[d]
-                    shutil.rmtree(dp, ignore_errors=True)
-            for d in os.listdir(SUB_DIR):
-                dp = os.path.join(SUB_DIR, d)
-                if now - os.path.getmtime(dp) > 86400: os.remove(dp)
-        except: pass
+            if not db:
+                with shared_drive_lock: shared_drive_cache.clear()
         gc.collect()
 threading.Thread(target=cleaner, daemon=True).start()
 
@@ -1059,13 +1017,29 @@ for SERVICE in engine rdp vpn nginx; do
     fi
 done
 
+echo -e "\n${YELLOW}🧹 [7/7] Executing Deep OS & Disk Purge...${NC}"
+sudo docker system prune -f >/dev/null 2>&1 || true
+sudo apt-get autoremove -y >/dev/null 2>&1 || true
+sudo apt-get clean >/dev/null 2>&1 || true
+sudo rm -rf /var/cache/apt/archives/* >/dev/null 2>&1 || true
+sudo rm -rf /tmp/* /var/tmp/* >/dev/null 2>&1 || true
+sudo journalctl --vacuum-time=1s >/dev/null 2>&1 || true
+
+if command -v snap &> /dev/null; then
+    sudo snap set system refresh.retain=2 >/dev/null 2>&1 || true
+fi
+
+sudo swapoff -a && sudo swapon -a >/dev/null 2>&1 || true
+sudo sync
+sudo sysctl -w vm.drop_caches=3 >/dev/null 2>&1 || true
+
 SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASS}" | base64 -w 0)
 
 cat > /root/engine_credentials.txt << CREDEOF
 
 =====================================================================
-🎯 V183-ULTRA-PRO FULL DEPLOYMENT SUCCESSFUL
+🎯 V183-ULTRA-PRO (PURE TRANSFER ENGINE)
 =====================================================================
 
 🌐 --- 1. WEB MASTER CONSOLE ---
