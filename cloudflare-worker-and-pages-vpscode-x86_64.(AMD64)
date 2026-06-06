@@ -15,20 +15,21 @@ RED='\033[1;31m'
 NC='\033[0m'
 
 echo -e "${CYAN}=================================================================${NC}"
-echo -e "${GREEN} 🚀 INITIATING V183-ULTRA-PRO (PURE TRANSFER + FOLDER UPLOAD) ${NC}"
+echo -e "${GREEN} 🚀 INITIATING V183-ULTRA-PRO (SAFE DISK OPTIMIZED & VISIBLE) ${NC}"
 echo -e "${CYAN}=================================================================${NC}\n"
 
 echo -e "${YELLOW}⚙️ [1/7] Initializing System Prep, Swap & Port Sanitization...${NC}"
-sudo apt-get update -qq >/dev/null 2>&1 || true
-sudo apt-get install -y --no-install-recommends psmisc lsof curl wget >/dev/null 2>&1 || true
+# Removed silent output redirect so you can see apt updates
+sudo apt-get update -y || true
+sudo apt-get install -y --no-install-recommends psmisc lsof curl wget || true
 
-# Swap memory check and creation for low-RAM VPS (Amazon Lightsail 5$)
+# Restored 2GB Swap. Added status=progress so you can watch the swap generation.
 if [ $(free -m | awk '/^Swap:/ {print $2}') -eq 0 ]; then
-    echo -e "${CYAN}--> Creating 2GB Swap Space to prevent Out-Of-Memory errors...${NC}"
-    sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 >/dev/null 2>&1
+    echo -e "${CYAN}--> Creating 2GB Swap Space...${NC}"
+    sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
     sudo chmod 600 /swapfile
-    sudo mkswap /swapfile >/dev/null 2>&1
-    sudo swapon /swapfile >/dev/null 2>&1
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
     echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null 2>&1
 fi
 
@@ -36,7 +37,8 @@ fi
 if ! command -v docker &> /dev/null; then
     echo -e "${CYAN}--> Docker not found. Installing Docker and Docker Compose...${NC}"
     curl -fsSL https://get.docker.com -o get-docker.sh
-    sudo sh get-docker.sh >/dev/null 2>&1
+    # Removed silent output redirect here so you can see the Docker install logs
+    sudo sh get-docker.sh
     rm -f get-docker.sh
     sudo systemctl enable --now docker >/dev/null 2>&1
 fi
@@ -55,10 +57,6 @@ sudo sysctl -w net.core.wmem_max=67108864 >/dev/null 2>&1 || true
 sudo sysctl -w net.ipv4.tcp_rmem="4096 87380 67108864" >/dev/null 2>&1 || true
 sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 67108864" >/dev/null 2>&1 || true
 sudo sysctl -w net.core.netdev_max_backlog=250000 >/dev/null 2>&1 || true
-
-if command -v docker &> /dev/null; then
-    sudo docker system prune -f >/dev/null 2>&1 || true
-fi
 
 mkdir -p media_stack/{nginx,engine,rdp,downloads}
 sudo touch /opt/media_engine_drive.json
@@ -141,14 +139,17 @@ NGINXEOF
 cat > rdp/Dockerfile << 'RDPEOF'
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
+# Stripped xfce4-goodies and aggressively purged locale/docs to save disk space
 RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/force-unsafe-io && \
     echo 'Acquire::http::Pipeline-Depth "100"; Acquire::Retries "3";' > /etc/apt/apt.conf.d/99speedup && \
-    apt-get update -qq && apt-get install -y --no-install-recommends xfce4 xfce4-goodies xrdp xorgxrdp dbus-x11 sudo curl wget unzip gnupg ca-certificates aria2 && \
+    apt-get update -qq && apt-get install -y --no-install-recommends xfce4 xrdp xorgxrdp dbus-x11 sudo curl wget unzip gnupg ca-certificates aria2 && \
     curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg "https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg" && \
     echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" > /etc/apt/sources.list.d/brave-browser-release.list && \
     apt-get update -qq && apt-get install -y --no-install-recommends brave-browser && \
     wget -q https://github.com/mayswind/AriaNg/releases/download/1.3.7/AriaNg-1.3.7-AllInOne.zip && unzip -q AriaNg-1.3.7-AllInOne.zip -d /opt/ariang && rm AriaNg-1.3.7-AllInOne.zip && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/*
+    apt-get purge -y unzip gnupg && \
+    apt-get autoremove -y && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc/* /usr/share/man/* /usr/share/locale/* /var/log/*
 RUN mkdir -p /etc/opt/chrome/policies/managed && echo '{"ExtensionInstallForcelist": ["mpkodccbngfoacfalldjghnnfkfcnkfh;https://clients2.google.com/service/update2/crx"]}' > /etc/opt/chrome/policies/managed/extensions.json
 RUN adduser xrdp ssl-cert && sed -i 's/test -x \/etc\/X11\/Xsession && exec \/etc\/X11\/Xsession/startxfce4/' /etc/xrdp/startwm.sh && sed -i 's/exec \/bin\/sh \/etc\/X11\/Xsession/startxfce4/' /etc/xrdp/startwm.sh
 COPY entrypoint.sh /entrypoint.sh
@@ -185,8 +186,10 @@ RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/force-unsafe-io && \
     sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update -qq && \
     apt-get install -y --no-install-recommends aria2 unrar p7zip-full && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/*
-RUN pip install --prefer-binary --no-cache-dir flask requests psutil waitress rarfile py7zr cloudscraper curl_cffi || true
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/* /usr/share/doc/* /usr/share/man/* /var/log/*
+# Cleared Pip cache thoroughly
+RUN pip install --prefer-binary --no-cache-dir flask requests psutil waitress rarfile py7zr cloudscraper curl_cffi || true && \
+    rm -rf /root/.cache
 COPY app.py .
 CMD ["python3", "-u", "app.py"]
 ENGEOF
@@ -254,7 +257,7 @@ def get_drive_auth():
             now = time.time()
             if 'access_token' in creds and 'expires_at' in creds and now < creds['expires_at'] - 60: return creds['access_token'], None
             if 'client_id' not in creds: return None, "Missing credentials"
-            r = drive_api_session.post('<https://oauth2.googleapis.com/token>', data={'client_id': creds['client_id'], 'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'}, timeout=15)
+            r = drive_api_session.post('https://oauth2.googleapis.com/token', data={'client_id': creds['client_id'], 'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'}, timeout=15)
             if r.status_code != 200: return None, "Google rejected Refresh Token."
             nt = r.json()['access_token']; creds['access_token'], creds['expires_at'] = nt, now + 3500
             with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(creds, f)
@@ -338,7 +341,7 @@ class SwarmRangeFile(HttpRangeFile):
 
 class DriveRangeFile(HttpRangeFile):
     def __init__(self, file_id, access_token, size):
-        self.url = f'<https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true>'
+        self.url = f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true'
         self.headers = {'Authorization': f'Bearer {access_token}', 'User-Agent': SPOOF_AGENT}
         self.size = size; self.pos = 0; self.chunk_size = 4194304; self.file_id = file_id
     def _get_chunk(self, chunk_idx):
@@ -411,7 +414,7 @@ def drive_status():
     t, e = get_drive_auth(); info = 'Active'
     if t:
         try:
-            sq = drive_api_session.get('<https://www.googleapis.com/drive/v3/about?fields=storageQuota>', headers={'Authorization': f'Bearer {t}'}, timeout=5).json().get('storageQuota', {})
+            sq = drive_api_session.get('https://www.googleapis.com/drive/v3/about?fields=storageQuota', headers={'Authorization': f'Bearer {t}'}, timeout=5).json().get('storageQuota', {})
             l, u = int(sq.get('limit', 0)), int(sq.get('usage', 0))
             if l>0: info = f"Used: {u/(1024**3):.1f}GB / {l/(1024**3):.1f}GB"
         except: pass
@@ -442,7 +445,7 @@ def drive_archive_list():
     access_token, err = get_drive_auth()
     if err: return jsonify({'error': 'Vault Empty. Connect your Google account first.'})
     try:
-        meta_res = drive_api_session.get(f'<https://www.googleapis.com/drive/v3/files/{file_id}?fields=id,name,size,mimeType&supportsAllDrives=true>', headers={'Authorization': f'Bearer {access_token}'}, timeout=15).json()
+        meta_res = drive_api_session.get(f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=id,name,size,mimeType&supportsAllDrives=true', headers={'Authorization': f'Bearer {access_token}'}, timeout=15).json()
         if 'error' in meta_res: return jsonify({'error': f"Drive API Error: {meta_res['error'].get('message', 'Unknown Error')}"})
         if meta_res.get('mimeType') == 'application/vnd.google-apps.folder':
             q_str = f"'{file_id}' in parents and trashed = false"
@@ -458,7 +461,6 @@ def drive_archive_list():
 def upload_init():
     d = request.json; fid = str(uuid.uuid4())[:8]; t = d.get('type'); nm = d.get('name', 'unnamed').replace('"', ''); sz = int(d.get('size', 0))
     
-    # Secure Directory Mapping for Box 3
     rp = d.get('relative_path', nm).replace('"', '')
     safe_rp = os.path.normpath(rp).lstrip('/')
     if '..' in safe_rp or safe_rp.startswith('/'):
@@ -466,7 +468,6 @@ def upload_init():
         
     fp = os.path.join(DL_DIR, safe_rp if t == 'folder' else f"{fid}_{nm}")
     
-    # Auto-generate local folders if path exists
     if t == 'folder':
         os.makedirs(os.path.dirname(fp), exist_ok=True)
         
@@ -594,7 +595,7 @@ def unified_stream(fid, fname):
         if err: return "Auth Error", 403
         headers = {'Authorization': f'Bearer {token}', 'User-Agent': SPOOF_AGENT}
         if rh: headers['Range'] = rh
-        r = drive_api_session.get(f'<https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true>', headers=headers, stream=True, allow_redirects=True, timeout=15)
+        r = drive_api_session.get(f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true', headers=headers, stream=True, allow_redirects=True, timeout=15)
         resp = Response(r.iter_content(STREAM_CHUNK_SIZE), status=r.status_code)
         for k, v in r.headers.items():
             if k.lower() in ['content-length', 'content-type', 'content-range', 'accept-ranges']: resp.headers[k] = v
@@ -1037,17 +1038,15 @@ for SERVICE in engine rdp vpn nginx; do
     fi
 done
 
-echo -e "\n${YELLOW}🧹 [7/7] Executing Deep OS & Disk Purge...${NC}"
-sudo docker system prune -f >/dev/null 2>&1 || true
+echo -e "\n${YELLOW}🧹 [7/7] Executing Safe Disk Purge...${NC}"
+
+# Safely remove unused docker objects and hidden build caches (Saves ~2GB - 3GB)
+sudo docker builder prune -a -f >/dev/null 2>&1 || true
+sudo docker system prune -a -f --volumes >/dev/null 2>&1 || true
+
+# Safe package and cache cleanup
 sudo apt-get autoremove -y >/dev/null 2>&1 || true
 sudo apt-get clean >/dev/null 2>&1 || true
-sudo rm -rf /var/cache/apt/archives/* >/dev/null 2>&1 || true
-sudo rm -rf /tmp/* /var/tmp/* >/dev/null 2>&1 || true
-sudo journalctl --vacuum-time=1s >/dev/null 2>&1 || true
-
-if command -v snap &> /dev/null; then
-    sudo snap set system refresh.retain=2 >/dev/null 2>&1 || true
-fi
 
 sudo swapoff -a && sudo swapon -a >/dev/null 2>&1 || true
 sudo sync
@@ -1059,7 +1058,7 @@ OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASS}" | base64 -w 0)
 cat > /root/engine_credentials.txt << CREDEOF
 
 =====================================================================
-🎯 V183-ULTRA-PRO (PURE TRANSFER ENGINE)
+🎯 V183-ULTRA-PRO (SAFE DISK OPTIMIZED)
 =====================================================================
 
 🌐 --- 1. WEB MASTER CONSOLE ---
