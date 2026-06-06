@@ -1,0 +1,83 @@
+rm -f golden_reset.sh
+cat > golden_reset.sh << 'EOF'
+#!/bin/bash
+
+TOTAL_STEPS=8
+
+draw_bar() {
+    p=$(( $1 * 100 / TOTAL_STEPS ))
+    bars=$(printf '%*s' $((p/5)) '' | tr ' ' '#')
+    printf "\r[%-20s] %3d%% - %-30s" "$bars" "$p" "$2"
+}
+
+draw_bar 0 "Initializing Golden Image Reset..."
+export DEBIAN_FRONTEND=noninteractive
+
+# Step 1: Complete Docker & Virtual Network Obliteration
+if command -v docker >/dev/null 2>&1; then
+    sudo systemctl stop docker docker.socket >/dev/null 2>&1
+    sudo docker system prune -a --volumes -f >/dev/null 2>&1
+    sudo apt-get purge -y docker-engine docker docker.io docker-ce docker-ce-cli >/dev/null 2>&1
+fi
+sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker ~/.docker /run/docker.sock 2>/dev/null
+# Delete lingering Docker network bridges that reserve IP space
+sudo ip link delete docker0 >/dev/null 2>&1
+sudo ip link delete bridge0 >/dev/null 2>&1
+draw_bar 1 "Docker & Virtual Nets Destroyed..."
+
+# Step 2: Flush and Reset Swap Memory
+# This forces all background cached data sitting in swap out of memory
+sudo swapoff -a >/dev/null 2>&1
+sudo rm -rf /var/cache/swap/* 2>/dev/null
+sudo swapon -a >/dev/null 2>&1
+draw_bar 2 "Swap Memory Flushed & Reset..."
+
+# Step 3: Cloud-Init Golden Purge
+# This is the exact tool AWS/Oracle use to make an image "forget" its past deployments
+if command -v cloud-init >/dev/null 2>&1; then
+    sudo cloud-init clean --logs --seed >/dev/null 2>&1
+    sudo rm -rf /var/lib/cloud/* 2>/dev/null
+fi
+draw_bar 3 "Cloud-Init History Purged..."
+
+# Step 4: Machine ID Reset (System Identity)
+# Forces systemd to generate a brand new unique identity for the OS on next boot
+sudo rm -f /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null
+sudo systemd-machine-id-setup >/dev/null 2>&1
+draw_bar 4 "Machine ID Identity Reset..."
+
+# Step 5: Advanced Package & Residual Annihilation
+sudo -E apt-get autoremove --purge -y >/dev/null 2>&1
+sudo -E apt-get clean >/dev/null 2>&1
+dpkg -l | awk '/^rc/ {print $2}' | sudo xargs -r apt-get purge -y >/dev/null 2>&1
+sudo rm -rf /var/lib/apt/lists/* 2>/dev/null
+draw_bar 5 "Packages & APT Lists Nuked..."
+
+# Step 6: Total Temporary & Caches Eradication
+sudo rm -rf /tmp/* /var/tmp/* /var/backups/* /var/mail/* /var/spool/mail/* 2>/dev/null
+sudo rm -rf /root/.npm /root/.cache ~/.npm ~/.cache 2>/dev/null
+sudo rm -rf /var/lib/snapd/cache/* 2>/dev/null
+draw_bar 6 "All Temp & Dev Caches Erased..."
+
+# Step 7: Deep Log Eradication (Zeroing active, deleting archives)
+sudo find /var/log -type f -name "*.gz" -delete 2>/dev/null
+sudo find /var/log -type f -name "*.[0-9]" -delete 2>/dev/null
+sudo find /var/log -type f -exec truncate -s 0 {} \; 2>/dev/null
+sudo journalctl --vacuum-time=1s >/dev/null 2>&1
+sudo rm -rf /var/lib/systemd/coredump/* 2>/dev/null
+draw_bar 7 "System Logs & Dumps Eradicated..."
+
+# Step 8: Network Cache Flush & Final Traces
+sudo resolvectl flush-caches >/dev/null 2>&1
+rm -f ~/.ssh/known_hosts /root/.ssh/known_hosts 2>/dev/null
+draw_bar 8 "Golden Image Reset Complete!"
+echo ""
+
+echo "Note: You must run 'sudo apt update' before attempting to install any new software."
+echo "Your server is now in a factory-prepared state. A reboot is highly recommended."
+echo ""
+
+cat /dev/null > ~/.bash_history
+history -c
+EOF
+bash golden_reset.sh
