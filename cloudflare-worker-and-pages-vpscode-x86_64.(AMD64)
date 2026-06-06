@@ -1,0 +1,1083 @@
+rm -f setup.sh
+cat > setup.sh << 'EOF'
+#!/bin/bash
+set -e
+clear
+
+export DOCKER_BUILDKIT=1
+export COMPOSE_DOCKER_CLI_BUILD=1
+export BUILDKIT_PROGRESS=plain
+
+GREEN='\033[1;32m'
+CYAN='\033[1;36m'
+YELLOW='\033[1;33m'
+RED='\033[1;31m'
+NC='\033[0m'
+
+echo -e "${CYAN}=================================================================${NC}"
+echo -e "${GREEN} 🚀 INITIATING V183-ULTRA-PRO (PURE TRANSFER + FOLDER UPLOAD) ${NC}"
+echo -e "${CYAN}=================================================================${NC}\n"
+
+echo -e "${YELLOW}⚙️ [1/7] Initializing System Prep, Swap & Port Sanitization...${NC}"
+sudo apt-get update -qq >/dev/null 2>&1 || true
+sudo apt-get install -y --no-install-recommends psmisc lsof curl wget >/dev/null 2>&1 || true
+
+# Swap memory check and creation for low-RAM VPS (Amazon Lightsail 5$)
+if [ $(free -m | awk '/^Swap:/ {print $2}') -eq 0 ]; then
+    echo -e "${CYAN}--> Creating 2GB Swap Space to prevent Out-Of-Memory errors...${NC}"
+    sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 >/dev/null 2>&1
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile >/dev/null 2>&1
+    sudo swapon /swapfile >/dev/null 2>&1
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null 2>&1
+fi
+
+# Docker Installation Check
+if ! command -v docker &> /dev/null; then
+    echo -e "${CYAN}--> Docker not found. Installing Docker and Docker Compose...${NC}"
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sudo sh get-docker.sh >/dev/null 2>&1
+    rm -f get-docker.sh
+    sudo systemctl enable --now docker >/dev/null 2>&1
+fi
+
+for PORT in 80 3389 8443; do
+    sudo fuser -k -9 $PORT/tcp >/dev/null 2>&1 || true
+    sudo fuser -k -9 $PORT/udp >/dev/null 2>&1 || true
+done
+
+echo -e "${YELLOW}⚙️ [2/7] Injecting Anti-Throttling TCP Network Optimizations...${NC}"
+sudo sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+sudo sysctl -w net.ipv4.tcp_fastopen=3 >/dev/null 2>&1 || true
+sudo sysctl -w net.core.rmem_max=67108864 >/dev/null 2>&1 || true
+sudo sysctl -w net.core.wmem_max=67108864 >/dev/null 2>&1 || true
+sudo sysctl -w net.ipv4.tcp_rmem="4096 87380 67108864" >/dev/null 2>&1 || true
+sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 67108864" >/dev/null 2>&1 || true
+sudo sysctl -w net.core.netdev_max_backlog=250000 >/dev/null 2>&1 || true
+
+if command -v docker &> /dev/null; then
+    sudo docker system prune -f >/dev/null 2>&1 || true
+fi
+
+mkdir -p media_stack/{nginx,engine,rdp,downloads}
+sudo touch /opt/media_engine_drive.json
+sudo chmod 666 /opt/media_engine_drive.json
+cd media_stack
+
+gen_pw() { cat /dev/urandom | tr -dc 'A-Za-z0-9' | fold -w 12 | head -n 1; }
+
+if [ ! -f .env ]; then
+    echo -e "${CYAN}🔐 DASHBOARD SECURITY${NC}"
+    read -p "Create a Password for your Web Dashboard: " DASH_PASS </dev/tty
+    echo ""
+    cat > .env << ENVEOF
+DASH_PASS=$DASH_PASS
+RDP_PASS=$(gen_pw)
+VPN_PASS=$(gen_pw)
+VPN_PORT=8443
+ENVEOF
+fi
+source .env
+
+echo -e "${YELLOW}⚙️ [3/7] Writing Docker & Nginx Configurations...${NC}"
+
+cat > docker-compose.yml << 'YMLEOF'
+services:
+  engine:
+    build: ./engine
+    volumes: ['./downloads:/downloads', '/opt/media_engine_drive.json:/opt/media_engine_drive.json']
+    environment: ['DASH_PASS=${DASH_PASS}']
+    restart: unless-stopped
+    mem_limit: 512m
+    networks: [media_net]
+  rdp:
+    build: ./rdp
+    environment: ['RDP_PASS=${RDP_PASS}']
+    ports: ['3389:3389']
+    volumes: ['./downloads:/downloads']
+    shm_size: '512m'
+    mem_limit: 1024m
+    restart: unless-stopped
+    networks: [media_net]
+  vpn:
+    image: ghcr.io/shadowsocks/ssserver-rust:latest
+    ports: ["${VPN_PORT}:${VPN_PORT}/tcp", "${VPN_PORT}:${VPN_PORT}/udp"]
+    command: ssserver -s "0.0.0.0:${VPN_PORT}" -m "chacha20-ietf-poly1305" -k "${VPN_PASS}" -U --fast-open
+    mem_limit: 100m
+    restart: unless-stopped
+  nginx:
+    image: nginx:alpine
+    ports: ['80:80']
+    volumes: ['./nginx/nginx.conf:/etc/nginx/nginx.conf:ro', './downloads:/downloads:ro']
+    depends_on: [engine]
+    mem_limit: 100m
+    restart: unless-stopped
+    networks: [media_net]
+networks:
+  media_net:
+    driver: bridge
+YMLEOF
+
+cat > nginx/nginx.conf << 'NGINXEOF'
+events { worker_connections 8192; multi_accept on; }
+http {
+    sendfile on; tcp_nopush on; tcp_nodelay on; keepalive_timeout 65;
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    server {
+        listen 80 default_server; client_max_body_size 0;
+        location / { 
+            set $backend http://engine:8080;
+            proxy_pass $backend; 
+            proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header Range $http_range; proxy_set_header If-Range $http_if_range;
+            proxy_request_buffering off; proxy_buffering off; 
+            proxy_read_timeout 86400; proxy_send_timeout 86400; 
+        }
+    }
+}
+NGINXEOF
+
+cat > rdp/Dockerfile << 'RDPEOF'
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/force-unsafe-io && \
+    echo 'Acquire::http::Pipeline-Depth "100"; Acquire::Retries "3";' > /etc/apt/apt.conf.d/99speedup && \
+    apt-get update -qq && apt-get install -y --no-install-recommends xfce4 xfce4-goodies xrdp xorgxrdp dbus-x11 sudo curl wget unzip gnupg ca-certificates aria2 && \
+    curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg "https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg" && \
+    echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" > /etc/apt/sources.list.d/brave-browser-release.list && \
+    apt-get update -qq && apt-get install -y --no-install-recommends brave-browser && \
+    wget -q https://github.com/mayswind/AriaNg/releases/download/1.3.7/AriaNg-1.3.7-AllInOne.zip && unzip -q AriaNg-1.3.7-AllInOne.zip -d /opt/ariang && rm AriaNg-1.3.7-AllInOne.zip && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/*
+RUN mkdir -p /etc/opt/chrome/policies/managed && echo '{"ExtensionInstallForcelist": ["mpkodccbngfoacfalldjghnnfkfcnkfh;https://clients2.google.com/service/update2/crx"]}' > /etc/opt/chrome/policies/managed/extensions.json
+RUN adduser xrdp ssl-cert && sed -i 's/test -x \/etc\/X11\/Xsession && exec \/etc\/X11\/Xsession/startxfce4/' /etc/xrdp/startwm.sh && sed -i 's/exec \/bin\/sh \/etc\/X11\/Xsession/startxfce4/' /etc/xrdp/startwm.sh
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+CMD ["/entrypoint.sh"]
+RDPEOF
+
+cat > rdp/entrypoint.sh << 'RDPENTEOF'
+#!/bin/bash
+if ! id "rdpuser" &>/dev/null; then 
+    useradd -m -s /bin/bash rdpuser; echo "rdpuser:${RDP_PASS}" | chpasswd; usermod -aG sudo rdpuser
+    echo "startxfce4" > /home/rdpuser/.xsession; chown rdpuser:rdpuser /home/rdpuser/.xsession
+    mkdir -p /home/rdpuser/.aria2 /home/rdpuser/Desktop
+    echo -e "enable-rpc=true\nrpc-listen-all=true\nrpc-allow-origin-all=true\nrpc-listen-port=6800\nmax-concurrent-downloads=10\nmax-connection-per-server=16\nsplit=16\nmin-split-size=1M\ndir=/downloads\nfile-allocation=none" > /home/rdpuser/.aria2/aria2.conf
+    chown -R rdpuser:rdpuser /home/rdpuser/.aria2
+    echo -e "[Desktop Entry]\nVersion=1.0\nType=Application\nName=Brave Browser\nExec=brave-browser --no-sandbox --test-type\nIcon=brave-browser\nTerminal=false" > /home/rdpuser/Desktop/Brave.desktop
+    echo -e "[Desktop Entry]\nVersion=1.0\nType=Application\nName=Aria2 Download Manager\nExec=brave-browser --no-sandbox --test-type --app=file:///opt/ariang/index.html\nIcon=download\nTerminal=false" > /home/rdpuser/Desktop/Aria2_Manager.desktop
+    chmod +x /home/rdpuser/Desktop/*.desktop; chown -R rdpuser:rdpuser /home/rdpuser/Desktop
+fi
+mkdir -p /var/run/dbus; dbus-daemon --system --fork
+chmod 777 /downloads
+sudo -u rdpuser aria2c --conf-path=/home/rdpuser/.aria2/aria2.conf -D
+rm -f /var/run/xrdp/xrdp*.pid
+xrdp-sesman --nodaemon & exec xrdp --nodaemon
+RDPENTEOF
+
+echo -e "${YELLOW}⚙️ [4/7] Generating Python Backend Engine...${NC}"
+
+cat > engine/Dockerfile << 'ENGEOF'
+FROM python:3.10-slim-bookworm
+WORKDIR /app
+RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/force-unsafe-io && \
+    echo 'Acquire::http::Pipeline-Depth "100"; Acquire::Retries "3";' > /etc/apt/apt.conf.d/99speedup && \
+    sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update -qq && \
+    apt-get install -y --no-install-recommends aria2 unrar p7zip-full && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/*
+RUN pip install --prefer-binary --no-cache-dir flask requests psutil waitress rarfile py7zr cloudscraper curl_cffi || true
+COPY app.py .
+CMD ["python3", "-u", "app.py"]
+ENGEOF
+
+cat > engine/app.py << 'ENGPYEOF'
+import os, time, uuid, threading, shutil, re, mimetypes, concurrent.futures, hashlib, json, gc, zipfile, base64, collections, urllib.parse
+from flask import Flask, jsonify, render_template_string, request, Response
+import psutil, requests
+from requests.adapters import HTTPAdapter
+from collections import OrderedDict
+
+try: from urllib3.util.retry import Retry
+except ImportError: from urllib3.util import Retry
+try: import rarfile
+except ImportError: rarfile = None
+try: import py7zr
+except ImportError: py7zr = None
+try: import cloudscraper; archive_session = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+except: archive_session = requests.Session()
+try: from curl_cffi import requests as creq; rqk = {"impersonate": "chrome"}
+except: creq, rqk = requests, {}
+
+archive_adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16)
+archive_session.mount('https://', archive_adapter); archive_session.mount('http://', archive_adapter)
+
+app = Flask(__name__)
+DL_DIR = "/downloads"; os.makedirs(DL_DIR, exist_ok=True)
+db = {}; db_lock = threading.Lock(); global_mounted_data = None
+shared_drive_cache = collections.OrderedDict(); shared_drive_lock = threading.Lock()
+active_mount_streams = set(); DRIVE_CREDS_FILE = "/opt/media_engine_drive.json"; drive_creds_lock = threading.Lock()
+
+drive_api_session = requests.Session()
+_retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+_api_adapter = HTTPAdapter(max_retries=_retry_strategy, pool_connections=16, pool_maxsize=16)
+drive_api_session.mount("https://", _api_adapter); drive_api_session.mount("http://", _api_adapter)
+
+DASH_PASS = os.environ.get('DASH_PASS', 'admin'); P2P_CHUNK_SIZE = 1048576; STREAM_CHUNK_SIZE = 2097152
+SPOOF_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+HEADERS = {'User-Agent': SPOOF_AGENT, 'Accept': '*/*', 'Connection': 'keep-alive', 'Accept-Encoding': 'identity'}
+sys_data = {"cpu": "Booting...", "ram": "Booting...", "swap": "Booting...", "disk": "Booting...", "net": "Booting..."}; net_p = None; net_pt = time.time()
+
+class P2PStream:
+    def __init__(self, fid, total_size):
+        self.fid, self.total_size, self.chunks, self.needed, self.active, self.connected = fid, total_size, OrderedDict(), set(), {}, False
+        self.lock = threading.Lock(); self.cond = threading.Condition(self.lock)
+
+class DiskStream:
+    def __init__(self, fid, total_size):
+        self.fid, self.total_size, self.written_chunks, self.prioritized, self.active = fid, total_size, set(), set(), {}
+        self.lock = threading.Lock(); self.cond = threading.Condition(self.lock)
+        self.background = set(range((total_size + P2P_CHUNK_SIZE - 1) // P2P_CHUNK_SIZE if total_size > 0 else 0))
+
+p2p_streams = {}; disk_streams = {}
+
+def fmt_bytes(b): return f"{b/(1024**3):.2f} GB" if b >= 1024**3 else f"{b/(1024**2):.2f} MB" if b >= 1024**2 else f"{b/1024:.2f} KB"
+def extract_drive_id(url):
+    m = re.search(r'/file/d/([a-zA-Z0-9_-]+)', url) or re.search(r'id=([a-zA-Z0-9_-]+)', url)
+    return m.group(1) if m else None
+
+def get_drive_auth():
+    try:
+        with drive_creds_lock:
+            if not os.path.exists(DRIVE_CREDS_FILE) or os.path.getsize(DRIVE_CREDS_FILE) == 0: return None, "Vault Empty"
+            with open(DRIVE_CREDS_FILE, 'r') as f: creds = json.load(f)
+            now = time.time()
+            if 'access_token' in creds and 'expires_at' in creds and now < creds['expires_at'] - 60: return creds['access_token'], None
+            if 'client_id' not in creds: return None, "Missing credentials"
+            r = drive_api_session.post('<https://oauth2.googleapis.com/token>', data={'client_id': creds['client_id'], 'client_secret': creds['client_secret'], 'refresh_token': creds['refresh_token'], 'grant_type': 'refresh_token'}, timeout=15)
+            if r.status_code != 200: return None, "Google rejected Refresh Token."
+            nt = r.json()['access_token']; creds['access_token'], creds['expires_at'] = nt, now + 3500
+            with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(creds, f)
+            return nt, None
+    except Exception as e: return None, str(e)
+
+class HttpRangeFile:
+    def __init__(self, url):
+        self.url = url; self.headers = HEADERS.copy(); self.pos = 0; self.chunk_size = 4194304; self.file_id = hashlib.md5(self.url.encode()).hexdigest()
+        try:
+            r = archive_session.head(url, headers=self.headers, allow_redirects=True, timeout=15)
+            cl = r.headers.get('Content-Length')
+            if not cl:
+                r = archive_session.get(url, headers=self.headers, stream=True, allow_redirects=True, timeout=15)
+                cl = r.headers.get('Content-Length', 0); self.url = r.url; r.close()
+            else: self.url = r.url
+            self.size = int(cl)
+        except: self.size = 0
+    def _get_chunk(self, chunk_idx):
+        ck = f"http_{self.file_id}_{chunk_idx}"
+        with shared_drive_lock:
+            if ck in shared_drive_cache: shared_drive_cache.move_to_end(ck); return shared_drive_cache[ck]
+        start = chunk_idx * self.chunk_size; end = min(start + self.chunk_size - 1, self.size - 1)
+        if start >= self.size: return b''
+        h = self.headers.copy(); h['Range'] = f'bytes={start}-{end}'
+        try: data = archive_session.get(self.url, headers=h, timeout=10).content
+        except: data = b''
+        with shared_drive_lock:
+            shared_drive_cache[ck] = data
+            while len(shared_drive_cache) > 16: shared_drive_cache.popitem(last=False)
+        return data
+    def read(self, size=-1):
+        if self.pos >= self.size: return b''
+        if size < 0 or self.pos + size > self.size: size = self.size - self.pos
+        res = bytearray()
+        while size > 0 and self.pos < self.size:
+            c_idx, c_off = self.pos // self.chunk_size, self.pos % self.chunk_size
+            c_data = self._get_chunk(c_idx)
+            if not c_data: break
+            t = min(size, len(c_data) - c_off); res.extend(c_data[c_off:c_off+t]); self.pos += t; size -= t
+        return bytes(res)
+    def seek(self, offset, whence=0):
+        if whence == 0: self.pos = offset
+        elif whence == 1: self.pos += offset
+        elif whence == 2: self.pos = self.size + offset
+        self.pos = max(0, min(self.pos, self.size)); return self.pos
+    def tell(self): return self.pos
+    def seekable(self): return True
+    def readable(self): return True
+    def writable(self): return False
+    def close(self): pass
+
+class SwarmRangeFile(HttpRangeFile):
+    def __init__(self, url):
+        super().__init__(url); self.chunk_size = 8388608; self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.file_id = hashlib.md5(f"sw_{self.url}".encode()).hexdigest()
+    def _get_chunk(self, chunk_idx):
+        ck = f"sw_{self.file_id}_{chunk_idx}"
+        with shared_drive_lock:
+            if ck in shared_drive_cache: shared_drive_cache.move_to_end(ck); return shared_drive_cache[ck]
+        start = chunk_idx * self.chunk_size; end = min(start + self.chunk_size - 1, self.size - 1)
+        if start >= self.size: return b''
+        part_size = 2097152
+        def fetch_part(p_idx):
+            p_start, p_end = start + p_idx * part_size, min(start + p_idx * part_size + part_size - 1, end)
+            if p_start > end: return b''
+            h = self.headers.copy(); h['Range'] = f'bytes={p_start}-{p_end}'
+            for _ in range(3):
+                try:
+                    r = archive_session.get(self.url, headers=h, timeout=10)
+                    if r.status_code in [200, 206]: return r.content
+                except: time.sleep(0.5)
+            return b''
+        data = b''.join(list(self.executor.map(fetch_part, range(4))))
+        with shared_drive_lock:
+            shared_drive_cache[ck] = data
+            while len(shared_drive_cache) > 16: shared_drive_cache.popitem(last=False)
+        return data
+    def close(self):
+        if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
+
+class DriveRangeFile(HttpRangeFile):
+    def __init__(self, file_id, access_token, size):
+        self.url = f'<https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true>'
+        self.headers = {'Authorization': f'Bearer {access_token}', 'User-Agent': SPOOF_AGENT}
+        self.size = size; self.pos = 0; self.chunk_size = 4194304; self.file_id = file_id
+    def _get_chunk(self, chunk_idx):
+        ck = f"drv_{self.file_id}_{chunk_idx}"
+        with shared_drive_lock:
+            if ck in shared_drive_cache: shared_drive_cache.move_to_end(ck); return shared_drive_cache[ck]
+        start = chunk_idx * self.chunk_size; end = min(start + self.chunk_size - 1, self.size - 1)
+        if start >= self.size: return b''
+        h = self.headers.copy(); h['Range'] = f'bytes={start}-{end}'
+        try: data = drive_api_session.get(self.url, headers=h, timeout=10).content
+        except: data = b''
+        with shared_drive_lock:
+            shared_drive_cache[ck] = data
+            while len(shared_drive_cache) > 16: shared_drive_cache.popitem(last=False)
+        return data
+
+LOGIN_HTML = r"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Restricted Area</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#14171f;padding:40px;border-radius:12px;border:1px solid #2d3748;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5);width:100%;max-width:350px}input{padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;margin-bottom:20px;width:100%;box-sizing:border-box;font-size:16px;outline:none;text-align:center}input:focus{border-color:#00b3ff}button{padding:15px;background:#00b3ff;border:none;color:#fff;border-radius:8px;cursor:pointer;width:100%;font-size:16px;font-weight:bold;transition:0.2s}button:hover{background:#0099cc}h2{margin-top:0;margin-bottom:25px}</style></head><body><div class="box"><h2>🔒 Secure Engine Master</h2><form onsubmit="event.preventDefault(); document.cookie='dash_auth='+encodeURIComponent(document.getElementById('pw').value)+'; path=/; max-age=2592000'; window.location.reload();"><input type="password" id="pw" placeholder="Enter Password" autofocus required><button type="submit">Unlock Dashboard</button></form></div></body></html>"""
+HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engine Dashboard</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--drive:#10b981}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:.3s}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:700;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px}input,select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;transition:.2s;white-space:nowrap}button:hover{opacity:.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748}.monitor-value{font-size:15px;font-weight:700;margin-top:8px;color:var(--accent);white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.file-name{font-weight:700;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333}</style></head><body><h2><span>🚀 Unified 5-Engine Master</span><span style="font-size:14px;color:#888">Port 80 <span class="status-dot" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success)"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram)">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--warn)">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success)">--</div></div><div class="monitor-card network-card"><div>Network Traffic (WAN)</div><div class="monitor-value" id="net" style="color:var(--success)">--</div></div></div><div class="engine-box" style="border-color:#10b981"><div class="engine-title"><span style="color:#10b981">📡 Engine 5: Direct Transfer (P2P RAM & Disk Relay)</span></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 1: Direct P2P</div><input type="file" id="file_p2p" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('p2p')" style="background:#10b981;color:#000">Generate P2P Link</button></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 2: Disk Buffered</div><input type="file" id="file_disk_relay" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('disk_relay')" style="background:#059669;color:#fff">Generate Disk Link</button></div><div class="input-group" style="margin-bottom:0"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 3: Direct Folder Upload</div><input type="file" id="file_folder" webkitdirectory directory multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('folder')" style="background:#047857;color:#fff">Upload Folder</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--purple)">💿 Engine 1: Disk Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple)">Send to Disk</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--ram)">⚡ Engine 2: RAM Proxy & Direct Archive Extractor</span></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_ram" placeholder="Box 1: Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000">Start RAM Proxy</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_direct_zip" placeholder="Box 2: Direct Link to ZIP, RAR, 7z..."><button onclick="listDirectArchive()" style="background:var(--ram);color:#000">Stream Contents</button></div><div id="direct_zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--ram)"></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--multi)">🚀 Engine 3: Hyper-Thread Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_multi" placeholder="Paste resumable link to blast to server disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000">Multi-Thread DL</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--swarm)">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_swarm" placeholder="Box 1: Paste throttled link to aggregate..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff">Initialize Swarm</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_swarm_zip" placeholder="Box 2: Direct Link to ZIP, RAR, MKV etc..."><button onclick="listSwarmArchive()" style="background:var(--swarm);color:#fff">Swarm Stream</button></div><div id="swarm_zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--swarm)"></div></div><div class="engine-box" style="border-color:var(--drive)"><div class="engine-title"><span style="color:var(--drive)">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px"></span></div><div id="drive_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"><span id="drive_email" style="color:var(--success);font-weight:700;flex:1">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload to Drive..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000">Swarm Upload</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to Drive Folder, ZIP, RAR..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000">Stream Contents</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000">Generate Link</button></div><div id="zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"></div></div><div class="file-grid" id="files" style="margin-top:20px"></div><script>function checkDriveStatus(){fetch("/api/drive/status").then(e=>e.json()).then(e=>{e.connected?(document.getElementById("drive_dot").style.background="var(--success)",document.getElementById("drive_auth_panel").style.display="none",document.getElementById("drive_connected_panel").style.display="flex",document.getElementById("drive_email").innerText="✅ Drive Active | 💾 "+(e.info||"")):(document.getElementById("drive_dot").style.background="var(--danger)",document.getElementById("drive_auth_panel").style.display="flex",document.getElementById("drive_connected_panel").style.display="none")})}function connectDrive(){let e=document.getElementById("drive_cid").value,t=document.getElementById("drive_csec").value,l=document.getElementById("drive_rt").value;if(!e||!t||!l)return alert("All keys required!");fetch("/api/drive/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({client_id:e,client_secret:t,refresh_token:l})}).then(e=>e.json()).then(e=>{e.success?checkDriveStatus():alert("Failed: "+e.error)})}function disconnectDrive(){fetch("/api/drive/disconnect",{method:"POST"}).then(()=>checkDriveStatus())}function renderArchiveBox(e,t){let l=document.getElementById(t),d=t==="zip_contents"?"url_drive_zip":t==="swarm_zip_contents"?"url_swarm_zip":"url_direct_zip",n=e.mount_id||"none";let i=`<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #333"><button onclick="clearMountedArchive('${t}','${d}')" class="btn-red">Clear Mount</button></div>`;e.files.forEach(s=>{let c=window.location.origin+s.url,u=encodeURIComponent(s.name);i+=`<div class="zip-item">📄 ${s.name} <div style="display:flex;gap:5px"><input type="text" id="zl_${s.b64}" value="${c}" readonly onclick="this.select()"><button onclick="copyToBox('zl_${s.b64}')" style="background:var(--accent);color:#fff">Copy</button></div></div>`});l.innerHTML=i;l.style.display="block"}async function listDirectArchive(){let e=document.getElementById("url_direct_zip").value;if(e){let t=document.getElementById("direct_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/direct_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"direct_zip_contents")}}async function listSwarmArchive(){let e=document.getElementById("url_swarm_zip").value;if(e){let t=document.getElementById("swarm_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/swarm_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"swarm_zip_contents")}}async function listDriveArchive(){let e=document.getElementById("url_drive_zip").value;if(e){let t=document.getElementById("zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/drive_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"zip_contents")}}function clearMountedArchive(e,t){fetch("/api/clear_archive_mount",{method:"POST"}).then(()=>{document.getElementById(e).style.display="none";document.getElementById(t).value=""})}function addFile(e){let t=document.getElementById("url_"+e).value;if(t){document.getElementById("url_"+e).value="";fetch("/api/add?type="+e+"&url="+encodeURIComponent(t))}}async function initUpload(e){let t=document.getElementById("file_"+e),l=t.files;if(0===l.length)return;for(let d=0;d<l.length;d++){let n=l[d],rp=n.webkitRelativePath||n.name;let o=await fetch("/api/upload_init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:e,name:n.name,size:n.size,relative_path:rp})}),a=await o.json();startGbpsP2P(a.fid,n,true)}t.value=""}async function startGbpsP2P(e,t,l){let n=1048576,o=Math.ceil(t.size/n),a=[],i=new Set,s=true,r=0;async function c(){while(s){let u=await fetch("/api/p2p_poll/"+e);if(!u.ok){s=false;break}let m=await u.json();for(let g of m)if(!i.has(g)&&!a.includes(g))a.push(g);await new Promise(k=>setTimeout(k,1000))}}async function v(){while(s){let E=-1;if(a.length>0)E=a.shift();else if(l&&r<o){while(i.has(r)&&r<o)r++;if(r<o)E=r++}if(E!==-1){i.add(E);let w=E*n,S=Math.min(w+n,t.size),C=t.slice(w,S);for(let x=0;x<3;x++){let L=await fetch(`/api/p2p_up/${e}/${E}`,{method:"POST",body:C});if(L.ok)break;await new Promise(I=>setTimeout(I,500))}i.delete(E)}else await new Promise(T=>setTimeout(T,200))}}c();for(let q=0;q<8;q++)v()}function copyToBox(e){let t=document.getElementById(e);t.select();document.execCommand("copy");alert("Copied!")}function triggerAction(e,t){fetch("/api/action/"+e+"/"+t)}checkDriveStatus();setInterval(checkDriveStatus,60000);setInterval(()=>{fetch("/api/data").then(e=>e.json()).then(e=>{document.getElementById("cpu").innerText=e.sys.cpu;document.getElementById("ram").innerText=e.sys.ram;document.getElementById("swap").innerText=e.sys.swap;document.getElementById("disk").innerText=e.sys.disk;document.getElementById("net").innerText=e.sys.net;let t="";let now=Date.now();if(!window.sp)window.sp={};e.files.forEach(d=>{let stx="";let downMB=(d.down/1048576).toFixed(2);let totMB=d.total?(d.total/1048576).toFixed(2):"∞";if(d.total>0&&d.down<d.total){if(!window.sp[d.id])window.sp[d.id]={d:d.down,t:now,s:0};let dd=d.down-window.sp[d.id].d,dt=(now-window.sp[d.id].t)/1e3;if(dt>=1){window.sp[d.id].s=dd>0?dd/dt/1048576:0;window.sp[d.id].d=d.down;window.sp[d.id].t=now}if(window.sp[d.id].s>0)stx=" ⚡ "+window.sp[d.id].s.toFixed(1)+" MB/s"}let th=d.active_threads>0?` <span style="color:#06b6d4">[${d.active_threads} Threads]</span>`:"";let m=d.total?Math.min(100,Math.round((d.down/d.total)*100))+"%":"Live";let f=d.total?`<progress value="${d.down}" max="${d.total}"></progress>`:"";let u=encodeURIComponent(d.name);let y=window.location.origin+"/stream/"+d.id+"/"+u;t+=`<div class="file-card"><div class="file-name">[${d.type.toUpperCase()}] ${d.name}</div><div class="file-status">${d.status} - ${m} (${downMB} MB / ${totMB} MB)${stx}${th}</div>${f}<div class="link-box"><input type="text" id="l_${d.id}" value="${y}" readonly onclick="this.select()"><button onclick="copyToBox('l_${d.id}')">Copy</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${d.id}','stop')">Abort</button></div></div>`});document.getElementById("files").innerHTML=t||'<div style="color:#555">No active tasks.</div>'})},1000)</script></body></html>"""
+
+@app.route('/')
+def index():
+    if request.cookies.get('dash_auth') != DASH_PASS: return Response(render_template_string(LOGIN_HTML), headers={'Cache-Control': 'no-store'})
+    return Response(render_template_string(HTML), headers={'Cache-Control': 'no-store'})
+
+@app.route('/api/get_archive_mount')
+def get_archive_mount(): return jsonify({'mounted': bool(global_mounted_data), 'data': global_mounted_data})
+
+@app.route('/api/clear_archive_mount', methods=['POST'])
+def clear_archive_mount():
+    global global_mounted_data
+    with db_lock:
+        active_mount_streams.clear()
+    global_mounted_data = None; return jsonify({'success': True})
+
+def build_archive_data(rf, file_id=None, a_type='direct', url=None):
+    global global_mounted_data
+    if rf.size == 0: raise Exception("No Content-Length.")
+    n = urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(rf.url).path)).lower() if not file_id else '.zip'
+    fs, mid = [], f"mount_{str(uuid.uuid4())[:8]}"
+    bu = file_id if file_id else base64.urlsafe_b64encode(url.encode()).decode()
+    b_pth = f"/{a_type}_archive_dl/{bu}"
+    def _add(nm, sz): fs.append({'name': nm, 'size': sz, 'b64': base64.urlsafe_b64encode(nm.encode()).decode(), 'url': f"{b_pth}/{base64.urlsafe_b64encode(nm.encode()).decode()}/{urllib.parse.quote(os.path.basename(nm))}"})
+    if n.endswith('.zip') or not any(n.endswith(x) for x in ['.rar','.7z','.tar','.gz','.bz2','.xz','.lz']):
+        with zipfile.ZipFile(rf) as zf:
+            for i in zf.infolist():
+                if not i.is_dir(): _add(i.filename, i.file_size)
+    elif n.endswith('.rar') and rarfile:
+        with rarfile.RarFile(rf) as rr:
+            for i in rr.infolist():
+                if not i.isdir(): _add(i.filename, i.file_size)
+    elif n.endswith('.7z') and py7zr:
+        with py7zr.SevenZipFile(rf, mode='r') as sz:
+            for i in sz.list():
+                if not i.is_directory: _add(i.filename, i.uncompressed)
+    else: raise Exception("Unsupported format.")
+    global_mounted_data = {'files': fs, 'type': a_type, 'mount_id': mid}; return global_mounted_data
+
+@app.route('/api/direct_archive_list')
+def direct_archive_list():
+    try: return jsonify(build_archive_data(HttpRangeFile(request.args.get('url')), url=request.args.get('url'), a_type='direct'))
+    except Exception as e: return jsonify({'error': str(e)})
+
+@app.route('/api/swarm_archive_list')
+def swarm_archive_list():
+    try: return jsonify(build_archive_data(SwarmRangeFile(request.args.get('url')), url=request.args.get('url'), a_type='swarm'))
+    except Exception as e: return jsonify({'error': str(e)})
+
+@app.route('/api/drive/status')
+def drive_status():
+    t, e = get_drive_auth(); info = 'Active'
+    if t:
+        try:
+            sq = drive_api_session.get('<https://www.googleapis.com/drive/v3/about?fields=storageQuota>', headers={'Authorization': f'Bearer {t}'}, timeout=5).json().get('storageQuota', {})
+            l, u = int(sq.get('limit', 0)), int(sq.get('usage', 0))
+            if l>0: info = f"Used: {u/(1024**3):.1f}GB / {l/(1024**3):.1f}GB"
+        except: pass
+    return jsonify({'connected': bool(t), 'info': info})
+
+@app.route('/api/drive/connect', methods=['POST'])
+def drive_connect():
+    d = request.json
+    with drive_creds_lock:
+        with open(DRIVE_CREDS_FILE, 'w') as f: json.dump(d, f)
+    t, e = get_drive_auth()
+    if e: return jsonify({'error': e})
+    return jsonify({'success': True})
+
+@app.route('/api/drive/disconnect', methods=['POST'])
+def drive_disconnect():
+    with drive_creds_lock:
+        if os.path.exists(DRIVE_CREDS_FILE): os.remove(DRIVE_CREDS_FILE)
+    return jsonify({'success': True})
+
+@app.route('/api/drive_archive_list')
+def drive_archive_list():
+    global global_mounted_data
+    url = request.args.get('url')
+    if not url: return jsonify({'error': 'No URL provided'})
+    file_id = extract_drive_id(url)
+    if not file_id: return jsonify({'error': 'Invalid Google Drive Link'})
+    access_token, err = get_drive_auth()
+    if err: return jsonify({'error': 'Vault Empty. Connect your Google account first.'})
+    try:
+        meta_res = drive_api_session.get(f'<https://www.googleapis.com/drive/v3/files/{file_id}?fields=id,name,size,mimeType&supportsAllDrives=true>', headers={'Authorization': f'Bearer {access_token}'}, timeout=15).json()
+        if 'error' in meta_res: return jsonify({'error': f"Drive API Error: {meta_res['error'].get('message', 'Unknown Error')}"})
+        if meta_res.get('mimeType') == 'application/vnd.google-apps.folder':
+            q_str = f"'{file_id}' in parents and trashed = false"
+            folder_res = drive_api_session.get(f"https://www.googleapis.com/drive/v3/files?q={urllib.parse.quote(q_str)}&fields=files(id,name,size,mimeType)&supportsAllDrives=true&pageSize=1000", headers={'Authorization': f'Bearer {access_token}'}).json()
+            files = [{'name': f.get('name'), 'size': int(f.get('size', 0)), 'b64': base64.urlsafe_b64encode(f['id'].encode()).decode(), 'url': f"/drive_folder_dl/{f['id']}/{urllib.parse.quote(f.get('name', 'file'))}"} for f in folder_res.get('files', []) if f.get('mimeType') != 'application/vnd.google-apps.folder']
+            global_mounted_data = {'files': files, 'type': 'drive_folder', 'mount_id': f"mount_{str(uuid.uuid4())[:8]}"}
+            return jsonify(global_mounted_data)
+        if not meta_res.get('size') or not meta_res.get('size').isdigit(): return jsonify({'error': 'Cannot determine file size.'})
+        return jsonify(build_archive_data(DriveRangeFile(file_id, access_token, int(meta_res.get('size'))), file_id=file_id, a_type='drive'))
+    except Exception as e: return jsonify({'error': str(e)})
+
+@app.route('/api/upload_init', methods=['POST'])
+def upload_init():
+    d = request.json; fid = str(uuid.uuid4())[:8]; t = d.get('type'); nm = d.get('name', 'unnamed').replace('"', ''); sz = int(d.get('size', 0))
+    
+    # Secure Directory Mapping for Box 3
+    rp = d.get('relative_path', nm).replace('"', '')
+    safe_rp = os.path.normpath(rp).lstrip('/')
+    if '..' in safe_rp or safe_rp.startswith('/'):
+        safe_rp = nm
+        
+    fp = os.path.join(DL_DIR, safe_rp if t == 'folder' else f"{fid}_{nm}")
+    
+    # Auto-generate local folders if path exists
+    if t == 'folder':
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        
+    with db_lock: db[fid] = {'id': fid, 'url': '', 'name': safe_rp if t == 'folder' else nm, 'path': fp, 'down': 0, 'total': sz, 'status': d.get('init_status') or 'Starting...', 'start': time.time(), 'type': t}
+    
+    if t == 'p2p': p2p_streams[fid] = P2PStream(fid, sz)
+    elif t in ['disk_relay', 'folder']: 
+        disk_streams[fid] = DiskStream(fid, sz)
+        open(db[fid]['path'], 'wb').truncate(sz)
+        
+    return jsonify({'fid': fid})
+
+@app.route('/api/p2p_wait/<fid>')
+def p2p_wait(fid):
+    with db_lock:
+        if fid not in db: return jsonify({'status': 'Stopped', 'connected': False})
+        st = db[fid]['status']
+    conn = p2p_streams[fid].connected if fid in p2p_streams else (disk_streams[fid].connected if fid in disk_streams else False)
+    return jsonify({'status': st, 'connected': conn})
+
+@app.route('/api/p2p_poll/<fid>')
+def p2p_poll(fid):
+    with db_lock:
+        if fid not in db or db[fid]['status'] == 'Stopped': return "Stopped", 400
+        ft = db[fid]['type']
+    ret, now = time.time(), time.time()
+    ret = []
+    if ft == 'p2p' and fid in p2p_streams:
+        st = p2p_streams[fid]
+        with st.lock:
+            for i in [i for i, t in st.active.items() if now - t > 10]: del st.active[i]; st.needed.add(i) if i not in st.chunks else None
+            for idx in list(st.needed):
+                if len(ret) >= 64: break
+                st.needed.remove(idx); st.active[idx] = now; ret.append(idx)
+    elif ft in ['disk_relay', 'folder'] and fid in disk_streams:
+        st = disk_streams[fid]
+        with st.lock:
+            for i in [i for i, t in st.active.items() if now - t > 10]: del st.active[i]; st.prioritized.add(i) if i not in st.written_chunks else None
+            for idx in sorted(list(st.prioritized)):
+                if len(ret) >= 64: break
+                st.prioritized.remove(idx); st.active[idx] = now; ret.append(idx)
+            if len(ret) < 64:
+                for idx in sorted(list(st.background)):
+                    if len(ret) >= 64: break
+                    st.background.remove(idx); st.active[idx] = now; ret.append(idx)
+    return jsonify(ret)
+
+@app.route('/api/p2p_up/<fid>/<int:idx>', methods=['POST'])
+def p2p_up(fid, idx):
+    with db_lock:
+        if fid not in db or db[fid]['status'] == 'Stopped': return "Stopped", 400
+        ft, fp = db[fid]['type'], db[fid]['path']
+    d = request.data
+    if ft == 'p2p' and fid in p2p_streams:
+        st = p2p_streams[fid]
+        with st.lock:
+            st.chunks[idx] = d
+            if idx in st.active: del st.active[idx]
+            if idx in st.needed: st.needed.remove(idx)
+            if len(st.chunks) > 500: del st.chunks[next(iter(st.chunks))]
+            st.cond.notify_all()
+        with db_lock: db[fid]['down'] += len(d)
+    elif ft in ['disk_relay', 'folder'] and fid in disk_streams:
+        st = disk_streams[fid]; sb = idx * P2P_CHUNK_SIZE
+        if len(d) != min(P2P_CHUNK_SIZE, st.total_size - sb) and st.total_size > 0: return "Inc", 400
+        with open(fp, 'r+b') as f: f.seek(sb); f.write(d); f.flush()
+        with st.lock:
+            if idx in st.active: del st.active[idx]
+            st.written_chunks.add(idx); st.cond.notify_all()
+            if not st.background and not st.prioritized and not st.active:
+                with db_lock: db[fid]['status'] = 'Completed' if db[fid]['status'] != 'Stopped' else 'Stopped'
+        with db_lock: db[fid]['down'] += len(d); db[fid]['status'] = 'Uploading...' if db[fid]['status'].startswith('Queued') else db[fid]['status']
+    return "OK"
+
+@app.route('/api/data')
+def api_data():
+    with db_lock: sf = [{'id': str(k), 'name': str(v.get('name', 'Unknown')), 'status': str(v.get('status', 'Pending')), 'down': int(v.get('down', 0)), 'total': int(v.get('total', 0)), 'type': str(v.get('type', 'disk')).upper(), 'active_threads': int(v.get('active_threads', 0))} for k, v in db.items()]
+    return jsonify({"sys": sys_data, "files": sf})
+
+@app.route('/stream/<fid>/<path:fname>', methods=['GET', 'HEAD'])
+def unified_stream(fid, fname):
+    with db_lock:
+        if fid not in db: return "404", 404
+        fobj = db[fid]
+    ftype, mt, rh = fobj.get('type'), mimetypes.guess_type(fname)[0] or 'application/octet-stream', request.headers.get('Range')
+
+    def get_range_bounds(ts):
+        sb, eb = 0, ts - 1 if ts else 0
+        if rh and ts:
+            m = re.search(r'bytes=(\d+)-(\d*)', rh)
+            if m: sb, eb = int(m.group(1)), int(m.group(2)) if m.group(2) else eb
+        return sb, eb
+
+    if ftype == 'p2p':
+        st = p2p_streams.get(fid)
+        if not st: return "404", 404
+        st.connected = True; ts = fobj.get('total', 0)
+        sb, eb = get_range_bounds(ts)
+        hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'inline; filename="{urllib.parse.quote(fname)}"'}
+        if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
+        if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
+        
+        def gen_p2p():
+            start_idx, end_idx, offset = sb // P2P_CHUNK_SIZE, eb // P2P_CHUNK_SIZE, sb % P2P_CHUNK_SIZE
+            for idx in range(start_idx, end_idx + 1):
+                with st.lock: st.needed.add(idx)
+                wait_time = 0
+                while True:
+                    with st.lock:
+                        if idx in st.chunks: chunk = st.chunks[idx]; break
+                    with db_lock:
+                        if db.get(fid, {}).get('status') == 'Stopped': return
+                    time.sleep(0.5); wait_time += 0.5
+                    if wait_time > 60: return
+                if idx == start_idx and idx == end_idx: yield chunk[offset : offset + (eb - sb + 1)]
+                elif idx == start_idx: yield chunk[offset:]
+                elif idx == end_idx: yield chunk[: (eb % P2P_CHUNK_SIZE) + 1]
+                else: yield chunk
+        return Response(gen_p2p(), status=206 if rh else 200, headers=hdrs)
+
+    elif 'drive' in ftype:
+        file_id = extract_drive_id(fobj.get('url', '')) if not fobj.get('file_id') else fobj.get('file_id')
+        if not file_id: return "No Drive ID", 404
+        token, err = get_drive_auth()
+        if err: return "Auth Error", 403
+        headers = {'Authorization': f'Bearer {token}', 'User-Agent': SPOOF_AGENT}
+        if rh: headers['Range'] = rh
+        r = drive_api_session.get(f'<https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true>', headers=headers, stream=True, allow_redirects=True, timeout=15)
+        resp = Response(r.iter_content(STREAM_CHUNK_SIZE), status=r.status_code)
+        for k, v in r.headers.items():
+            if k.lower() in ['content-length', 'content-type', 'content-range', 'accept-ranges']: resp.headers[k] = v
+        resp.headers['Content-Disposition'] = f'inline; filename="{urllib.parse.quote(fname)}"'
+        return resp
+        
+    elif ftype in ['ram', 'swarm']:
+        headers = HEADERS.copy()
+        if rh: headers['Range'] = rh
+        r = creq.get(fobj['url'], headers=headers, stream=True, allow_redirects=True, **rqk) if hasattr(creq, 'get') else requests.get(fobj['url'], headers=headers, stream=True, allow_redirects=True)
+        resp = Response(r.iter_content(STREAM_CHUNK_SIZE), status=r.status_code)
+        for k, v in r.headers.items():
+            if k.lower() in ['content-length', 'content-type', 'content-range', 'accept-ranges']: resp.headers[k] = v
+        resp.headers['Content-Disposition'] = f'inline; filename="{urllib.parse.quote(fname)}"'
+        return resp
+        
+    else:
+        fp, ts = fobj.get('path'), fobj.get('total', 0)
+        if not fp or not os.path.exists(fp): return "404", 404
+        sb, eb = get_range_bounds(ts)
+        hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'inline; filename="{urllib.parse.quote(fname)}"'}
+        if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
+        if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
+        
+        def gen_local():
+            with open(fp, 'rb') as lf:
+                lf.seek(sb); c = sb
+                while c <= eb:
+                    d = lf.read(min(STREAM_CHUNK_SIZE, eb - c + 1))
+                    if not d:
+                        with db_lock:
+                            if db.get(fid, {}).get('status') in ['Completed', 'Stopped', 'Error: Incomplete']: break
+                        time.sleep(0.5); continue
+                    yield d; c += len(d)
+        return Response(gen_local(), status=206 if rh else 200, headers=hdrs)
+
+@app.route('/<string:a_type>_archive_dl/<string:bu>/<string:b64_name>/<path:fname>', methods=['GET', 'HEAD'])
+def archive_stream(a_type, bu, b64_name, fname):
+    global global_mounted_data
+    if not global_mounted_data: return "404", 404
+    tf = next((x for x in global_mounted_data['files'] if x['b64'] == b64_name), None)
+    if not tf: return "404", 404
+    rh, ts = request.headers.get('Range'), tf['size']
+    sb, eb = 0, ts - 1 if ts else 0
+    if rh and ts:
+        m = re.search(r'bytes=(\d+)-(\d*)', rh)
+        if m: sb, eb = int(m.group(1)), int(m.group(2)) if m.group(2) else eb
+    mt = mimetypes.guess_type(fname)[0] or 'application/octet-stream'
+    hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'inline; filename="{urllib.parse.quote(fname)}"'}
+    if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
+    if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
+    def gen():
+        try:
+            if a_type == 'drive': t, _ = get_drive_auth(); rf = DriveRangeFile(bu, t, 100000000)
+            elif a_type == 'swarm': rf = SwarmRangeFile(base64.urlsafe_b64decode(bu.encode()).decode())
+            else: rf = HttpRangeFile(base64.urlsafe_b64decode(bu.encode()).decode())
+            with zipfile.ZipFile(rf) as zf:
+                with zf.open(tf['name']) as z_item:
+                    try: z_item.seek(sb)
+                    except:
+                        to_skip = sb
+                        while to_skip > 0: sk = min(to_skip, 4194304); z_item.read(sk); to_skip -= sk
+                    c = sb
+                    while c <= eb:
+                        d = z_item.read(min(STREAM_CHUNK_SIZE, eb - c + 1))
+                        if not d: break
+                        yield d; c += len(d)
+        except Exception as e: print("Stream error:", e)
+    return Response(gen(), status=206 if rh else 200, headers=hdrs)
+
+def update_file_metadata(fid, r):
+    cd, nn = r.headers.get('content-disposition', ''), None
+    if cd:
+        m = re.search(r"filename\s*\*=\s*UTF-8''([^;]+)", cd, re.IGNORECASE) or re.search(r'filename\s*=\s*"([^"]+)"', cd, re.IGNORECASE) or re.search(r'filename\s*=\s*([^;]+)', cd, re.IGNORECASE)
+        if m: nn = urllib.parse.unquote(m.group(1)).strip(' \'"')
+    if not nn:
+        bn = urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(r.url).path))
+        if bn and '.' in bn: nn = bn
+    if nn:
+        sn = re.sub(r'[\\/*?:"<>|]', "", nn).strip()
+        if sn:
+            with db_lock:
+                if fid in db:
+                    op = db[fid]['path']; np = os.path.join(DL_DIR, f"{fid}_{sn}"); db[fid]['name'] = sn; db[fid]['path'] = np
+                    if os.path.exists(op) and op != np: os.rename(op, np)
+
+def worker_core(fid, mode):
+    with db_lock:
+        if fid not in db: return
+        u = db[fid]['url']
+        if mode == 'multi': db[fid]['active_threads'], db[fid]['status'] = 0, 'Probing Source...'
+    try:
+        if mode in ['ram', 'swarm']:
+            r = creq.get(u, headers=HEADERS, stream=True, timeout=15, allow_redirects=True, **rqk) if hasattr(creq, 'get') else requests.get(u, headers=HEADERS, stream=True, allow_redirects=True)
+            update_file_metadata(fid, r); tot = int(r.headers.get('content-length', 0)); r.close()
+            with db_lock: db[fid]['total'], db[fid]['status'] = tot, f"Active ({mode.title()} Proxy)" if fid in db else ""
+            return
+
+        if mode == 'drive_direct':
+            file_id = extract_drive_id(u) if extract_drive_id(u) else u.strip()
+            token, err = get_drive_auth()
+            if err: raise Exception(err)
+            res = drive_api_session.get(f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=name,size&supportsAllDrives=true', headers={'Authorization': f'Bearer {token}'}, timeout=30).json()
+            if 'error' in res: raise Exception(res['error'].get('message', 'Drive API Error'))
+            name, size = res.get('name', f'drive_file_{fid}.bin'), int(res.get('size', 0))
+            with db_lock: db[fid]['name'], db[fid]['total'], db[fid]['down'], db[fid]['file_id'], db[fid]['status'] = name, size, size, file_id, 'Completed'
+            return
+
+        tot, r, is_c = 0, None, True; bh = HEADERS.copy()
+        if mode == 'multi': pu = urllib.parse.urlparse(u); bh['Referer'], bh['Origin'] = f"{pu.scheme}://{pu.netloc}/", f"{pu.scheme}://{pu.netloc}"
+        for _ in range(3):
+            try: r = creq.get(u, headers={**bh, 'Range': 'bytes=0-1048575'}, stream=True, timeout=15, allow_redirects=True, **rqk); break
+            except: time.sleep(1)
+        if not r or r.status_code in [403, 503]:
+            is_c = False
+            for _ in range(3):
+                try: r = requests.get(u, headers={**bh, 'Range': 'bytes=0-1048575', 'Accept-Encoding': 'identity'}, stream=True, timeout=15, allow_redirects=True); break
+                except: time.sleep(1)
+        if not r: raise Exception("Connection Refused by Host")
+        if r.status_code >= 400 and r.status_code != 416: r.raise_for_status()
+        update_file_metadata(fid, r)
+        cr = r.headers.get('Content-Range', ''); tot = int(cr.split('/')[-1]) if cr and '/' in cr else (int(r.headers.get('content-length', 0)) if r.status_code == 200 else 0)
+        sup_range = r.headers.get('accept-ranges') == 'bytes' or r.headers.get('Content-Range') or r.headers.get('content-length')
+        r.close()
+        if tot == 0:
+            try: rh = requests.head(u, headers=HEADERS, timeout=10, allow_redirects=True); tot = int(rh.headers.get('content-length', 0))
+            except: pass
+        
+        with db_lock:
+            if fid not in db: return
+            db[fid]['total'], p = tot, db[fid]['path']
+            if mode == 'multi': db[fid]['written'], db[fid]['priority'] = set(), set()
+            
+        if mode == 'disk' or (mode == 'multi' and (tot == 0 or not sup_range)):
+            rets = 0
+            while rets < 20:
+                with db_lock:
+                    if fid not in db or db[fid].get('status') == 'Stopped': return
+                    dl = db[fid].get('down', 0)
+                if tot > 0 and dl >= tot: break
+                h = HEADERS.copy(); h['Range'] = f'bytes={dl}-' if dl > 0 else ''
+                try:
+                    s = creq.Session(**rqk) if is_c else requests.Session()
+                    r = s.get(u, stream=True, headers=h, timeout=30, allow_redirects=True); r.raise_for_status()
+                    if dl > 0 and r.status_code != 206: dl = 0; db[fid]['down'] = 0
+                    with open(p, 'ab' if dl > 0 else 'wb') as f:
+                        for c in r.iter_content(1048576):
+                            with db_lock:
+                                if fid not in db or db[fid].get('status') == 'Stopped': r.close(); return
+                            if c: f.write(c); db[fid]['down'] += len(c)
+                    r.close(); s.close()
+                    with db_lock:
+                        if tot > 0 and db[fid]['down'] < tot: rets += 1; time.sleep(2); continue
+                    break
+                except Exception as e:
+                    rets += 1; time.sleep(2)
+                    if rets >= 20: raise e
+            with db_lock: db[fid]['status'] = 'Completed' if fid in db and db[fid]['status'] != 'Stopped' else 'Stopped'
+            return
+
+        if mode == 'multi':
+            open(p, 'wb').truncate(tot); fd = os.open(p, os.O_WRONLY)
+            csz = max(262144, min(2097152, tot // 512 if tot > 0 else 2097152))
+            with db_lock: db[fid]['chunk_size'] = csz
+            tc = (tot + csz - 1) // csz; pc, ac, lk, ef = set(range(tc)), set(), threading.Lock(), []
+            sc, ma, ll, ss, aw, let = 128, 8, False, True, 0, time.time()
+            def get_nc():
+                with lk:
+                    with db_lock:
+                        if fid not in db: return None
+                        pri = sorted(list(db[fid].get('priority', set())))
+                    for c in pri:
+                        if c in pc and c not in ac: ac.add(c); return c
+                    av = pc - ac
+                    if av: c = min(av); ac.add(c); return c
+                    return None
+            def mw():
+                nonlocal ma, sc, ll, ss, aw, let
+                s = creq.Session(**rqk) if is_c else requests.Session()
+                if not is_c: ad = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0); s.mount('http://', ad); s.mount('https://', ad)
+                with lk: aw += 1
+                with db_lock: db[fid]['active_threads'] = aw if fid in db else 0
+                try:
+                    while True:
+                        if ef: break
+                        ci = get_nc()
+                        if ci is None:
+                            time.sleep(0.1)
+                            with lk:
+                                if not pc: break
+                            continue
+                        st, en = ci * csz, min(ci * csz + csz - 1, tot - 1); el = en - st + 1; h = bh.copy(); h['Range'] = f'bytes={st}-{en}'; suc, bd, ld = False, 0, 0
+                        try:
+                            res = s.get(u, headers=h, timeout=(5, 10), stream=True)
+                            if res.status_code in [404, 410, 401, 400]: ef.append(True); raise Exception("Fatal HTTP")
+                            if res.status_code in [403, 429, 503, 508]: raise Exception("Rate Limit")
+                            res.raise_for_status(); co = st
+                            for cd in (res.raw.read(min(524288, el - bd)) for _ in iter(int, 1)) if not is_c and hasattr(res, 'raw') else res.iter_content(524288):
+                                if ef: raise Exception("Aborted")
+                                if not cd: break
+                                os.pwrite(fd, cd[:el - bd], co); co += len(cd); bd += len(cd); ld += len(cd)
+                                if ld >= 524288 or bd == el:
+                                    with db_lock:
+                                        if db[fid].get('status') == 'Stopped': ef.append(True); raise Exception("Aborted")
+                                        db[fid]['down'] += ld
+                                    ld = 0
+                                if bd == el: break
+                            if bd == el:
+                                with db_lock:
+                                    db[fid]['written'].add(ci); db[fid]['priority'].discard(ci)
+                                    if ma < sc and not ll: ma = min(sc, ma * 2 if ss else ma + 1)
+                                with lk: pc.remove(ci); ac.remove(ci)
+                                suc = True
+                            res.close()
+                        except Exception as e:
+                            with lk:
+                                if any(x in str(e) for x in ["Rate Limit", "429", "503", "508", "Too Many Requests"]):
+                                    if not ll: sc, ll, ss, let = max(2, aw - 2), True, False, time.time(); ma = min(ma, sc)
+                        finally:
+                            if not suc:
+                                with db_lock: db[fid]['down'] = max(0, db[fid]['down'] - (bd - ld)) if fid in db else 0
+                                with lk: ac.discard(ci)
+                                time.sleep(1.0)
+                            with lk:
+                                if ll and aw > ma: break
+                finally:
+                    s.close()
+                    with lk: aw -= 1
+                    with db_lock: db[fid]['active_threads'] = aw if fid in db else 0
+            ths = []
+            while True:
+                with db_lock:
+                    if fid not in db or db[fid].get('status') == 'Stopped': ef.append(True); break
+                    pl = len(db[fid].get('priority', set()))
+                with lk:
+                    if not pc and not ac: break
+                    ca = aw
+                if ll and (time.time() - let > 30): ll, sc = False, min(128, sc + 1)
+                if pl > 0: ll = False; ma = min(sc, ma + 32) if ma < sc else ma
+                if ca < ma:
+                    sp = min(16, ma - ca)
+                    for _ in range(sp): t = threading.Thread(target=mw, daemon=True); t.start(); ths.append(t)
+                    with db_lock: db[fid]['status'] = f'Hyper-Scaling ({ca+sp} Threads)...' if fid in db else ""
+                    time.sleep(0.02)
+                else:
+                    with db_lock: db[fid]['status'] = f'Downloading (Locked at {ca} Threads)' if ll else f'Downloading ({ca} Threads)'
+                    time.sleep(0.5)
+            [t.join() for t in ths]; os.close(fd)
+            with db_lock:
+                if fid not in db or db[fid].get('status') == 'Stopped': os.remove(p) if os.path.exists(p) else None
+                elif pc: db[fid]['active_threads'], db[fid]['status'] = 0, 'Error: Incomplete'
+                else: db[fid]['active_threads'], db[fid]['down'], db[fid]['status'] = 0, tot, 'Completed'
+            return
+
+    except Exception as e:
+        with db_lock: db[fid]['status'] = f'Error: {str(e)[:40]}' if fid in db else ""
+
+def drive_worker(fid, swarm=False):
+    with db_lock:
+        if fid not in db: return
+        u = db[fid]['url']; db[fid]['status'] = 'Swarm Piping to Drive...' if swarm else 'Piping to Drive...'; p = db[fid]['path']
+    try:
+        try: from curl_cffi import requests as creq; rqk = {"impersonate": "chrome"}
+        except: creq, rqk = requests, {}
+        token, err = get_drive_auth()
+        if err: raise Exception(err)
+        r = creq.get(u, headers=HEADERS, stream=True, timeout=15, allow_redirects=True, **rqk) if hasattr(creq, 'get') else requests.get(u, headers=HEADERS, stream=True, allow_redirects=True)
+        update_file_metadata(fid, r)
+        tot = int(r.headers.get('content-length', 0)); sr = r.headers.get('accept-ranges') == 'bytes' or r.headers.get('Content-Range')
+        if tot == 0:
+            try: rh = creq.head(u, headers=HEADERS, timeout=10, allow_redirects=True, **rqk) if hasattr(creq, 'head') else requests.head(u, headers=HEADERS, timeout=10, allow_redirects=True); tot = int(rh.headers.get('content-length', 0))
+            except: pass
+        with db_lock: db[fid]['total'], nm = tot, db[fid]['name']
+        mt = mimetypes.guess_type(nm)[0] or 'application/octet-stream'
+        ir = drive_api_session.post('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json', 'X-Upload-Content-Type': mt}, json={'name': nm}, timeout=30)
+        ir.raise_for_status(); uu = ir.headers['Location']
+        def up_chk(db_bytes, st_byte, is_final=False):
+            cl = len(db_bytes); tot_str = str(tot) if tot > 0 else (str(st_byte + cl) if is_final else '*')
+            hdrs = {'Content-Range': f'bytes {st_byte}-{st_byte + cl - 1}/{tot_str}', 'Content-Length': str(cl)}
+            for _ in range(5):
+                try:
+                    rs = drive_api_session.put(uu, data=db_bytes, headers=hdrs, timeout=120)
+                    if rs.status_code in [308, 200, 201]: return True, (rs.json().get('id') if rs.status_code in [200, 201] else None)
+                except: time.sleep(2)
+            return False, None
+
+        if not swarm or not sr or tot == 0:
+            cz, sb, fi, buf = 33554432, 0, None, bytearray()
+            iter_chunks = r.iter_content(4194304) if hasattr(r, 'iter_content') else r.raw.read
+            for ck in iter_chunks:
+                with db_lock:
+                    if db[fid].get('status') == 'Stopped': r.close(); raise Exception("Stopped")
+                if ck:
+                    buf.extend(ck)
+                    with db_lock: db[fid]['down'] += len(ck)
+                    while len(buf) >= cz:
+                        cd = bytes(buf[:cz]); del buf[:cz]
+                        suc, fi = up_chk(cd, sb, is_final=False)
+                        if not suc: raise Exception("Upload rejected.")
+                        sb += cz
+            if buf or sb == 0:
+                suc, fi = up_chk(bytes(buf), sb, is_final=True)
+                if not suc: raise Exception("Final chunk rejected.")
+            r.close()
+            with db_lock: db[fid]['status'], db[fid]['type'], db[fid]['file_id'] = 'Completed', 'drive_direct', fi
+            return
+
+        r.close()
+        with db_lock: db[fid]['status'] = 'Swarming to Buffer Disk...'
+        worker_core(fid, 'multi')
+        
+        with db_lock:
+            if db[fid].get('status') != 'Completed': raise Exception("Buffer Download Failed.")
+            db[fid]['status'], db[fid]['down'] = 'Piping Buffer to Drive...', 0
+            p = db[fid]['path']
+            
+        with open(p, 'rb') as f:
+            cz, sb, fi = 67108864, 0, None
+            while sb < tot:
+                with db_lock:
+                    if db[fid].get('status') == 'Stopped': raise Exception("Stopped")
+                cd = f.read(min(cz, tot - sb))
+                if not cd: break
+                suc, fi = up_chk(cd, sb, is_final=(sb + len(cd) >= tot))
+                if not suc: raise Exception("Upload rejected.")
+                sb += len(cd)
+                with db_lock: db[fid]['down'] = sb
+        os.remove(p)
+        with db_lock: db[fid]['status'], db[fid]['type'], db[fid]['file_id'] = 'Completed', 'drive_direct', fi
+    except Exception as e:
+        with db_lock: db[fid]['status'] = f'Error: {str(e)[:40]}' if fid in db else ""
+
+@app.route('/api/add')
+def add():
+    u, t = request.args.get('url'), request.args.get('type', 'disk')
+    if not u: return "Err", 400
+    u = u.strip()[1:-1] if u.strip().startswith('<') and u.strip().endswith('>') else u.strip()
+    if not u.startswith('http'): u = 'https://' + u
+    fid = str(uuid.uuid4())[:8]
+    with db_lock: db[fid] = {'id': fid, 'url': u, 'name': f"file_{fid}.bin", 'path': os.path.join(DL_DIR, f"file_{fid}.bin"), 'down': 0, 'total': 0, 'status': 'Starting...', 'start': time.time(), 'type': t}
+    if t == 'drive': threading.Thread(target=drive_worker, args=(fid, False)).start()
+    elif t == 'drive_swarm': threading.Thread(target=drive_worker, args=(fid, True)).start()
+    else: threading.Thread(target=worker_core, args=(fid, t)).start()
+    return "OK"
+
+@app.route('/api/action/<fid>/<act>')
+def action(fid, act):
+    with db_lock:
+        if fid not in db: return "OK"
+        if act == 'stop':
+            db[fid]['status'] = 'Stopped'; ft, ptd = db[fid].get('type'), db[fid].get('path')
+            u = db[fid].get('url', ''); u_hash = hashlib.md5(u.encode()).hexdigest() if u else ''; sw_hash = hashlib.md5(f"sw_{u}".encode()).hexdigest() if u else ''
+            file_id = db[fid].get('file_id', '')
+
+            if ft == 'p2p' and fid in p2p_streams:
+                with p2p_streams[fid].lock: p2p_streams[fid].cond.notify_all()
+                p2p_streams[fid].chunks.clear(); del p2p_streams[fid]
+            elif ft in ['disk_relay', 'folder'] and fid in disk_streams:
+                with disk_streams[fid].lock: disk_streams[fid].cond.notify_all()
+                del disk_streams[fid]
+            
+            with shared_drive_lock:
+                keys_to_del = [k for k in shared_drive_cache.keys() if (file_id and file_id in k) or (u_hash and u_hash in k) or (sw_hash and sw_hash in k) or fid in k]
+                for k in keys_to_del: del shared_drive_cache[k]
+
+            del db[fid]
+            if ptd: threading.Thread(target=lambda p: (time.sleep(2), shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else (os.remove(p) if os.path.exists(p) else None)), args=(ptd,), daemon=True).start()
+    gc.collect(); return "OK"
+
+def update_telemetry():
+    global sys_data, net_p, net_pt
+    while True:
+        time.sleep(1)
+        try:
+            cpu, vm, sm, du = f"{psutil.cpu_percent()}%", psutil.virtual_memory(), psutil.swap_memory(), shutil.disk_usage("/")
+            ram = f"{fmt_bytes(vm.used)} / {fmt_bytes(vm.available)} / {fmt_bytes(vm.total)}"
+            swap = f"{fmt_bytes(sm.used)} / {fmt_bytes(sm.free)} / {fmt_bytes(sm.total)}"
+            disk = f"{fmt_bytes(du.used)} / {fmt_bytes(du.free)} / {fmt_bytes(du.total)}"; ns = "N/A"
+            try:
+                n_all = psutil.net_io_counters(pernic=True)
+                if n_all and net_p:
+                    cs = sum(nic.bytes_sent for name, nic in n_all.items() if name != 'lo')
+                    cr = sum(nic.bytes_recv for name, nic in n_all.items() if name != 'lo')
+                    t = time.time(); d = t - net_pt or 1; s, r = (cs - net_p["sent"]) / d, (cr - net_p["recv"]) / d
+                    net_p, net_pt = {"sent": cs, "recv": cr}, t
+                    ns = f"Live: ↑ {fmt_bytes(s)}/s Up ↓ {fmt_bytes(r)}/s Down  |  Total: {fmt_bytes(cs)} Up / {fmt_bytes(cr)} Down"
+                else: net_p = {"sent": sum(nic.bytes_sent for name, nic in n_all.items() if name != 'lo'), "recv": sum(nic.bytes_recv for name, nic in n_all.items() if name != 'lo')}
+            except: pass
+            sys_data = {"cpu": cpu, "ram": ram, "swap": swap, "disk": disk, "net": ns}
+        except: pass
+threading.Thread(target=update_telemetry, daemon=True).start()
+
+def cleaner():
+    while True:
+        time.sleep(3600); now = time.time()
+        with db_lock:
+            for fid in list(db.keys()):
+                if db[fid].get('type') == 'vault': continue
+                if now - db[fid].get('start', now) > 86400:
+                    try: os.remove(db[fid]['path'])
+                    except: pass
+                    if fid in p2p_streams: p2p_streams[fid].chunks.clear(); del p2p_streams[fid]
+                    if fid in disk_streams: del disk_streams[fid]
+                    del db[fid]
+            if not db:
+                with shared_drive_lock: shared_drive_cache.clear()
+        gc.collect()
+threading.Thread(target=cleaner, daemon=True).start()
+
+def drive_token_refresher():
+    while True:
+        time.sleep(1800)
+        try: get_drive_auth()
+        except Exception as e: print("Token Refresher Thread Safe Catch:", e)
+threading.Thread(target=drive_token_refresher, daemon=True).start()
+
+if __name__ == '__main__':
+    from waitress import serve
+    serve(app, host='0.0.0.0', port=8080, threads=64)
+ENGPYEOF
+
+echo -e "${YELLOW}⚙️ [4/7] Reusing Cached Containers & Compiling...${NC}"
+sudo -E docker compose build --parallel
+
+echo -e "\n${GREEN}🚀 [5/7] Executing Master Boot...${NC}"
+sudo -E docker compose up -d
+
+echo -e "\n${YELLOW}➡️ [6/7] Auto-Debugger: Verifying Service Health...${NC}"
+sleep 5
+for SERVICE in engine rdp vpn nginx; do
+    STATUS=$(sudo docker inspect -f '{{.State.Status}}' media_stack-$SERVICE-1 2>/dev/null || echo "missing")
+    if [ "$STATUS" != "running" ]; then
+        echo -e "${RED}❌ FATAL: Service $SERVICE failed to start! Fetching exact error logs...${NC}"
+        sudo docker logs media_stack-$SERVICE-1 --tail 30
+        echo -e "${YELLOW}Attempting to Auto-Heal...${NC}"
+        sudo docker restart media_stack-$SERVICE-1 >/dev/null 2>&1 || true
+        sleep 5
+    else
+        echo -e "${GREEN}✅ Service $SERVICE Online.${NC}"
+    fi
+done
+
+echo -e "\n${YELLOW}🧹 [7/7] Executing Deep OS & Disk Purge...${NC}"
+sudo docker system prune -f >/dev/null 2>&1 || true
+sudo apt-get autoremove -y >/dev/null 2>&1 || true
+sudo apt-get clean >/dev/null 2>&1 || true
+sudo rm -rf /var/cache/apt/archives/* >/dev/null 2>&1 || true
+sudo rm -rf /tmp/* /var/tmp/* >/dev/null 2>&1 || true
+sudo journalctl --vacuum-time=1s >/dev/null 2>&1 || true
+
+if command -v snap &> /dev/null; then
+    sudo snap set system refresh.retain=2 >/dev/null 2>&1 || true
+fi
+
+sudo swapoff -a && sudo swapon -a >/dev/null 2>&1 || true
+sudo sync
+sudo sysctl -w vm.drop_caches=3 >/dev/null 2>&1 || true
+
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
+OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASS}" | base64 -w 0)
+
+cat > /root/engine_credentials.txt << CREDEOF
+
+=====================================================================
+🎯 V183-ULTRA-PRO (PURE TRANSFER ENGINE)
+=====================================================================
+
+🌐 --- 1. WEB MASTER CONSOLE ---
+Link: http://$SERVER_IP
+Password: $DASH_PASS
+
+🖥️ --- 2. RDP (REMOTE DESKTOP) ---
+IP Address: $SERVER_IP
+Username:   rdpuser
+Password:   $RDP_PASS
+
+🛡️ --- 3. 10GBPS VPN TUNNEL ---
+ss://${OUTLINE_ENCODED}@${SERVER_IP}:${VPN_PORT}/?outline=1
+
+⚠️ REMINDER: Ensure TCP/UDP $VPN_PORT, TCP 80, and TCP 3389 
+are open in your Cloud Provider's Firewall/Security Lists.
+=====================================================================
+CREDEOF
+chmod 600 /root/engine_credentials.txt; echo ""; cat /root/engine_credentials.txt
+EOF
+bash setup.sh
