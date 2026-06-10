@@ -2,7 +2,6 @@ rm -f setup.sh
 cat > setup.sh << 'EOF'
 #!/bin/bash
 set -e
-clear
 
 export DOCKER_BUILDKIT=1
 export COMPOSE_DOCKER_CLI_BUILD=1
@@ -14,20 +13,18 @@ YELLOW='\033[1;33m'
 RED='\033[1;31m'
 NC='\033[0m'
 
-echo -e "${CYAN}=================================================================${NC}"
-echo -e "${GREEN} 🚀 INITIATING V183-ULTRA-PRO (PURE TRANSFER + FOLDER UPLOAD) ${NC}"
+echo -e "\n${CYAN}=================================================================${NC}"
+echo -e "${GREEN} 🚀 INITIATING V183-ULTRA-PRO (UNRAR FIX + SMART FETCH) ${NC}"
 echo -e "${CYAN}=================================================================${NC}\n"
 
-echo -e "${YELLOW}⚙️ [1/7] Initializing System Prep & Port Sanitization...${NC}"
-sudo apt-get update -qq >/dev/null 2>&1 || true
-sudo apt-get install -y --no-install-recommends psmisc lsof curl >/dev/null 2>&1 || true
+sudo apt-get update -y || true
+sudo apt-get install -y --no-install-recommends psmisc lsof curl || true
 
 for PORT in 80 3389 8443; do
     sudo fuser -k -9 $PORT/tcp >/dev/null 2>&1 || true
     sudo fuser -k -9 $PORT/udp >/dev/null 2>&1 || true
 done
 
-echo -e "${YELLOW}⚙️ [2/7] Injecting Anti-Throttling TCP Network Optimizations...${NC}"
 sudo sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
 sudo sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
 sudo sysctl -w net.ipv4.tcp_fastopen=3 >/dev/null 2>&1 || true
@@ -37,9 +34,7 @@ sudo sysctl -w net.ipv4.tcp_rmem="4096 87380 67108864" >/dev/null 2>&1 || true
 sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 67108864" >/dev/null 2>&1 || true
 sudo sysctl -w net.core.netdev_max_backlog=250000 >/dev/null 2>&1 || true
 
-if command -v docker &> /dev/null; then
-    sudo docker system prune -f >/dev/null 2>&1 || true
-fi
+if command -v docker &> /dev/null; then sudo docker system prune -f || true; fi
 
 mkdir -p media_stack/{nginx,engine,rdp,downloads}
 sudo touch /opt/media_engine_drive.json
@@ -49,8 +44,10 @@ cd media_stack
 gen_pw() { cat /dev/urandom | tr -dc 'A-Za-z0-9' | fold -w 12 | head -n 1; }
 
 if [ ! -f .env ]; then
-    echo -e "${CYAN}🔐 DASHBOARD SECURITY${NC}"
-    read -p "Create a Password for your Web Dashboard: " DASH_PASS </dev/tty
+    echo -e "\n\a${RED}=================================================================${NC}"
+    echo -e "${CYAN}🔐 DASHBOARD SECURITY REQUIRED${NC}"
+    echo -e "${RED}=================================================================${NC}"
+    read -p "Type a Password for your Web Dashboard and press ENTER: " DASH_PASS </dev/tty
     echo ""
     cat > .env << ENVEOF
 DASH_PASS=$DASH_PASS
@@ -61,8 +58,6 @@ ENVEOF
 fi
 source .env
 
-echo -e "${YELLOW}⚙️ [3/7] Writing Docker & Nginx Configurations...${NC}"
-
 cat > docker-compose.yml << 'YMLEOF'
 services:
   engine:
@@ -70,7 +65,7 @@ services:
     volumes: ['./downloads:/downloads', '/opt/media_engine_drive.json:/opt/media_engine_drive.json']
     environment: ['DASH_PASS=${DASH_PASS}']
     restart: unless-stopped
-    mem_limit: 800m
+    mem_limit: 2500m
     networks: [media_net]
   rdp:
     build: ./rdp
@@ -104,16 +99,18 @@ cat > nginx/nginx.conf << 'NGINXEOF'
 events { worker_connections 8192; multi_accept on; }
 http {
     sendfile on; tcp_nopush on; tcp_nodelay on; keepalive_timeout 65;
-    resolver 127.0.0.11 valid=10s ipv6=off;
+    resolver 127.0.0.11 valid=10s ipv6=off; server_tokens off;
     server {
         listen 80 default_server; client_max_body_size 0;
         location / { 
-            set $backend http://engine:8080;
-            proxy_pass $backend; 
+            set $backend http://engine:8080; proxy_pass $backend; 
             proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header Range $http_range; proxy_set_header If-Range $http_if_range;
             proxy_request_buffering off; proxy_buffering off; 
             proxy_read_timeout 86400; proxy_send_timeout 86400; 
+            add_header Content-Disposition "attachment" always; add_header X-Content-Type-Options "nosniff" always;
+            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+            add_header X-Padding "00000000000000000000000000000000000000000000000000" always;
         }
     }
 }
@@ -155,8 +152,6 @@ sudo -u rdpuser aria2c --conf-path=/home/rdpuser/.aria2/aria2.conf -D
 rm -f /var/run/xrdp/xrdp*.pid
 xrdp-sesman --nodaemon & exec xrdp --nodaemon
 RDPENTEOF
-
-echo -e "${YELLOW}⚙️ [4/7] Generating Python Backend Engine...${NC}"
 
 cat > engine/Dockerfile << 'ENGEOF'
 FROM python:3.10-slim-bookworm
@@ -290,7 +285,9 @@ class HttpRangeFile:
 
 class SwarmRangeFile(HttpRangeFile):
     def __init__(self, url):
-        super().__init__(url); self.chunk_size = 8388608; self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        super().__init__(url)
+        self.chunk_size = 16777216 
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=16)
         self.file_id = hashlib.md5(f"sw_{self.url}".encode()).hexdigest()
     def _get_chunk(self, chunk_idx):
         ck = f"sw_{self.file_id}_{chunk_idx}"
@@ -298,7 +295,7 @@ class SwarmRangeFile(HttpRangeFile):
             if ck in shared_drive_cache: shared_drive_cache.move_to_end(ck); return shared_drive_cache[ck]
         start = chunk_idx * self.chunk_size; end = min(start + self.chunk_size - 1, self.size - 1)
         if start >= self.size: return b''
-        part_size = 2097152
+        part_size = 1048576
         def fetch_part(p_idx):
             p_start, p_end = start + p_idx * part_size, min(start + p_idx * part_size + part_size - 1, end)
             if p_start > end: return b''
@@ -309,10 +306,11 @@ class SwarmRangeFile(HttpRangeFile):
                     if r.status_code in [200, 206]: return r.content
                 except: time.sleep(0.5)
             return b''
-        data = b''.join(list(self.executor.map(fetch_part, range(4))))
+        parts_count = (end - start + part_size) // part_size
+        data = b''.join(list(self.executor.map(fetch_part, range(parts_count))))
         with shared_drive_lock:
             shared_drive_cache[ck] = data
-            while len(shared_drive_cache) > 16: shared_drive_cache.popitem(last=False)
+            while len(shared_drive_cache) > 32: shared_drive_cache.popitem(last=False)
         return data
     def close(self):
         if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
@@ -350,8 +348,7 @@ def get_archive_mount(): return jsonify({'mounted': bool(global_mounted_data), '
 @app.route('/api/clear_archive_mount', methods=['POST'])
 def clear_archive_mount():
     global global_mounted_data
-    with db_lock:
-        active_mount_streams.clear()
+    with db_lock: active_mount_streams.clear()
     global_mounted_data = None; return jsonify({'success': True})
 
 def build_archive_data(rf, file_id=None, a_type='direct', url=None):
@@ -438,26 +435,15 @@ def drive_archive_list():
 @app.route('/api/upload_init', methods=['POST'])
 def upload_init():
     d = request.json; fid = str(uuid.uuid4())[:8]; t = d.get('type'); nm = d.get('name', 'unnamed').replace('"', ''); sz = int(d.get('size', 0))
-    
-    # Secure Directory Mapping for Box 3
     rp = d.get('relative_path', nm).replace('"', '')
     safe_rp = os.path.normpath(rp).lstrip('/')
-    if '..' in safe_rp or safe_rp.startswith('/'):
-        safe_rp = nm
-        
+    if '..' in safe_rp or safe_rp.startswith('/'): safe_rp = nm
     fp = os.path.join(DL_DIR, safe_rp if t == 'folder' else f"{fid}_{nm}")
-    
-    # Auto-generate local folders if path exists
-    if t == 'folder':
-        os.makedirs(os.path.dirname(fp), exist_ok=True)
-        
+    if t == 'folder': os.makedirs(os.path.dirname(fp), exist_ok=True)
     with db_lock: db[fid] = {'id': fid, 'url': '', 'name': safe_rp if t == 'folder' else nm, 'path': fp, 'down': 0, 'total': sz, 'status': d.get('init_status') or 'Starting...', 'start': time.time(), 'type': t}
-    
     if t == 'p2p': p2p_streams[fid] = P2PStream(fid, sz)
     elif t in ['disk_relay', 'folder']: 
-        disk_streams[fid] = DiskStream(fid, sz)
-        open(db[fid]['path'], 'wb').truncate(sz)
-        
+        disk_streams[fid] = DiskStream(fid, sz); open(db[fid]['path'], 'wb').truncate(sz)
     return jsonify({'fid': fid})
 
 @app.route('/api/p2p_wait/<fid>')
@@ -531,7 +517,8 @@ def unified_stream(fid, fname):
     with db_lock:
         if fid not in db: return "404", 404
         fobj = db[fid]
-    ftype, mt, rh = fobj.get('type'), mimetypes.guess_type(fname)[0] or 'application/octet-stream', request.headers.get('Range')
+    
+    ftype, mt, rh = fobj.get('type'), 'application/octet-stream', request.headers.get('Range')
 
     def get_range_bounds(ts):
         sb, eb = 0, ts - 1 if ts else 0
@@ -545,7 +532,7 @@ def unified_stream(fid, fname):
         if not st: return "404", 404
         st.connected = True; ts = fobj.get('total', 0)
         sb, eb = get_range_bounds(ts)
-        hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'inline; filename="{urllib.parse.quote(fname)}"'}
+        hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'attachment; filename="{urllib.parse.quote(fname)}"', 'X-Accel-Buffering': 'no'}
         if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
         if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
         
@@ -577,25 +564,47 @@ def unified_stream(fid, fname):
         r = drive_api_session.get(f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true', headers=headers, stream=True, allow_redirects=True, timeout=15)
         resp = Response(r.iter_content(STREAM_CHUNK_SIZE), status=r.status_code)
         for k, v in r.headers.items():
-            if k.lower() in ['content-length', 'content-type', 'content-range', 'accept-ranges']: resp.headers[k] = v
-        resp.headers['Content-Disposition'] = f'inline; filename="{urllib.parse.quote(fname)}"'
+            if k.lower() in ['content-length', 'content-range', 'accept-ranges']: resp.headers[k] = v
+        resp.headers['Content-Type'] = mt
+        resp.headers['X-Accel-Buffering'] = 'no'
+        resp.headers['Content-Disposition'] = f'attachment; filename="{urllib.parse.quote(fname)}"'
         return resp
         
-    elif ftype in ['ram', 'swarm']:
+    elif ftype == 'swarm':
+        rf = SwarmRangeFile(fobj['url'])
+        ts = fobj.get('total') or rf.size
+        sb, eb = get_range_bounds(ts)
+        hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'attachment; filename="{urllib.parse.quote(fname)}"', 'X-Accel-Buffering': 'no'}
+        if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
+        if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
+        def gen_swarm():
+            rf.seek(sb); c = sb
+            while c <= eb:
+                with db_lock:
+                    if db.get(fid, {}).get('status') == 'Stopped': break
+                d = rf.read(min(STREAM_CHUNK_SIZE, eb - c + 1))
+                if not d: break
+                yield d; c += len(d)
+            rf.close()
+        return Response(gen_swarm(), status=206 if rh else 200, headers=hdrs)
+        
+    elif ftype == 'ram':
         headers = HEADERS.copy()
         if rh: headers['Range'] = rh
-        r = creq.get(fobj['url'], headers=headers, stream=True, allow_redirects=True, **rqk) if hasattr(creq, 'get') else requests.get(fobj['url'], headers=headers, stream=True, allow_redirects=True)
+        r = creq.get(fobj['url'], headers=headers, stream=True, allow_redirects=True, timeout=(15, 86400), **rqk) if hasattr(creq, 'get') else requests.get(fobj['url'], headers=headers, stream=True, allow_redirects=True, timeout=(15, 86400))
         resp = Response(r.iter_content(STREAM_CHUNK_SIZE), status=r.status_code)
         for k, v in r.headers.items():
-            if k.lower() in ['content-length', 'content-type', 'content-range', 'accept-ranges']: resp.headers[k] = v
-        resp.headers['Content-Disposition'] = f'inline; filename="{urllib.parse.quote(fname)}"'
+            if k.lower() in ['content-length', 'content-range', 'accept-ranges']: resp.headers[k] = v
+        resp.headers['Content-Type'] = mt
+        resp.headers['X-Accel-Buffering'] = 'no'
+        resp.headers['Content-Disposition'] = f'attachment; filename="{urllib.parse.quote(fname)}"'
         return resp
         
     else:
         fp, ts = fobj.get('path'), fobj.get('total', 0)
         if not fp or not os.path.exists(fp): return "404", 404
         sb, eb = get_range_bounds(ts)
-        hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'inline; filename="{urllib.parse.quote(fname)}"'}
+        hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'attachment; filename="{urllib.parse.quote(fname)}"', 'X-Accel-Buffering': 'no'}
         if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
         if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
         
@@ -622,8 +631,9 @@ def archive_stream(a_type, bu, b64_name, fname):
     if rh and ts:
         m = re.search(r'bytes=(\d+)-(\d*)', rh)
         if m: sb, eb = int(m.group(1)), int(m.group(2)) if m.group(2) else eb
-    mt = mimetypes.guess_type(fname)[0] or 'application/octet-stream'
-    hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'inline; filename="{urllib.parse.quote(fname)}"'}
+        
+    mt = 'application/octet-stream'
+    hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'attachment; filename="{urllib.parse.quote(fname)}"', 'X-Accel-Buffering': 'no'}
     if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
     if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
     def gen():
@@ -668,9 +678,24 @@ def worker_core(fid, mode):
         if mode == 'multi': db[fid]['active_threads'], db[fid]['status'] = 0, 'Probing Source...'
     try:
         if mode in ['ram', 'swarm']:
-            r = creq.get(u, headers=HEADERS, stream=True, timeout=15, allow_redirects=True, **rqk) if hasattr(creq, 'get') else requests.get(u, headers=HEADERS, stream=True, allow_redirects=True)
+            r = None
+            for attempt in range(5):
+                try:
+                    r = creq.get(u, headers=HEADERS, stream=True, timeout=15, allow_redirects=True, **rqk) if hasattr(creq, 'get') else requests.get(u, headers=HEADERS, stream=True, allow_redirects=True)
+                    if r.status_code in [200, 206]: break
+                    r.close()
+                except: pass
+                time.sleep(1.5 * (attempt + 1))
+                
+            if r is None or r.status_code not in [200, 206]:
+                with db_lock: 
+                    if fid in db: db[fid]['status'] = "Error: Connection Refused by Host"
+                return
+
+            u = str(r.url) if hasattr(r, 'url') and r.url else u
             update_file_metadata(fid, r); tot = int(r.headers.get('content-length', 0)); r.close()
-            with db_lock: db[fid]['total'], db[fid]['status'] = tot, f"Active ({mode.title()} Proxy)" if fid in db else ""
+            with db_lock: 
+                if fid in db: db[fid]['total'], db[fid]['url'], db[fid]['status'] = tot, u, f"Ready - Link Expires in 24 Hours"
             return
 
         if mode == 'drive_direct':
@@ -680,21 +705,38 @@ def worker_core(fid, mode):
             res = drive_api_session.get(f'https://www.googleapis.com/drive/v3/files/{file_id}?fields=name,size&supportsAllDrives=true', headers={'Authorization': f'Bearer {token}'}, timeout=30).json()
             if 'error' in res: raise Exception(res['error'].get('message', 'Drive API Error'))
             name, size = res.get('name', f'drive_file_{fid}.bin'), int(res.get('size', 0))
-            with db_lock: db[fid]['name'], db[fid]['total'], db[fid]['down'], db[fid]['file_id'], db[fid]['status'] = name, size, size, file_id, 'Completed'
+            with db_lock: db[fid]['name'], db[fid]['total'], db[fid]['down'], db[fid]['file_id'], db[fid]['status'] = name, size, size, file_id, 'Ready - Link Expires in 24 Hours'
             return
 
         tot, r, is_c = 0, None, True; bh = HEADERS.copy()
         if mode == 'multi': pu = urllib.parse.urlparse(u); bh['Referer'], bh['Origin'] = f"{pu.scheme}://{pu.netloc}/", f"{pu.scheme}://{pu.netloc}"
-        for _ in range(3):
-            try: r = creq.get(u, headers={**bh, 'Range': 'bytes=0-1048575'}, stream=True, timeout=15, allow_redirects=True, **rqk); break
-            except: time.sleep(1)
-        if not r or r.status_code in [403, 503]:
+        
+        for attempt in range(5):
+            try: 
+                r = creq.get(u, headers={**bh, 'Range': 'bytes=0-1048575'}, stream=True, timeout=15, allow_redirects=True, **rqk)
+                if r.status_code in [200, 206]: break
+                r.close()
+            except: pass
+            time.sleep(1.5 * (attempt + 1))
+            
+        if not r or r.status_code in [403, 503, 429, 401, 400]:
             is_c = False
-            for _ in range(3):
-                try: r = requests.get(u, headers={**bh, 'Range': 'bytes=0-1048575', 'Accept-Encoding': 'identity'}, stream=True, timeout=15, allow_redirects=True); break
-                except: time.sleep(1)
-        if not r: raise Exception("Connection Refused by Host")
+            for attempt in range(5):
+                try: 
+                    r = requests.get(u, headers={**bh, 'Range': 'bytes=0-1048575', 'Accept-Encoding': 'identity'}, stream=True, timeout=15, allow_redirects=True)
+                    if r.status_code in [200, 206]: break
+                    r.close()
+                except: pass
+                time.sleep(1.5 * (attempt + 1))
+                
+        if not r: raise Exception("Connection Refused by Host (Blocked by CDN)")
         if r.status_code >= 400 and r.status_code != 416: r.raise_for_status()
+        
+        final_url = str(r.url) if hasattr(r, 'url') and r.url else u
+        u = final_url
+        with db_lock:
+            if fid in db: db[fid]['url'] = u
+
         update_file_metadata(fid, r)
         cr = r.headers.get('Content-Range', ''); tot = int(cr.split('/')[-1]) if cr and '/' in cr else (int(r.headers.get('content-length', 0)) if r.status_code == 200 else 0)
         sup_range = r.headers.get('accept-ranges') == 'bytes' or r.headers.get('Content-Range') or r.headers.get('content-length')
@@ -769,8 +811,8 @@ def worker_core(fid, mode):
                         st, en = ci * csz, min(ci * csz + csz - 1, tot - 1); el = en - st + 1; h = bh.copy(); h['Range'] = f'bytes={st}-{en}'; suc, bd, ld = False, 0, 0
                         try:
                             res = s.get(u, headers=h, timeout=(5, 10), stream=True)
-                            if res.status_code in [404, 410, 401, 400]: ef.append(True); raise Exception("Fatal HTTP")
-                            if res.status_code in [403, 429, 503, 508]: raise Exception("Rate Limit")
+                            if res.status_code in [404, 410]: ef.append(True); raise Exception("Fatal HTTP")
+                            if res.status_code in [403, 401, 400, 429, 503, 508]: raise Exception("Rate Limit")
                             res.raise_for_status(); co = st
                             for cd in (res.raw.read(min(524288, el - bd)) for _ in iter(int, 1)) if not is_c and hasattr(res, 'raw') else res.iter_content(524288):
                                 if ef: raise Exception("Aborted")
@@ -791,8 +833,9 @@ def worker_core(fid, mode):
                             res.close()
                         except Exception as e:
                             with lk:
-                                if any(x in str(e) for x in ["Rate Limit", "429", "503", "508", "Too Many Requests"]):
-                                    if not ll: sc, ll, ss, let = max(2, aw - 2), True, False, time.time(); ma = min(ma, sc)
+                                if any(x in str(e).lower() for x in ["rate limit", "429", "503", "508", "requests", "403", "401", "400", "reset", "refused", "timeout", "eof"]):
+                                    if not ll: sc, ll, ss, let = max(2, aw // 2), True, False, time.time(); ma = min(ma, sc)
+                            time.sleep(2.0)
                         finally:
                             if not suc:
                                 with db_lock: db[fid]['down'] = max(0, db[fid]['down'] - (bd - ld)) if fid in db else 0
@@ -816,9 +859,12 @@ def worker_core(fid, mode):
                 if pl > 0: ll = False; ma = min(sc, ma + 32) if ma < sc else ma
                 if ca < ma:
                     sp = min(16, ma - ca)
-                    for _ in range(sp): t = threading.Thread(target=mw, daemon=True); t.start(); ths.append(t)
+                    for _ in range(sp): 
+                        t = threading.Thread(target=mw, daemon=True)
+                        t.start()
+                        ths.append(t)
+                        time.sleep(0.15) 
                     with db_lock: db[fid]['status'] = f'Hyper-Scaling ({ca+sp} Threads)...' if fid in db else ""
-                    time.sleep(0.02)
                 else:
                     with db_lock: db[fid]['status'] = f'Downloading (Locked at {ca} Threads)' if ll else f'Downloading ({ca} Threads)'
                     time.sleep(0.5)
@@ -841,7 +887,26 @@ def drive_worker(fid, swarm=False):
         except: creq, rqk = requests, {}
         token, err = get_drive_auth()
         if err: raise Exception(err)
-        r = creq.get(u, headers=HEADERS, stream=True, timeout=15, allow_redirects=True, **rqk) if hasattr(creq, 'get') else requests.get(u, headers=HEADERS, stream=True, allow_redirects=True)
+        
+        r = None
+        for attempt in range(5):
+            try:
+                r = creq.get(u, headers=HEADERS, stream=True, timeout=15, allow_redirects=True, **rqk) if hasattr(creq, 'get') else requests.get(u, headers=HEADERS, stream=True, allow_redirects=True)
+                if r.status_code in [200, 206]: break
+                r.close()
+            except: pass
+            time.sleep(1.5 * (attempt + 1))
+            
+        if r is None or r.status_code not in [200, 206]:
+            with db_lock: 
+                if fid in db: db[fid]['status'] = "Error: Connection Refused by Host"
+            return
+            
+        final_url = str(r.url) if hasattr(r, 'url') and r.url else u
+        u = final_url
+        with db_lock:
+            if fid in db: db[fid]['url'] = u
+
         update_file_metadata(fid, r)
         tot = int(r.headers.get('content-length', 0)); sr = r.headers.get('accept-ranges') == 'bytes' or r.headers.get('Content-Range')
         if tot == 0:
@@ -969,7 +1034,7 @@ threading.Thread(target=update_telemetry, daemon=True).start()
 
 def cleaner():
     while True:
-        time.sleep(3600); now = time.time()
+        time.sleep(60); now = time.time()
         with db_lock:
             for fid in list(db.keys()):
                 if db[fid].get('type') == 'vault': continue
@@ -993,7 +1058,7 @@ threading.Thread(target=drive_token_refresher, daemon=True).start()
 
 if __name__ == '__main__':
     from waitress import serve
-    serve(app, host='0.0.0.0', port=8080, threads=64)
+    serve(app, host='0.0.0.0', port=8080, threads=128, connection_limit=2000, channel_timeout=86400)
 ENGPYEOF
 
 echo -e "${YELLOW}⚙️ [4/7] Reusing Cached Containers & Compiling...${NC}"
@@ -1007,11 +1072,7 @@ sleep 5
 for SERVICE in engine rdp vpn nginx; do
     STATUS=$(sudo docker inspect -f '{{.State.Status}}' media_stack-$SERVICE-1 2>/dev/null || echo "missing")
     if [ "$STATUS" != "running" ]; then
-        echo -e "${RED}❌ FATAL: Service $SERVICE failed to start! Fetching exact error logs...${NC}"
-        sudo docker logs media_stack-$SERVICE-1 --tail 30
-        echo -e "${YELLOW}Attempting to Auto-Heal...${NC}"
-        sudo docker restart media_stack-$SERVICE-1 >/dev/null 2>&1 || true
-        sleep 5
+        echo -e "${RED}❌ FATAL: Service $SERVICE failed to start!${NC}"
     else
         echo -e "${GREEN}✅ Service $SERVICE Online.${NC}"
     fi
@@ -1021,17 +1082,6 @@ echo -e "\n${YELLOW}🧹 [7/7] Executing Deep OS & Disk Purge...${NC}"
 sudo docker system prune -f >/dev/null 2>&1 || true
 sudo apt-get autoremove -y >/dev/null 2>&1 || true
 sudo apt-get clean >/dev/null 2>&1 || true
-sudo rm -rf /var/cache/apt/archives/* >/dev/null 2>&1 || true
-sudo rm -rf /tmp/* /var/tmp/* >/dev/null 2>&1 || true
-sudo journalctl --vacuum-time=1s >/dev/null 2>&1 || true
-
-if command -v snap &> /dev/null; then
-    sudo snap set system refresh.retain=2 >/dev/null 2>&1 || true
-fi
-
-sudo swapoff -a && sudo swapon -a >/dev/null 2>&1 || true
-sudo sync
-sudo sysctl -w vm.drop_caches=3 >/dev/null 2>&1 || true
 
 SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASS}" | base64 -w 0)
@@ -1039,7 +1089,7 @@ OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASS}" | base64 -w 0)
 cat > /root/engine_credentials.txt << CREDEOF
 
 =====================================================================
-🎯 V183-ULTRA-PRO (PURE TRANSFER ENGINE)
+🎯 V183-ULTRA-PRO (SMART FETCH + TORBOX FIX)
 =====================================================================
 
 🌐 --- 1. WEB MASTER CONSOLE ---
@@ -1053,9 +1103,6 @@ Password:   $RDP_PASS
 
 🛡️ --- 3. 10GBPS VPN TUNNEL ---
 ss://${OUTLINE_ENCODED}@${SERVER_IP}:${VPN_PORT}/?outline=1
-
-⚠️ REMINDER: Ensure TCP/UDP $VPN_PORT, TCP 80, and TCP 3389 
-are open in your Cloud Provider's Firewall/Security Lists.
 =====================================================================
 CREDEOF
 chmod 600 /root/engine_credentials.txt; echo ""; cat /root/engine_credentials.txt
