@@ -1,0 +1,37 @@
+The 60-Second "Holy Trinity" Speedrun Guide
+To permanently connect your Drive, you need to generate your own private keys. It takes exactly one minute:
+
+Go to Google Cloud Console: console.cloud.google.com and log in.
+Create a Project: Click the dropdown at the top left, click New Project, name it "Engine 6", and click Create.
+Enable Drive API: Search for "Google Drive API" in the top search bar, click it, and hit the blue Enable button.
+Create the Client ID & Secret: * Go to APIs & Services -> Credentials.
+Click + Create Credentials and select OAuth client ID.
+(If it asks you to configure a Consent Screen first, click "External", fill out just the required App Name and Email, save, and return to Credentials).
+For Application Type, choose Desktop App (or "Web application" with redirect URI https://developers.google.com/oauthplayground).
+Copy your Client ID and Client Secret.
+
+Go to Google auth platform > Audience  > Test user > put email id of Gdrive
+
+Also in Google auth platform > Audience > Change to Publish from testing once tested done.
+
+Get the Refresh Token:
+Open a new tab to developers.google.com/oauthplayground.
+Click the Gear Icon (top right) -> Check Use your own OAuth credentials -> Paste your Client ID and Secret.
+On the left, scroll to Drive API v3, select https://www.googleapis.com/auth/drive.
+Click Authorize APIs, sign into your account, and hit Continue.
+Click Exchange authorization code for tokens.
+Copy the Refresh Token.
+Paste all three into Engine 6, click Connect, and watch the light turn green!
+
+
+Refresh token - works unlimited 
+Access token - 60 minutes 
+
+Generate client id -
+Generate client secret - 
+Generate Refresh token -
+Paste all three into Engine Google drive engine, click Connect, and watch the light turn green!
+
+
+
+                                          
