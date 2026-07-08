@@ -560,6 +560,152 @@ class SwarmRangeFile(HttpRangeFile):
     def close(self):
         if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
 
+class Segment:
+    def __init__(self, start, end):
+        self.start = start
+        self.end = end
+        self.downloaded_bytes = 0
+        self.buffer = bytearray()
+        self.lock = threading.Lock()
+        self.event = threading.Event()
+        self.finished = False
+
+class RAMSwarmStreamer:
+    def __init__(self, url, total_size, start_pos=0):
+        self.url = url
+        self.total_size = total_size
+        self.pos = start_pos
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32)
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=32)
+        self.stopped = False
+
+        if self.total_size and self.total_size > 0:
+            self.num_segments = min(32, max(1, self.total_size // 1048576))
+            segment_size = self.total_size // self.num_segments
+            self.segments = []
+            for i in range(self.num_segments):
+                start = i * segment_size
+                end = (i + 1) * segment_size - 1 if i < self.num_segments - 1 else self.total_size - 1
+                self.segments.append(Segment(start, end))
+
+            start_seg = start_pos // segment_size
+            for idx in range(start_seg, self.num_segments):
+                start_byte = start_pos if idx == start_seg else self.segments[idx].start
+                self.executor.submit(self._download_segment, idx, start_byte)
+        else:
+            self.total_size = 0
+
+    def _download_segment(self, seg_idx, start_byte):
+        segment = self.segments[seg_idx]
+        end = segment.end
+        if start_byte > end:
+            segment.finished = True
+            segment.event.set()
+            return
+
+        headers = HEADERS.copy()
+        headers['Range'] = f'bytes={start_byte}-{end}'
+        
+        for attempt in range(3):
+            if self.stopped:
+                break
+            try:
+                r = self.session.get(self.url, headers=headers, timeout=15, stream=True)
+                if r.status_code in [200, 206]:
+                    for chunk in r.iter_content(262144): # 256KB buffer for maximum speed
+                        if self.stopped:
+                            r.close()
+                            return
+                        while len(segment.buffer) > 16777216 and not self.stopped: # Throttling at 16MB per segment
+                            time.sleep(0.02)
+                        if self.stopped:
+                            r.close()
+                            return
+                        with segment.lock:
+                            segment.buffer.extend(chunk)
+                            segment.downloaded_bytes += len(chunk)
+                        segment.event.set()
+                    
+                    segment.finished = True
+                    segment.event.set()
+                    r.close()
+                    break
+                r.close()
+            except Exception as e:
+                if self.stopped:
+                    break
+                time.sleep(0.5)
+                
+        segment.finished = True
+        segment.event.set()
+
+    def read(self, size):
+        while True:
+            if (self.total_size and self.pos >= self.total_size) or self.stopped:
+                return b''
+
+            if not self.total_size or self.total_size <= 0:
+                if not hasattr(self, 'fallback_stream'):
+                    self.fallback_stream = self.session.get(self.url, headers=HEADERS, stream=True, timeout=15)
+                    self.fallback_iterator = self.fallback_stream.iter_content(131072)
+                try:
+                    data = next(self.fallback_iterator)
+                    self.pos += len(data)
+                    return data
+                except StopIteration:
+                    return b''
+                except Exception as e:
+                    return b''
+
+            segment_size = self.total_size // self.num_segments
+            seg_idx = min(self.num_segments - 1, self.pos // segment_size)
+            segment = self.segments[seg_idx]
+
+            with segment.lock:
+                available = len(segment.buffer)
+
+            wait_start = time.time()
+            while available == 0 and not segment.finished and not self.stopped:
+                segment.event.wait(timeout=0.2)
+                with segment.lock:
+                    available = len(segment.buffer)
+                if time.time() - wait_start > 15:
+                    break
+
+            if self.stopped:
+                return b''
+
+            with segment.lock:
+                to_read = min(size, len(segment.buffer))
+                if to_read > 0:
+                    res = bytes(segment.buffer[:to_read])
+                    del segment.buffer[:to_read]
+                    self.pos += to_read
+                    return res
+
+            if segment.finished and len(segment.buffer) == 0:
+                # Segment finished and fully read, loop to read next segment
+                continue
+
+            return b''
+
+    def close(self):
+        self.stopped = True
+        if hasattr(self, 'segments'):
+            for segment in self.segments:
+                segment.event.set()
+        self.executor.shutdown(wait=False)
+        try:
+            self.session.close()
+        except:
+            pass
+        if hasattr(self, 'fallback_stream'):
+            try: self.fallback_stream.close()
+            except: pass
+
 class DriveRangeFile(HttpRangeFile):
     def __init__(self, file_id, access_token, size, fid=None):
         self.url = f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true'
@@ -1067,21 +1213,29 @@ def unified_stream(fid, fname):
         return resp
         
     elif ftype == 'swarm':
-        rf = SwarmRangeFile(fobj['url'], fid=fid)
-        ts = fobj.get('total') or rf.size
+        ts = fobj.get('total') or 0
         sb, eb = get_range_bounds(ts)
         hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'attachment; filename="{urllib.parse.quote(fname)}"', 'X-Accel-Buffering': 'no'}
         if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
         if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
+        
+        streamer = RAMSwarmStreamer(fobj['url'], ts, start_pos=sb)
         def gen_swarm():
-            rf.seek(sb); c = sb
-            while c <= eb:
-                with db_lock:
-                    if db.get(fid, {}).get('status') == 'Stopped': break
-                d = rf.read(min(STREAM_CHUNK_SIZE, eb - c + 1))
-                if not d: break
-                yield d; c += len(d)
-            rf.close()
+            nonlocal sb
+            try:
+                c = sb
+                while c <= eb:
+                    with db_lock:
+                        if db.get(fid, {}).get('status') == 'Stopped': break
+                    d = streamer.read(min(STREAM_CHUNK_SIZE, eb - c + 1))
+                    if not d: break
+                    yield d
+                    c += len(d)
+                    with db_lock:
+                        if fid in db:
+                            db[fid]['down'] = c
+            finally:
+                streamer.close()
         return Response(gen_swarm(), status=206 if rh else 200, headers=hdrs)
         
     elif ftype == 'ram':
