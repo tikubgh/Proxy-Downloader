@@ -296,6 +296,7 @@ shared_drive_cache = collections.OrderedDict(); shared_drive_lock = threading.Lo
 active_mount_streams = set(); DRIVE_CREDS_FILE = "/opt/media_engine_drive.json"; drive_creds_lock = threading.Lock()
 GOFILE_CREDS_FILE = "/opt/media_engine_gofile.json"; gofile_creds_lock = threading.Lock()
 gofile_files_cache = {}; gofile_cache_lock = threading.Lock()
+archive_mounts_cache = {}; archive_mounts_lock = threading.Lock()
 
 drive_api_session = requests.Session()
 _retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
@@ -639,7 +640,11 @@ def build_archive_data(rf, file_id=None, a_type='direct', url=None):
             for i in sz.list():
                 if not i.is_directory: _add(i.filename, i.uncompressed)
     else: raise Exception("Unsupported format.")
-    global_mounted_data = {'files': fs, 'type': a_type, 'mount_id': mid}; return global_mounted_data
+    mount_info = {'files': fs, 'type': a_type, 'mount_id': mid, 'bu': bu, 'created_at': time.time()}
+    with archive_mounts_lock:
+        archive_mounts_cache[bu] = mount_info
+    global_mounted_data = mount_info
+    return global_mounted_data
 
 @app.route('/api/direct_archive_list')
 def direct_archive_list():
@@ -772,7 +777,13 @@ def gofile_archive_list():
                 if f.get('type') == 'file':
                     dlink = f.get('link') or f.get('directLink')
                     if not dlink: continue
-                    gofile_files_cache[fid] = dlink
+                    gofile_files_cache[fid] = {
+                        'type': 'folder_file',
+                        'content_id': content_id,
+                        'gofile_fid': fid,
+                        'dlink': dlink,
+                        'updated_at': time.time()
+                    }
                     name = f.get('name', 'file')
                     size = int(f.get('size', 0))
                     files.append({
@@ -802,7 +813,11 @@ def gofile_register_direct():
         fname = "gofile_stream.mkv"
     fid = f"direct_{str(uuid.uuid4())[:8]}"
     with gofile_cache_lock:
-        gofile_files_cache[fid] = url
+        gofile_files_cache[fid] = {
+            'type': 'direct_link',
+            'url': url,
+            'updated_at': time.time()
+        }
     files = [{
         'name': fname,
         'size': 0,
@@ -825,8 +840,55 @@ def debug_proxies():
 @app.route('/gofile_stream/<file_id>/<path:fname>', methods=['GET', 'HEAD'])
 def gofile_stream(file_id, fname):
     with gofile_cache_lock:
-        dlink = gofile_files_cache.get(file_id)
-    if not dlink: return "File not found in cache. Please reload folder.", 404
+        entry = gofile_files_cache.get(file_id)
+    if not entry: return "File not found in cache. Please reload folder.", 404
+    
+    dlink = None
+    if isinstance(entry, dict) and entry.get('type') == 'folder_file':
+        now = time.time()
+        # Refresh Gofile link if it is older than 15 minutes (900 seconds)
+        if now - entry.get('updated_at', 0) > 900:
+            content_id = entry['content_id']
+            gofile_fid = entry['gofile_fid']
+            try:
+                t, is_guest = get_active_gofile_token()
+                if t:
+                    headers = {
+                        'User-Agent': SPOOF_AGENT,
+                        'Authorization': f'Bearer {t}',
+                        'X-Website-Token': generate_website_token(t, SPOOF_AGENT)
+                    }
+                    r = gofile_api_request("GET", f'https://api.gofile.io/contents/{content_id}', headers=headers)
+                    res = r.json()
+                    if res.get('status') == 'ok':
+                        contents = res.get('data', {}).get('contents', {})
+                        f = contents.get(gofile_fid, {})
+                        new_dlink = f.get('link') or f.get('directLink')
+                        if new_dlink:
+                            with gofile_cache_lock:
+                                # Refresh cache for all files in this response to prevent redundant API hits
+                                for fid, item in contents.items():
+                                    if item.get('type') == 'file':
+                                        dl = item.get('link') or item.get('directLink')
+                                        if dl:
+                                            gofile_files_cache[fid] = {
+                                                'type': 'folder_file',
+                                                'content_id': content_id,
+                                                'gofile_fid': fid,
+                                                'dlink': dl,
+                                                'updated_at': now
+                                            }
+                            dlink = new_dlink
+            except Exception as e:
+                print(f"Error auto-refreshing Gofile link: {e}")
+        if not dlink:
+            dlink = entry['dlink']
+    elif isinstance(entry, dict) and entry.get('type') == 'direct_link':
+        dlink = entry['url']
+    else:
+        dlink = entry if isinstance(entry, str) else None
+        
+    if not dlink: return "Gofile link expired or not found.", 404
     
     t, is_guest = get_active_gofile_token()
     headers = {'User-Agent': SPOOF_AGENT, 'Accept': '*/*', 'Connection': 'keep-alive'}
@@ -838,12 +900,12 @@ def gofile_stream(file_id, fname):
         cookies['accountToken'] = t
         headers['Cookie'] = f"accountToken={t}"
         
-    r = archive_session.get(dlink, headers=headers, cookies=cookies, stream=True, allow_redirects=True, timeout=15)
+    r = requests.get(dlink, headers=headers, cookies=cookies, stream=True, allow_redirects=True, timeout=(15, 86400))
     register_download_conn(file_id, r)
     
     def gen_gofile():
         try:
-            for ck in r.iter_content(65536):
+            for ck in r.iter_content(STREAM_CHUNK_SIZE):
                 yield ck
         finally:
             unregister_download_conn(file_id, r)
@@ -1074,10 +1136,15 @@ def unified_stream(fid, fname):
 
 @app.route('/<string:a_type>_archive_dl/<string:bu>/<string:b64_name>/<path:fname>', methods=['GET', 'HEAD'])
 def archive_stream(a_type, bu, b64_name, fname):
-    global global_mounted_data
-    if not global_mounted_data: return "404", 404
-    tf = next((x for x in global_mounted_data['files'] if x['b64'] == b64_name), None)
-    if not tf: return "404", 404
+    with archive_mounts_lock:
+        mount_info = archive_mounts_cache.get(bu)
+    if not mount_info:
+        if global_mounted_data and global_mounted_data.get('bu') == bu:
+            mount_info = global_mounted_data
+        else:
+            return "Archive mount not found or expired.", 404
+    tf = next((x for x in mount_info['files'] if x['b64'] == b64_name), None)
+    if not tf: return "File not found in archive mount.", 404
     rh, ts = request.headers.get('Range'), tf['size']
     sb, eb = 0, ts - 1 if ts else 0
     if rh and ts:
@@ -1596,6 +1663,24 @@ def cleaner():
                     del db[fid]
             if not db:
                 with shared_drive_lock: shared_drive_cache.clear()
+        try:
+            with gofile_cache_lock:
+                for fid in list(gofile_files_cache.keys()):
+                    entry = gofile_files_cache[fid]
+                    updated = entry.get('updated_at', 0) if isinstance(entry, dict) else 0
+                    if now - updated > 172800:
+                        del gofile_files_cache[fid]
+        except Exception as e:
+            print("Pruning Gofile cache failed:", e)
+        try:
+            with archive_mounts_lock:
+                for bu in list(archive_mounts_cache.keys()):
+                    entry = archive_mounts_cache[bu]
+                    created_at = entry.get('created_at', 0)
+                    if now - created_at > 172800:
+                        del archive_mounts_cache[bu]
+        except Exception as e:
+            print("Pruning Archive mounts cache failed:", e)
         gc.collect()
 threading.Thread(target=cleaner, daemon=True).start()
 
