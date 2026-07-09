@@ -34,6 +34,14 @@ sudo chmod -R 777 media_stack/downloads
 sudo touch /opt/media_engine_drive.json && sudo chmod 666 /opt/media_engine_drive.json
 sudo touch /opt/media_engine_gofile.json && sudo chmod 666 /opt/media_engine_gofile.json
 
+# 1.5. Clear package manager locks if unattended-upgrades is active
+echo -e "${YELLOW}⚡ Safely clearing package manager locks (unattended-upgrades)...${NC}"
+sudo systemctl stop unattended-upgrades 2>/dev/null || true
+sudo systemctl disable unattended-upgrades 2>/dev/null || true
+sudo fuser -k -9 /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock &>/dev/null || true
+sudo rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock 2>/dev/null || true
+sudo dpkg --configure -a || true
+
 # 2. Host Tools & Docker Direct Installation
 echo -e "${YELLOW}📦 Installing host tools & Docker environment...${NC}"
 sudo apt-get update -y
@@ -1895,6 +1903,60 @@ def drive_token_refresher():
         try: get_drive_auth()
         except Exception as e: print("Token Refresher Thread Safe Catch:", e)
 threading.Thread(target=drive_token_refresher, daemon=True).start()
+
+@app.route('/files/')
+@app.route('/files/<path:req_path>')
+def list_files(req_path=''):
+    headers = {'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0'}
+    auth_token = request.args.get('auth') or request.cookies.get('dash_auth')
+    if auth_token != DASH_PASS:
+        return Response(render_template_string(LOGIN_HTML), mimetype='text/html', headers=headers)
+        
+    abs_path = os.path.normpath(os.path.join(DL_DIR, req_path))
+    if not abs_path.startswith(DL_DIR):
+        return "Access Denied", 403
+        
+    if request.args.get('action') == 'delete':
+        if os.path.exists(abs_path):
+            try:
+                if os.path.isdir(abs_path):
+                    shutil.rmtree(abs_path)
+                else:
+                    os.remove(abs_path)
+            except Exception as e:
+                return f"Delete failed: {str(e)}", 500
+        parent = os.path.dirname(req_path.rstrip('/'))
+        parent_url = f"/files/{parent}" if parent else "/files/"
+        return render_template_string(f"<script>window.location.href = '{parent_url}'</script>")
+
+    if not os.path.exists(abs_path):
+        return "File Not Found", 404
+        
+    if os.path.isdir(abs_path):
+        items = os.listdir(abs_path)
+        html = """<!DOCTYPE html><html><head><title>Downloads Browser</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;padding:20px;max-width:850px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}a{color:#00b3ff;text-decoration:none;font-weight:600}a:hover{text-decoration:underline}.item{padding:14px;border-bottom:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center;background:#14171f;margin-bottom:8px;border-radius:8px;border:1px solid #2d3748}.btn-group{display:flex;gap:8px}.btn{padding:8px 14px;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:14px;transition:0.2s}.btn-blue{background:#00b3ff;color:#000}.btn-blue:hover{opacity:.8}.btn-red{background:transparent;border:1px solid #ef4444;color:#ef4444}.btn-red:hover{background:#ef4444;color:#fff}</style></head><body><h2><span>📁 Downloads Directory</span><a href="/" style="font-size:14px;color:#888;font-weight:normal">↩ Back to Dashboard</a></h2><div style="margin-bottom:15px;font-size:14px;color:#888"><a href="/files/?auth=""" + DASH_PASS + """">Root</a> / """ + req_path + """</div><div>"""
+        if req_path:
+            parent = os.path.dirname(req_path.rstrip('/'))
+            parent_link = f"/files/{parent}?auth={DASH_PASS}" if parent else f"/files/?auth={DASH_PASS}"
+            html += f'<div class="item"><span>📁 <a href="{parent_link}">.. (Parent Directory)</a></span><span></span></div>'
+        for item in sorted(items):
+            item_path = os.path.join(abs_path, item)
+            rel_path = os.path.join(req_path, item).replace('\\', '/')
+            if os.path.isdir(item_path):
+                html += f'''<div class="item"><span>📁 <a href="/files/{rel_path}?auth={DASH_PASS}">{item}/</a></span><button class="btn btn-red" onclick="if(confirm('Delete folder {item} and all its contents?')) window.location.href='/files/{rel_path}?action=delete'">Delete</button></div>'''
+            else:
+                sz = fmt_bytes(os.path.getsize(item_path))
+                dl_link = f"/files/{rel_path}"
+                html += f'''<div class="item"><span>📄 <a href="{dl_link}?auth={DASH_PASS}">{item}</a> ({sz})</span><div class="btn-group"><button class="btn btn-blue" onclick="navigator.clipboard.writeText(window.location.origin+\'{dl_link}?auth={DASH_PASS}\');alert(\'Copied stream link!\')">Copy Link</button><button class="btn btn-red" onclick="if(confirm('Delete file {item}?')) window.location.href='/files/{rel_path}?action=delete'">Delete</button></div></div>'''
+        html += "</div></body></html>"
+        return render_template_string(html)
+        
+    fn = os.path.relpath(abs_path, DL_DIR).replace('\\', '/')
+    resp = Response(status=200)
+    resp.headers['X-Accel-Redirect'] = f'/downloads_internal/{fn}'
+    resp.headers['Content-Type'] = mimetypes.guess_type(abs_path)[0] or 'application/octet-stream'
+    resp.headers['Content-Disposition'] = f'attachment; filename="{urllib.parse.quote(os.path.basename(abs_path))}"'
+    return resp
 
 if __name__ == '__main__':
     from waitress import serve
