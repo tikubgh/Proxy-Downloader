@@ -323,7 +323,7 @@ p2p_streams = {}; disk_streams = {}
 
 def fmt_bytes(b): return f"{b/(1024**3):.2f} GB" if b >= 1024**3 else f"{b/(1024**2):.2f} MB" if b >= 1024**2 else f"{b/1024:.2f} KB"
 def extract_drive_id(url):
-    m = re.search(r'/file/d/([a-zA-Z0-9_-]+)', url) or re.search(r'id=([a-zA-Z0-9_-]+)', url)
+    m = re.search(r'/(?:file/d|folders)/([a-zA-Z0-9_-]+)', url) or re.search(r'id=([a-zA-Z0-9_-]+)', url)
     return m.group(1) if m else None
 
 def get_drive_auth():
@@ -1058,6 +1058,30 @@ def gofile_stream(file_id, fname):
             r.close()
             
     resp = Response(gen_gofile(), status=r.status_code)
+    for k, v in r.headers.items():
+        if k.lower() in ['content-length', 'content-range', 'accept-ranges']: resp.headers[k] = v
+    resp.headers['Content-Type'] = 'application/octet-stream'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    resp.headers['Content-Disposition'] = f'attachment; filename="{urllib.parse.quote(fname)}"'
+    return resp
+
+@app.route('/drive_folder_dl/<file_id>/<path:fname>', methods=['GET', 'HEAD'])
+def drive_folder_dl(file_id, fname):
+    token, err = get_drive_auth()
+    if err: return "Auth Error", 403
+    headers = {'Authorization': f'Bearer {token}', 'User-Agent': SPOOF_AGENT}
+    rh = request.headers.get('Range')
+    if rh: headers['Range'] = rh
+    r = drive_api_session.get(f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true', headers=headers, stream=True, allow_redirects=True, timeout=15)
+    register_download_conn(file_id, r)
+    def gen_drive():
+        try:
+            for ck in r.iter_content(STREAM_CHUNK_SIZE):
+                yield ck
+        finally:
+            unregister_download_conn(file_id, r)
+            r.close()
+    resp = Response(gen_drive(), status=r.status_code)
     for k, v in r.headers.items():
         if k.lower() in ['content-length', 'content-range', 'accept-ranges']: resp.headers[k] = v
     resp.headers['Content-Type'] = 'application/octet-stream'
