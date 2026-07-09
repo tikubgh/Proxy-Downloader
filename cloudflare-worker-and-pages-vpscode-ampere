@@ -1260,11 +1260,11 @@ def unified_stream(fid, fname):
         
     else:
         fp, ts = fobj.get('path'), fobj.get('total', 0)
-        if not fp or not os.path.exists(fp): return "404", 404
+        if not fp: return "404", 404
         sb, eb = get_range_bounds(ts)
         
         # Static Redirect if complete
-        if fobj.get('status') == 'Completed':
+        if fobj.get('status') == 'Completed' and os.path.exists(fp):
             fn = os.path.basename(fp)
             resp = Response(status=200)
             resp.headers['X-Accel-Redirect'] = f'/downloads_internal/{fn}'
@@ -1277,15 +1277,37 @@ def unified_stream(fid, fname):
         if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
         
         def gen_local():
-            with open(fp, 'rb') as lf:
-                lf.seek(sb); c = sb
-                while c <= eb:
-                    d = lf.read(min(STREAM_CHUNK_SIZE, eb - c + 1))
-                    if not d:
-                        with db_lock:
-                            if db.get(fid, {}).get('status') in ['Completed', 'Stopped', 'Error: Incomplete']: break
-                        time.sleep(0.5); continue
-                    yield d; c += len(d)
+            c = sb
+            end_bound = eb if ts else (2**63 - 1)
+            with db_lock:
+                initial_dl = db.get(fid, {}).get('down', 0) if fid in db else 0
+            should_block_on_catchup = (sb < initial_dl) or (sb == 0)
+
+            while c <= end_bound:
+                with db_lock:
+                    dl_pos = db.get(fid, {}).get('down', 0) if fid in db else 0
+                    status = db.get(fid, {}).get('status', 'Stopped') if fid in db else 'Stopped'
+                if status in ['Stopped', 'Error: Connection Refused by Host', 'Error: Incomplete'] and not os.path.exists(fp):
+                    break
+                if c >= dl_pos:
+                    if status in ['Completed', 'Stopped', 'Error: Connection Refused by Host', 'Error: Incomplete']:
+                        break
+                    if should_block_on_catchup:
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        break
+                try:
+                    with open(fp, 'rb') as lf:
+                        lf.seek(c)
+                        d = lf.read(min(STREAM_CHUNK_SIZE, min(end_bound - c + 1, dl_pos - c)))
+                    if d:
+                        yield d
+                        c += len(d)
+                    else:
+                        time.sleep(0.5)
+                except:
+                    time.sleep(0.5)
         return Response(gen_local(), status=206 if rh else 200, headers=hdrs)
 
 @app.route('/<string:a_type>_archive_dl/<string:bu>/<string:b64_name>/<path:fname>', methods=['GET', 'HEAD'])
@@ -1436,12 +1458,17 @@ def worker_core(fid, mode):
                     r = s.get(u, stream=True, headers=h, timeout=30, allow_redirects=True); r.raise_for_status()
                     register_download_conn(fid, r)
                     try:
+                        if dl == 0 and tot > 0:
+                            try: open(p, 'wb').truncate(tot)
+                            except: pass
                         if dl > 0 and r.status_code != 206: dl = 0; db[fid]['down'] = 0
-                        with open(p, 'ab' if dl > 0 else 'wb') as f:
+                        with open(p, 'r+b' if tot > 0 else ('ab' if dl > 0 else 'wb')) as f:
+                            if tot > 0:
+                                f.seek(dl)
                             for c in r.iter_content(1048576):
                                 with db_lock:
                                     if fid not in db or db[fid].get('status') == 'Stopped': break
-                                if c: f.write(c); db[fid]['down'] += len(c)
+                                if c: f.write(c); f.flush(); db[fid]['down'] += len(c)
                     finally:
                         unregister_download_conn(fid, r)
                         r.close(); s.close()
