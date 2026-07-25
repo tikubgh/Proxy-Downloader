@@ -78,8 +78,13 @@ if [ -z "$DASH_PASS" ]; then
     DASH_PASS=$(gen_pw)
     echo -e "${YELLOW}🔑 Generated random Dashboard password: ${GREEN}$DASH_PASS${NC}"
 fi
+if [ -z "$DELETE_KEY_PASS" ]; then
+    DELETE_KEY_PASS=$(gen_pw)
+    echo -e "${YELLOW}🔑 Generated random Vault Keys Delete password: ${GREEN}$DELETE_KEY_PASS${NC}"
+fi
 cat > .env << ENVEOF
 DASH_PASS=$DASH_PASS
+DELETE_KEY_PASS=$DELETE_KEY_PASS
 RDP_PASS=$(gen_pw)
 VPN_PASS=$(gen_pw)
 VPN_PORT=8443
@@ -99,7 +104,7 @@ services:
   engine:
     build: ./engine
     volumes: ['./downloads:/downloads', '/opt/media_engine_drive.json:/opt/media_engine_drive.json', '/opt/media_engine_gofile.json:/opt/media_engine_gofile.json']
-    environment: ['DASH_PASS=${DASH_PASS}']
+    environment: ['DASH_PASS=${DASH_PASS}', 'DELETE_KEY_PASS=${DELETE_KEY_PASS}']
     restart: unless-stopped
     mem_limit: 2500m
     networks: [media_net]
@@ -328,7 +333,11 @@ _retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 5
 _api_adapter = HTTPAdapter(max_retries=_retry_strategy, pool_connections=16, pool_maxsize=16)
 drive_api_session.mount("https://", _api_adapter); drive_api_session.mount("http://", _api_adapter)
 
-DASH_PASS = os.environ.get('DASH_PASS', 'admin'); P2P_CHUNK_SIZE = 1048576; STREAM_CHUNK_SIZE = 2097152
+stream_session = requests.Session()
+_stream_adapter = HTTPAdapter(pool_connections=128, pool_maxsize=128, max_retries=3)
+stream_session.mount("https://", _stream_adapter); stream_session.mount("http://", _stream_adapter)
+
+DASH_PASS = os.environ.get('DASH_PASS', 'admin'); DELETE_KEY_PASS = os.environ.get('DELETE_KEY_PASS', ''); P2P_CHUNK_SIZE = 1048576; STREAM_CHUNK_SIZE = 2097152
 SPOOF_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 HEADERS = {'User-Agent': SPOOF_AGENT, 'Accept': '*/*', 'Connection': 'keep-alive', 'Accept-Encoding': 'identity'}
 sys_data = {"cpu": "Booting...", "ram": "Booting...", "swap": "Booting...", "disk": "Booting...", "net": "Booting..."}; net_p = None; net_pt = time.time()
@@ -481,107 +490,115 @@ def generate_website_token(token, user_agent=SPOOF_AGENT):
 
 class HttpRangeFile:
     def __init__(self, url, fid=None):
-        self.url = url; self.headers = HEADERS.copy(); self.pos = 0; self.chunk_size = 4194304; self.file_id = hashlib.md5(self.url.encode()).hexdigest(); self.fid = fid
+        self.url = url
+        self.headers = HEADERS.copy()
+        self.pos = 0
+        self.chunk_size = 2097152
+        self.file_id = hashlib.md5(self.url.encode()).hexdigest()
+        self.fid = fid
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=16)
         try:
-            r = archive_session.head(url, headers=self.headers, allow_redirects=True, timeout=15)
-            cl = r.headers.get('Content-Length')
+            r = stream_session.head(url, headers=self.headers, allow_redirects=True, timeout=15)
+            cl = r.headers.get('Content-Length') or r.headers.get('content-length')
             if not cl:
-                r = archive_session.get(url, headers=self.headers, stream=True, allow_redirects=True, timeout=15)
-                cl = r.headers.get('Content-Length', 0); self.url = r.url; r.close()
-            else: self.url = r.url
+                r = stream_session.get(url, headers=self.headers, stream=True, allow_redirects=True, timeout=15)
+                cl = r.headers.get('Content-Length', 0)
+                self.url = r.url
+                r.close()
+            else:
+                self.url = r.url
             self.size = int(cl)
-        except: self.size = 0
-    def _get_chunk(self, chunk_idx):
+        except Exception as e:
+            print("HttpRangeFile init error:", e)
+            self.size = 0
+
+    def _fetch_single_chunk(self, chunk_idx):
         ck = f"http_{self.file_id}_{chunk_idx}"
         with shared_drive_lock:
-            if ck in shared_drive_cache: shared_drive_cache.move_to_end(ck); return shared_drive_cache[ck]
-        start = chunk_idx * self.chunk_size; end = min(start + self.chunk_size - 1, self.size - 1)
-        if start >= self.size: return b''
-        h = self.headers.copy(); h['Range'] = f'bytes={start}-{end}'
+            if ck in shared_drive_cache:
+                shared_drive_cache.move_to_end(ck)
+                return shared_drive_cache[ck]
+        start = chunk_idx * self.chunk_size
+        end = min(start + self.chunk_size - 1, self.size - 1) if self.size > 0 else start + self.chunk_size - 1
+        if self.size > 0 and start >= self.size:
+            return b''
+        h = self.headers.copy()
+        h['Range'] = f'bytes={start}-{end}'
         if self.fid:
             with db_lock:
-                if self.fid not in db or db[self.fid].get('status') == 'Stopped': return b''
+                if self.fid not in db or db[self.fid].get('status') == 'Stopped':
+                    return b''
+        data = b''
         try:
-            r = archive_session.get(self.url, headers=h, timeout=10, stream=True)
-            if self.fid: register_download_conn(self.fid, r)
+            r = stream_session.get(self.url, headers=h, timeout=15, stream=True)
+            if self.fid:
+                register_download_conn(self.fid, r)
             try:
                 if r.status_code in [200, 206]:
                     blocks = []
-                    for chunk in r.iter_content(65536):
+                    for chunk in r.iter_content(131072):
                         blocks.append(chunk)
                     data = b''.join(blocks)
-                else:
-                    data = b''
             finally:
-                if self.fid: unregister_download_conn(self.fid, r)
+                if self.fid:
+                    unregister_download_conn(self.fid, r)
                 r.close()
-        except: data = b''
+        except Exception as e:
+            print("Chunk fetch error:", e)
+            data = b''
         with shared_drive_lock:
             shared_drive_cache[ck] = data
-            while len(shared_drive_cache) > 16: shared_drive_cache.popitem(last=False)
+            while len(shared_drive_cache) > 128:
+                shared_drive_cache.popitem(last=False)
         return data
+
+    def _get_chunk(self, chunk_idx):
+        for next_i in range(chunk_idx + 1, chunk_idx + 9):
+            nck = f"http_{self.file_id}_{next_i}"
+            with shared_drive_lock:
+                already_cached = nck in shared_drive_cache
+            if not already_cached and (self.size == 0 or next_i * self.chunk_size < self.size):
+                self.executor.submit(self._fetch_single_chunk, next_i)
+
+        return self._fetch_single_chunk(chunk_idx)
+
     def read(self, size=-1):
-        if self.pos >= self.size: return b''
-        if size < 0 or self.pos + size > self.size: size = self.size - self.pos
+        if self.size > 0 and self.pos >= self.size:
+            return b''
+        if size < 0 or (self.size > 0 and self.pos + size > self.size):
+            size = (self.size - self.pos) if self.size > 0 else 2097152
         res = bytearray()
-        while size > 0 and self.pos < self.size:
-            c_idx, c_off = self.pos // self.chunk_size, self.pos % self.chunk_size
+        while size > 0:
+            if self.size > 0 and self.pos >= self.size:
+                break
+            c_idx = self.pos // self.chunk_size
+            c_off = self.pos % self.chunk_size
             c_data = self._get_chunk(c_idx)
-            if not c_data: break
-            t = min(size, len(c_data) - c_off); res.extend(c_data[c_off:c_off+t]); self.pos += t; size -= t
+            if not c_data:
+                break
+            avail = len(c_data) - c_off
+            if avail <= 0:
+                break
+            t = min(size, avail)
+            res.extend(c_data[c_off : c_off + t])
+            self.pos += t
+            size -= t
         return bytes(res)
+
     def seek(self, offset, whence=0):
         if whence == 0: self.pos = offset
         elif whence == 1: self.pos += offset
-        elif whence == 2: self.pos = self.size + offset
-        self.pos = max(0, min(self.pos, self.size)); return self.pos
+        elif whence == 2: self.pos = (self.size + offset) if self.size > 0 else offset
+        if self.size > 0:
+            self.pos = max(0, min(self.pos, self.size))
+        else:
+            self.pos = max(0, self.pos)
+        return self.pos
+
     def tell(self): return self.pos
     def seekable(self): return True
     def readable(self): return True
     def writable(self): return False
-    def close(self): pass
-
-class SwarmRangeFile(HttpRangeFile):
-    def __init__(self, url, fid=None):
-        super().__init__(url, fid)
-        self.chunk_size = 16777216 
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=16)
-        self.file_id = hashlib.md5(f"sw_{self.url}".encode()).hexdigest()
-    def _get_chunk(self, chunk_idx):
-        ck = f"sw_{self.file_id}_{chunk_idx}"
-        with shared_drive_lock:
-            if ck in shared_drive_cache: shared_drive_cache.move_to_end(ck); return shared_drive_cache[ck]
-        start = chunk_idx * self.chunk_size; end = min(start + self.chunk_size - 1, self.size - 1)
-        if start >= self.size: return b''
-        part_size = 1048576
-        def fetch_part(p_idx):
-            p_start, p_end = start + p_idx * part_size, min(start + p_idx * part_size + part_size - 1, end)
-            if p_start > end: return b''
-            h = self.headers.copy(); h['Range'] = f'bytes={p_start}-{p_end}'
-            for _ in range(3):
-                if self.fid:
-                    with db_lock:
-                        if self.fid not in db or db[self.fid].get('status') == 'Stopped': return b''
-                try:
-                    r = archive_session.get(self.url, headers=h, timeout=10, stream=True)
-                    if self.fid: register_download_conn(self.fid, r)
-                    try:
-                        if r.status_code in [200, 206]:
-                            blocks = []
-                            for chunk in r.iter_content(65536):
-                                blocks.append(chunk)
-                            return b''.join(blocks)
-                    finally:
-                        if self.fid: unregister_download_conn(self.fid, r)
-                        r.close()
-                except: time.sleep(0.5)
-            return b''
-        parts_count = (end - start + part_size) // part_size
-        data = b''.join(list(self.executor.map(fetch_part, range(parts_count))))
-        with shared_drive_lock:
-            shared_drive_cache[ck] = data
-            while len(shared_drive_cache) > 32: shared_drive_cache.popitem(last=False)
-        return data
     def close(self):
         if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
 
@@ -767,7 +784,7 @@ class DriveRangeFile(HttpRangeFile):
         return data
 
 LOGIN_HTML = r"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Restricted Area</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#14171f;padding:40px;border-radius:12px;border:1px solid #2d3748;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5);width:100%;max-width:350px}input{padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;margin-bottom:20px;width:100%;box-sizing:border-box;font-size:16px;outline:none;text-align:center}input:focus{border-color:#00b3ff}button{padding:15px;background:#00b3ff;border:none;color:#fff;border-radius:8px;cursor:pointer;width:100%;font-size:16px;font-weight:bold;transition:0.2s}button:hover{background:#0099cc}h2{margin-top:0;margin-bottom:25px}</style></head><body><div class="box"><h2>🔒 Secure Engine Master</h2><form onsubmit="event.preventDefault(); document.cookie='dash_auth='+encodeURIComponent(document.getElementById('pw').value)+'; path=/; max-age=2592000'; window.location.reload();"><input type="password" id="pw" placeholder="Enter Password" autofocus required><button type="submit">Unlock Dashboard</button></form></div></body></html>"""
-HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engine Dashboard</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--drive:#10b981;--gofile:#ff7675}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:.3s}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:700;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px}input,select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;transition:.2s;white-space:nowrap}button:hover{opacity:.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748}.monitor-value{font-size:15px;font-weight:700;margin-top:8px;color:var(--accent);white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.file-name{font-weight:700;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333}</style></head><body><h2><span>🚀 Unified 7-Engine Master</span><span style="font-size:14px;color:#888">Port 80 <span class="status-dot" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success)"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram)">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--warn)">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success)">--</div></div><div class="monitor-card network-card"><div>Network Traffic (WAN)</div><div class="monitor-value" id="net" style="color:var(--success)">--</div></div></div><div class="engine-box" style="border-color:#10b981"><div class="engine-title"><span style="color:#10b981">📡 Engine 5: Direct Transfer (P2P RAM & Disk Relay)</span></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 1: Direct P2P</div><input type="file" id="file_p2p" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('p2p')" style="background:#10b981;color:#000">Generate P2P Link</button></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 2: Disk Buffered</div><input type="file" id="file_disk_relay" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('disk_relay')" style="background:#059669;color:#fff">Generate Disk Link</button></div><div class="input-group" style="margin-bottom:0"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 3: Direct Folder Upload</div><input type="file" id="file_folder" webkitdirectory directory multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('folder')" style="background:#047857;color:#fff">Upload Folder</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--purple)">💿 Engine 1: Disk Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple)">Send to Disk</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--ram)">⚡ Engine 2: RAM Proxy & Direct Archive Extractor</span></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_ram" placeholder="Box 1: Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000">Start RAM Proxy</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_direct_zip" placeholder="Box 2: Direct Link to ZIP, RAR, 7z..."><button onclick="listDirectArchive()" style="background:var(--ram);color:#000">Stream Contents</button></div><div id="direct_zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--ram)"></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--multi)">🚀 Engine 3: Hyper-Thread Swarm Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_multi" placeholder="Paste link to swarm directly to VPS disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000">Swarm Download</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--swarm)">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_swarm" placeholder="Box 1: Paste throttled link to aggregate..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff">Initialize Swarm</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_swarm_zip" placeholder="Box 2: Direct Link to ZIP, RAR, MKV etc..."><button onclick="listSwarmArchive()" style="background:var(--swarm);color:#fff">Swarm Stream</button></div><div id="swarm_zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--swarm)"></div></div><div class="engine-box" style="border-color:var(--drive)"><div class="engine-title"><span style="color:var(--drive)">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px"></span></div><div id="drive_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"><span id="drive_email" style="color:var(--success);font-weight:700;flex:1">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload to Drive..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000">Swarm Upload</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to Drive Folder, ZIP, RAR..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000">Stream Contents</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000">Generate Link</button></div><div id="zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"></div></div><div class="engine-box" style="border-color:var(--gofile)"><div class="engine-title"><span style="color:var(--gofile)">📂 Engine 7: Gofile.io vlc streaming & downloader</span> <span class="status-dot" id="gofile_dot" style="margin-left:10px"></span></div><div id="gofile_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="password" id="gofile_token" placeholder="🔑 Gofile Account Token..."></div><button onclick="connectGofile()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="gofile_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--gofile)"><span id="gofile_info" style="color:var(--gofile);font-weight:700;flex:1">✅ Server Vault Active. Connected to Gofile.</span><button onclick="disconnectGofile()" class="btn-red">Delete Token</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_gofile" placeholder="Paste Gofile Link (e.g. https://server.gofile.io/download/web/directory/filename.mkv)..."><button onclick="listGofileArchive()" style="background:var(--gofile);color:#000">Stream Contents</button></div><div id="gofile_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--gofile)"></div></div><div class="file-grid" id="files" style="margin-top:20px"></div><script>function checkDriveStatus(){fetch("/api/drive/status").then(e=>e.json()).then(e=>{e.connected?(document.getElementById("drive_dot").style.background="var(--success)",document.getElementById("drive_auth_panel").style.display="none",document.getElementById("drive_connected_panel").style.display="flex",document.getElementById("drive_email").innerText="✅ Drive Active | 💾 "+(e.info||"")):(document.getElementById("drive_dot").style.background="var(--danger)",document.getElementById("drive_auth_panel").style.display="flex",document.getElementById("drive_connected_panel").style.display="none")})}function connectDrive(){let e=document.getElementById("drive_cid").value,t=document.getElementById("drive_csec").value,l=document.getElementById("drive_rt").value;if(!e||!t||!l)return alert("All keys required!");fetch("/api/drive/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({client_id:e,client_secret:t,refresh_token:l})}).then(e=>e.json()).then(e=>{e.success?checkDriveStatus():alert("Failed: "+e.error)})}function disconnectDrive(){fetch("/api/drive/disconnect",{method:"POST"}).then(()=>checkDriveStatus())}function checkGofileStatus(){fetch("/api/gofile/status?_t="+Date.now()).then(e=>e.json()).then(e=>{e.connected?(document.getElementById("gofile_dot").style.background="var(--success)",document.getElementById("gofile_auth_panel").style.display="none",document.getElementById("gofile_connected_panel").style.display="flex"):(document.getElementById("gofile_dot").style.background="var(--danger)",document.getElementById("gofile_auth_panel").style.display="flex",document.getElementById("gofile_connected_panel").style.display="none")}).catch(err=>console.error("Gofile status check failed:",err))}function connectGofile(){let e=document.getElementById("gofile_token").value;if(!e)return alert("Token required!");fetch("/api/gofile/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:e})}).then(e=>e.json()).then(e=>{if(e.success)checkGofileStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Connect failed: "+err))}function disconnectGofile(){fetch("/api/gofile/disconnect",{method:"POST"}).then(e=>e.json()).then(e=>{if(e.success)checkGofileStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Disconnect failed: "+err))}async function listGofileArchive(){let e=document.getElementById("url_gofile").value;if(e){let t=document.getElementById("gofile_contents");t.style.display="block";t.innerHTML='Loading...';let isDirect=e.includes("gofile.io/download/")||e.includes("store-")||e.includes("/download/web/");let apiEndpoint=isDirect?"/api/gofile_register_direct":"/api/gofile_archive_list";let l=await fetch(apiEndpoint+"?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"gofile_contents")}else alert("No URL!")}function renderArchiveBox(e,t){let l=document.getElementById(t),d=t==="zip_contents"?"url_drive_zip":t==="swarm_zip_contents"?"url_swarm_zip":t==="gofile_contents"?"url_gofile":"url_direct_zip",n=e.mount_id||"none";let i=`<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #333"><button onclick="clearMountedArchive('${t}','${d}')" class="btn-red">Clear Mount</button></div>`;e.files.forEach(s=>{let c=window.location.origin+s.url,u=encodeURIComponent(s.name);i+=`<div class="zip-item">📄 ${s.name} <div style="display:flex;gap:5px"><input type="text" id="zl_${s.b64}" value="${c}" readonly onclick="this.select()"><button onclick="copyToBox('zl_${s.b64}')" style="background:var(--accent);color:#fff">Copy</button></div></div>`});l.innerHTML=i;l.style.display="block"}async function listDirectArchive(){let e=document.getElementById("url_direct_zip").value;if(e){let t=document.getElementById("direct_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/direct_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"direct_zip_contents")}}async function listSwarmArchive(){let e=document.getElementById("url_swarm_zip").value;if(e){let t=document.getElementById("swarm_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/swarm_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"swarm_zip_contents")}}async function listDriveArchive(){let e=document.getElementById("url_drive_zip").value;if(e){let t=document.getElementById("zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/drive_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"zip_contents")}else alert("No URL!")}function clearMountedArchive(e,t){fetch("/api/clear_archive_mount",{method:"POST"}).then(()=>{document.getElementById(e).style.display="none";document.getElementById(t).value=""})}function addFile(e){let t=document.getElementById("url_"+e).value;if(t){document.getElementById("url_"+e).value="";fetch("/api/add?type="+e+"&url="+encodeURIComponent(t))}}async function initUpload(e){let t=document.getElementById("file_"+e),l=t.files;if(0===l.length)return;for(let d=0;d<l.length;d++){let n=l[d],rp=n.webkitRelativePath||n.name;let o=await fetch("/api/upload_init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:e,name:n.name,size:n.size,relative_path:rp})}),a=await o.json();startGbpsP2P(a.fid,n,true)}t.value=""}async function startGbpsP2P(e,t,l){let n=1048576,o=Math.ceil(t.size/n),a=[],i=new Set,s=true,r=0;async function c(){while(s){let u=await fetch("/api/p2p_poll/"+e);if(!u.ok){s=false;break}let m=await u.json();for(let g of m)if(!i.has(g)&&!a.includes(g))a.push(g);await new Promise(k=>setTimeout(k,1000))}}async function v(){while(s){let E=-1;if(a.length>0)E=a.shift();else if(l&&r<o){while(i.has(r)&&r<o)r++;if(r<o)E=r++}if(E!==-1){i.add(E);let w=E*n,S=Math.min(w+n,t.size),C=t.slice(w,S);for(let x=0;x<3;x++){let L=await fetch(`/api/p2p_up/${e}/${E}`,{method:"POST",body:C});if(L.ok)break;await new Promise(I=>setTimeout(I,500))}i.delete(E)}else await new Promise(T=>setTimeout(T,200))}}c();for(let q=0;q<8;q++)v()}function copyToBox(e){let t=document.getElementById(e);t.select();document.execCommand("copy");alert("Copied!")}function triggerAction(e,t){fetch("/api/action/"+e+"/"+t)}checkDriveStatus();checkGofileStatus();fetch("/api/get_archive_mount").then(e=>e.json()).then(e=>{if(e.mounted&&e.data){let t=e.data.type==="direct"?"direct_zip_contents":e.data.type==="swarm"?"swarm_zip_contents":(e.data.type==="drive"||e.data.type==="drive_folder")?"zip_contents":e.data.type==="gofile_folder"?"gofile_contents":"";if(t)renderArchiveBox(e.data,t)}});setInterval(checkDriveStatus,60000);setInterval(checkGofileStatus,60000);setInterval(()=>{fetch("/api/data").then(e=>e.json()).then(e=>{document.getElementById("cpu").innerText=e.sys.cpu;document.getElementById("ram").innerText=e.sys.ram;document.getElementById("swap").innerText=e.sys.swap;document.getElementById("disk").innerText=e.sys.disk;document.getElementById("net").innerText=e.sys.net;let t="";let now=Date.now();if(!window.sp)window.sp={};e.files.forEach(d=>{let stx="";let downMB=(d.down/1048576).toFixed(2);let totMB=d.total?(d.total/1048576).toFixed(2):"∞";if(d.total>0&&d.down<d.total){if(!window.sp[d.id])window.sp[d.id]={d:d.down,t:now,s:0};let dd=d.down-window.sp[d.id].d,dt=(now-window.sp[d.id].t)/1e3;if(dt>=1){window.sp[d.id].s=dd>0?dd/dt/1048576:0;window.sp[d.id].d=d.down;window.sp[d.id].t=now}if(window.sp[d.id].s>0)stx=" ⚡ "+window.sp[d.id].s.toFixed(1)+" MB/s"}let th=d.active_threads>0?` <span style="color:#06b6d4">[${d.active_threads} Threads]</span>`:"";let m=d.total?Math.min(100,Math.round((d.down/d.total)*100))+"%":"Live";let f=d.total?`<progress value="${d.down}" max="${d.total}"></progress>`:"";let u=encodeURIComponent(d.name);let y=window.location.origin+"/stream/"+d.id+"/"+u;t+=`<div class="file-card"><div class="file-name">[${d.type.toUpperCase()}] ${d.name}</div><div class="file-status">${d.status} - ${m} (${downMB} MB / ${totMB} MB)${stx}${th}</div>${f}<div class="link-box"><input type="text" id="l_${d.id}" value="${y}" readonly onclick="this.select()"><button onclick="copyToBox('l_${d.id}')">Copy</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${d.id}','stop')">Abort</button></div></div>`});document.getElementById("files").innerHTML=t||'<div style="color:#555">No active tasks.</div>'})},1000)</script></body></html>"""
+HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engine Dashboard</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--drive:#10b981;--gofile:#ff7675}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:.3s}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:700;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px}input,select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;transition:.2s;white-space:nowrap}button:hover{opacity:.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748}.monitor-value{font-size:15px;font-weight:700;margin-top:8px;color:var(--accent);white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.file-name{font-weight:700;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333}</style></head><body><h2><span>🚀 Unified 7-Engine Master</span><span style="font-size:14px;color:#888">Port 80 <span class="status-dot" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success)"></span></span></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram)">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--warn)">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success)">--</div></div><div class="monitor-card network-card"><div>Network Traffic (WAN)</div><div class="monitor-value" id="net" style="color:var(--success)">--</div></div></div><div class="engine-box" style="border-color:#10b981"><div class="engine-title"><span style="color:#10b981">📡 Engine 5: Direct Transfer (P2P RAM & Disk Relay)</span></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 1: Direct P2P</div><input type="file" id="file_p2p" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('p2p')" style="background:#10b981;color:#000">Generate P2P Link</button></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 2: Disk Buffered</div><input type="file" id="file_disk_relay" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('disk_relay')" style="background:#059669;color:#fff">Generate Disk Link</button></div><div class="input-group" style="margin-bottom:0"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 3: Direct Folder Upload</div><input type="file" id="file_folder" webkitdirectory directory multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('folder')" style="background:#047857;color:#fff">Upload Folder</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--purple)">💿 Engine 1: Disk Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple)">Send to Disk</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--ram)">⚡ Engine 2: Pure RAM Proxy</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000">Start RAM Proxy</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--multi)">🚀 Engine 3: Hyper-Thread Swarm Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_multi" placeholder="Paste link to swarm directly to VPS disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000">Swarm Download</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--swarm)">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_swarm" placeholder="Paste link to stream via 32x RAM Swarm..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff">Initialize Swarm</button></div></div><div class="engine-box" style="border-color:var(--drive)"><div class="engine-title"><span style="color:var(--drive)">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px"></span></div><div id="drive_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"><span id="drive_email" style="color:var(--success);font-weight:700;flex:1">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload to Drive..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000">Swarm Upload</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to Drive Folder, ZIP, RAR..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000">Stream Contents</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000">Generate Link</button></div><div id="zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"></div></div><div class="engine-box" style="border-color:var(--gofile)"><div class="engine-title"><span style="color:var(--gofile)">📂 Engine 7: Gofile.io vlc streaming & downloader</span> <span class="status-dot" id="gofile_dot" style="margin-left:10px"></span></div><div id="gofile_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="password" id="gofile_token" placeholder="🔑 Gofile Account Token..."></div><button onclick="connectGofile()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="gofile_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--gofile)"><span id="gofile_info" style="color:var(--gofile);font-weight:700;flex:1">✅ Server Vault Active. Connected to Gofile.</span><button onclick="disconnectGofile()" class="btn-red">Delete Token</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_gofile" placeholder="Paste Gofile Link (e.g. https://server.gofile.io/download/web/directory/filename.mkv)..."><button onclick="listGofileArchive()" style="background:var(--gofile);color:#000">Stream Contents</button></div><div id="gofile_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--gofile)"></div></div><div class="engine-box" style="border-color:#f59e0b"><div class="engine-title"><span style="color:#f59e0b">📦 Engine 8: Archive Extractor</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_engine8" placeholder="Paste direct link to ZIP, RAR, 7Z, TAR archive file..."><button onclick="listEngine8Archive()" style="background:#f59e0b;color:#000">Inspect & Extract Archive</button></div><div id="engine8_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid #f59e0b"></div></div><div class="file-grid" id="files" style="margin-top:20px"></div><script>function checkDriveStatus(){fetch("/api/drive/status").then(e=>e.json()).then(e=>{e.connected?(document.getElementById("drive_dot").style.background="var(--success)",document.getElementById("drive_auth_panel").style.display="none",document.getElementById("drive_connected_panel").style.display="flex",document.getElementById("drive_email").innerText="✅ Drive Active | 💾 "+(e.info||"")):(document.getElementById("drive_dot").style.background="var(--danger)",document.getElementById("drive_auth_panel").style.display="flex",document.getElementById("drive_connected_panel").style.display="none")})}function connectDrive(){let e=document.getElementById("drive_cid").value,t=document.getElementById("drive_csec").value,l=document.getElementById("drive_rt").value;if(!e||!t||!l)return alert("All keys required!");fetch("/api/drive/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({client_id:e,client_secret:t,refresh_token:l})}).then(e=>e.json()).then(e=>{e.success?checkDriveStatus():alert("Failed: "+e.error)})}function disconnectDrive(){let p=prompt("🔑 Enter Key Deletion Password to remove Drive keys:");if(!p)return;fetch("/api/drive/disconnect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({delete_pass:p})}).then(e=>e.json()).then(e=>{if(e.success)checkDriveStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Disconnect failed: "+err))}function checkGofileStatus(){fetch("/api/gofile/status?_t="+Date.now()).then(e=>e.json()).then(e=>{e.connected?(document.getElementById("gofile_dot").style.background="var(--success)",document.getElementById("gofile_auth_panel").style.display="none",document.getElementById("gofile_connected_panel").style.display="flex"):(document.getElementById("gofile_dot").style.background="var(--danger)",document.getElementById("gofile_auth_panel").style.display="flex",document.getElementById("gofile_connected_panel").style.display="none")}).catch(err=>console.error("Gofile status check failed:",err))}function connectGofile(){let e=document.getElementById("gofile_token").value;if(!e)return alert("Token required!");fetch("/api/gofile/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:e})}).then(e=>e.json()).then(e=>{if(e.success)checkGofileStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Connect failed: "+err))}function disconnectGofile(){let p=prompt("🔑 Enter Key Deletion Password to remove Gofile token:");if(!p)return;fetch("/api/gofile/disconnect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({delete_pass:p})}).then(e=>e.json()).then(e=>{if(e.success)checkGofileStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Disconnect failed: "+err))}async function listEngine8Archive(){let e=document.getElementById("url_engine8").value;if(e){let t=document.getElementById("engine8_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/engine8_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"engine8_contents")}else alert("No URL!")}async function listGofileArchive(){let e=document.getElementById("url_gofile").value;if(e){let t=document.getElementById("gofile_contents");t.style.display="block";t.innerHTML='Loading...';let isDirect=e.includes("gofile.io/download/")||e.includes("store-")||e.includes("/download/web/");let apiEndpoint=isDirect?"/api/gofile_register_direct":"/api/gofile_archive_list";let l=await fetch(apiEndpoint+"?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"gofile_contents")}else alert("No URL!")}function renderArchiveBox(e,t){let l=document.getElementById(t),d=t==="zip_contents"?"url_drive_zip":t==="swarm_zip_contents"?"url_swarm_zip":t==="gofile_contents"?"url_gofile":t==="engine8_contents"?"url_engine8":"url_direct_zip",n=e.mount_id||"none";let i=`<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #333"><button onclick="clearMountedArchive('${t}','${d}')" class="btn-red">Clear Mount</button></div>`;e.files.forEach(s=>{let c=window.location.origin+s.url,u=encodeURIComponent(s.name);i+=`<div class="zip-item">📄 ${s.name} <div style="display:flex;gap:5px"><input type="text" id="zl_${s.b64}" value="${c}" readonly onclick="this.select()"><button onclick="copyToBox('zl_${s.b64}')" style="background:var(--accent);color:#fff">Copy</button></div></div>`});l.innerHTML=i;l.style.display="block"}async function listDirectArchive(){let e=document.getElementById("url_direct_zip").value;if(e){let t=document.getElementById("direct_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/direct_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"direct_zip_contents")}}async function listSwarmArchive(){let e=document.getElementById("url_swarm_zip").value;if(e){let t=document.getElementById("swarm_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/swarm_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"swarm_zip_contents")}}async function listDriveArchive(){let e=document.getElementById("url_drive_zip").value;if(e){let t=document.getElementById("zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/drive_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"zip_contents")}else alert("No URL!")}function clearMountedArchive(e,t){fetch("/api/clear_archive_mount",{method:"POST"}).then(()=>{document.getElementById(e).style.display="none";document.getElementById(t).value=""})}function addFile(e){let t=document.getElementById("url_"+e).value;if(t){document.getElementById("url_"+e).value="";fetch("/api/add?type="+e+"&url="+encodeURIComponent(t))}}async function initUpload(e){let t=document.getElementById("file_"+e),l=t.files;if(0===l.length)return;for(let d=0;d<l.length;d++){let n=l[d],rp=n.webkitRelativePath||n.name;let o=await fetch("/api/upload_init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:e,name:n.name,size:n.size,relative_path:rp})}),a=await o.json();startGbpsP2P(a.fid,n,true)}t.value=""}async function startGbpsP2P(e,t,l){let n=1048576,o=Math.ceil(t.size/n),a=[],i=new Set,s=true,r=0;async function c(){while(s){let u=await fetch("/api/p2p_poll/"+e);if(!u.ok){s=false;break}let m=await u.json();for(let g of m)if(!i.has(g)&&!a.includes(g))a.push(g);await new Promise(k=>setTimeout(k,1000))}}async function v(){while(s){let E=-1;if(a.length>0)E=a.shift();else if(l&&r<o){while(i.has(r)&&r<o)r++;if(r<o)E=r++}if(E!==-1){i.add(E);let w=E*n,S=Math.min(w+n,t.size),C=t.slice(w,S);for(let x=0;x<3;x++){let L=await fetch(`/api/p2p_up/${e}/${E}`,{method:"POST",body:C});if(L.ok)break;await new Promise(I=>setTimeout(I,500))}i.delete(E)}else await new Promise(T=>setTimeout(T,200))}}c();for(let q=0;q<8;q++)v()}function copyToBox(e){let t=document.getElementById(e);t.select();document.execCommand("copy");alert("Copied!")}function triggerAction(e,t){fetch("/api/action/"+e+"/"+t)}checkDriveStatus();checkGofileStatus();fetch("/api/get_archive_mount").then(e=>e.json()).then(e=>{if(e.mounted&&e.data){let t=e.data.type==="direct"?"direct_zip_contents":e.data.type==="swarm"?"swarm_zip_contents":e.data.type==="engine8"?"engine8_contents":(e.data.type==="drive"||e.data.type==="drive_folder")?"zip_contents":e.data.type==="gofile_folder"?"gofile_contents":"";if(t)renderArchiveBox(e.data,t)}});setInterval(checkDriveStatus,60000);setInterval(checkGofileStatus,60000);setInterval(()=>{fetch("/api/data").then(e=>e.json()).then(e=>{document.getElementById("cpu").innerText=e.sys.cpu;document.getElementById("ram").innerText=e.sys.ram;document.getElementById("swap").innerText=e.sys.swap;document.getElementById("disk").innerText=e.sys.disk;document.getElementById("net").innerText=e.sys.net;let t="";let now=Date.now();if(!window.sp)window.sp={};e.files.forEach(d=>{let stx="";let downMB=(d.down/1048576).toFixed(2);let totMB=d.total?(d.total/1048576).toFixed(2):"∞";if(d.total>0&&d.down<d.total){if(!window.sp[d.id])window.sp[d.id]={d:d.down,t:now,s:0};let dd=d.down-window.sp[d.id].d,dt=(now-window.sp[d.id].t)/1e3;if(dt>=1){window.sp[d.id].s=dd>0?dd/dt/1048576:0;window.sp[d.id].d=d.down;window.sp[d.id].t=now}if(window.sp[d.id].s>0)stx=" ⚡ "+window.sp[d.id].s.toFixed(1)+" MB/s"}let th=d.active_threads>0?` <span style="color:#06b6d4">[${d.active_threads} Threads]</span>`:"";let m=d.total?Math.min(100,Math.round((d.down/d.total)*100))+"%":"Live";let f=d.total?`<progress value="${d.down}" max="${d.total}"></progress>`:"";let u=encodeURIComponent(d.name);let y=window.location.origin+"/stream/"+d.id+"/"+u;t+=`<div class="file-card"><div class="file-name">[${d.type.toUpperCase()}] ${d.name}</div><div class="file-status">${d.status} - ${m} (${downMB} MB / ${totMB} MB)${stx}${th}</div>${f}<div class="link-box"><input type="text" id="l_${d.id}" value="${y}" readonly onclick="this.select()"><button onclick="copyToBox('l_${d.id}')">Copy</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${d.id}','stop')">Abort</button></div></div>`});document.getElementById("files").innerHTML=t||'<div style="color:#555">No active tasks.</div>'})},1000)</script></body></html>"""
 
 @app.route('/')
 def index():
@@ -822,9 +839,9 @@ def direct_archive_list():
     try: return jsonify(build_archive_data(HttpRangeFile(request.args.get('url')), url=request.args.get('url'), a_type='direct'))
     except Exception as e: return jsonify({'error': str(e)})
 
-@app.route('/api/swarm_archive_list')
-def swarm_archive_list():
-    try: return jsonify(build_archive_data(SwarmRangeFile(request.args.get('url')), url=request.args.get('url'), a_type='swarm'))
+@app.route('/api/engine8_archive_list')
+def engine8_archive_list():
+    try: return jsonify(build_archive_data(HttpRangeFile(request.args.get('url')), url=request.args.get('url'), a_type='engine8'))
     except Exception as e: return jsonify({'error': str(e)})
 
 @app.route('/api/drive/status')
@@ -853,6 +870,9 @@ def drive_connect():
 @app.route('/api/drive/disconnect', methods=['POST'])
 def drive_disconnect():
     try:
+        p = (request.json or {}).get('delete_pass', '')
+        if DELETE_KEY_PASS and p != DELETE_KEY_PASS:
+            return jsonify({'error': 'Incorrect Key Deletion Password!'}), 403
         with drive_creds_lock:
             if os.path.exists(DRIVE_CREDS_FILE):
                 with open(DRIVE_CREDS_FILE, 'w') as f:
@@ -883,6 +903,9 @@ def gofile_connect():
 def gofile_disconnect():
     global _active_guest_token
     try:
+        p = (request.json or {}).get('delete_pass', '')
+        if DELETE_KEY_PASS and p != DELETE_KEY_PASS:
+            return jsonify({'error': 'Incorrect Key Deletion Password!'}), 403
         with gofile_creds_lock:
             if os.path.exists(GOFILE_CREDS_FILE):
                 with open(GOFILE_CREDS_FILE, 'w') as f:
@@ -1383,7 +1406,6 @@ def archive_stream(a_type, bu, b64_name, fname):
     def gen():
         try:
             if a_type == 'drive': t, _ = get_drive_auth(); rf = DriveRangeFile(bu, t, 100000000)
-            elif a_type == 'swarm': rf = SwarmRangeFile(base64.urlsafe_b64decode(bu.encode()).decode())
             else: rf = HttpRangeFile(base64.urlsafe_b64decode(bu.encode()).decode())
             with zipfile.ZipFile(rf) as zf:
                 with zf.open(tf['name']) as z_item:
@@ -2077,6 +2099,9 @@ Password:   $RDP_PASS
 
 🛡️ --- 3. 10GBPS VPN TUNNEL ---
 ss://${OUTLINE_ENCODED}@${SERVER_IP}:${VPN_PORT}/?outline=1
+
+🔑 --- 4. VAULT KEYS DELETE PASSWORD ---
+Password: $DELETE_KEY_PASS
 =====================================================================
 CREDEOF
 chmod 600 /root/engine_credentials.txt; echo ""; cat /root/engine_credentials.txt
