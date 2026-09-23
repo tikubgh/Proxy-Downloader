@@ -3,7 +3,6 @@ cat > setup.sh << 'EOF'
 #!/bin/bash
 set -e
 
-# Enforce clean terminal TTY line discipline (Fixes Bitvise SSH zig-zag / staircase effect)
 stty sane 2>/dev/null || true
 stty onlcr opost 2>/dev/null || true
 export TERM=${TERM:-xterm-256color}
@@ -11,35 +10,26 @@ export DOCKER_BUILDKIT=1
 export COMPOSE_DOCKER_CLI_BUILD=1
 export BUILDKIT_PROGRESS=quiet
 
-# Log file for full silent execution traces
 INSTALL_LOG="/tmp/media_install.log"
-rm -f "$INSTALL_LOG"
-touch "$INSTALL_LOG"
+rm -f "$INSTALL_LOG" && touch "$INSTALL_LOG"
 
-# Color & Styling Palette
 BOLD='\033[1m'
-DIM='\033[2m'
 CYAN='\033[38;5;51m'
 BLUE='\033[38;5;39m'
 GREEN='\033[38;5;48m'
 YELLOW='\033[38;5;226m'
 RED='\033[38;5;196m'
-MAGENTA='\033[38;5;201m'
 WHITE='\033[38;5;255m'
 NC='\033[0m'
 
 log_step() {
-    local num="$1"
-    local title="$2"
-    echo -e "\r\n${CYAN}┌───[ ${BOLD}${YELLOW}STEP ${num}/10${NC}${CYAN} ]─────────────────────────────────────────────────────────${NC}"
-    echo -e "${CYAN}│${NC}  ${BOLD}${WHITE}${title}${NC}"
+    echo -e "\r\n${CYAN}┌───[ ${BOLD}${YELLOW}STEP $1/10${NC}${CYAN} ]─────────────────────────────────────────────────────────${NC}"
+    echo -e "${CYAN}│${NC}  ${BOLD}${WHITE}$2${NC}"
     echo -e "${CYAN}└────────────────────────────────────────────────────────────────${NC}"
 }
 
-# Clean row-aligned step executor: all operations stay neatly on the left side
 exec_step() {
-    local label="$1"
-    shift
+    local label="$1"; shift
     printf "\r  ${BLUE}▸${NC} %-56s" "$label..."
     if "$@" </dev/null >> "$INSTALL_LOG" 2>&1; then
         printf "\r  ${GREEN}✔${NC} ${BOLD}%-56s${NC}\n" "$label"
@@ -48,114 +38,74 @@ exec_step() {
     fi
 }
 
-# Detect CPU Architecture
 ARCH=$(uname -m)
-if [ "$ARCH" = "x86_64" ]; then
-    ARCH_NAME="AMD64 (x86_64)"
-elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-    ARCH_NAME="ARM64 (aarch64 / Ampere)"
-else
-    ARCH_NAME="Unknown/Unsupported ($ARCH)"
-fi
+[ "$ARCH" = "x86_64" ] && ARCH_NAME="AMD64 (x86_64)" || ARCH_NAME="ARM64 ($ARCH)"
 
 echo -e "\r\n${CYAN}╔═════════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║${NC}   ${BOLD}${GREEN}🚀 MASTER SERVER STACK — AUTO DEPLOYMENT & OPTIMIZER${NC}          ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}   ${BOLD}${GREEN}🚀 MASTER SERVER STACK — ULTRA LOW-RAM & UNLIMITED TRAFFIC${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}   ${WHITE}Architecture : ${YELLOW}$ARCH_NAME${NC}                                 ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}   ${WHITE}Display Res  : ${CYAN}1366×768 (Auto-Fit Accelerated)${NC}                 ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}   ${WHITE}VPN Port     : ${CYAN}8388 (TCP/UDP High-Speed)${NC}                       ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
 
-# 1. Host Network & APT Speed Optimizations (Parallel sysctl and port killing)
-log_step "1" "Optimizing System Kernel & High-Speed Network Sockets"
+log_step "1" "Optimizing Kernel, Virtual Memory & Network Sockets"
+exec_step "Configuring virtual memory & emergency swap allocation" bash -c '
+TOTAL_SWAP=$(free -m | awk "/Swap/ {print \$2}")
+if [ "${TOTAL_SWAP:-0}" -lt 1500 ]; then
+    if [ ! -f /swapfile ]; then
+        sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
+        sudo chmod 600 /swapfile && sudo mkswap /swapfile >/dev/null 2>&1 && sudo swapon /swapfile >/dev/null 2>&1 || true
+        grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
+    fi
+fi
+'
+exec_step "Tuning kernel memory parameters & TCP BBR congestion control" bash -c '
+sudo sysctl -w \
+  vm.swappiness=10 \
+  vm.vfs_cache_pressure=50 \
+  vm.dirty_background_ratio=5 \
+  vm.dirty_ratio=10 \
+  net.ipv4.ip_forward=1 \
+  net.ipv6.conf.all.forwarding=1 \
+  net.core.default_qdisc=fq \
+  net.ipv4.tcp_congestion_control=bbr \
+  net.ipv4.tcp_fastopen=3 \
+  net.core.somaxconn=4096 \
+  net.ipv4.tcp_max_syn_backlog=4096 \
+  >/dev/null 2>&1
+'
 exec_step "Configuring APT HTTP pipelining & caching rules" bash -c 'echo -e "Acquire::http::Pipeline-Depth \"100\";\nAcquire::http::No-Cache \"true\";\nAcquire::http::Connection-Keep-Alive \"true\";\nAcquire::Retries \"3\";\nAcquire::Languages \"none\";\nBinary::apt::APT::Keep-Downloaded-Packages \"false\";" | sudo tee /etc/apt/apt.conf.d/99speedup'
-exec_step "Enabling BBR Congestion Control & IP forwarding" sudo sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1 net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr
 exec_step "Configuring Cloudflare 1.1.1.1 & Google DNS resolvers" bash -c 'if [ -f /etc/systemd/resolved.conf ]; then sudo sed -i "s/#DNSStubListener=yes/DNSStubListener=no/g; s/DNSStubListener=yes/DNSStubListener=no/g" /etc/systemd/resolved.conf 2>/dev/null || true; sudo systemctl restart systemd-resolved 2>/dev/null || true; fi; echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" | sudo tee /etc/resolv.conf'
 exec_step "Clearing conflicting host daemons (Apache, Nginx, BIND)" bash -c 'sudo systemctl stop nginx apache2 caddy lighttpd named bind9 dnsmasq 2>/dev/null || true; sudo systemctl disable nginx apache2 caddy lighttpd named bind9 dnsmasq 2>/dev/null || true; sudo systemctl mask nginx apache2 caddy lighttpd 2>/dev/null || true'
-exec_step "Freeing host network port (80)" bash -c 'for p in 80; do docker ps -a --filter "publish=$p" -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null || true; sudo fuser -k -9 $p/tcp 2>/dev/null || true; sudo fuser -k -9 $p/udp 2>/dev/null || true; done'
-exec_step "Initializing stack folders & permissions" bash -c 'mkdir -p media_stack/{nginx,engine,downloads,vpn,terminal,browser,ariang} && sudo chmod -R 777 media_stack/downloads && sudo touch /opt/media_engine_drive.json /opt/media_engine_gofile.json && sudo chmod 666 /opt/media_engine_drive.json /opt/media_engine_gofile.json'
+exec_step "Freeing host network ports (80, 8388)" bash -c 'for p in 80 8388; do docker ps -a --filter "publish=$p" -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null || true; sudo fuser -k -9 $p/tcp 2>/dev/null || true; sudo fuser -k -9 $p/udp 2>/dev/null || true; done'
+exec_step "Initializing stack folders & permissions" bash -c 'mkdir -p media_stack/{nginx,engine,downloads,vpn,terminal,ariang} && sudo chmod -R 777 media_stack/downloads && sudo touch /opt/media_engine_drive.json /opt/media_engine_gofile.json && sudo chmod 666 /opt/media_engine_drive.json /opt/media_engine_gofile.json'
 
-# 2. Host Tools & Docker Direct Installation
 log_step "2" "Installing Host Toolchain & Docker Runtime"
 exec_step "Releasing package manager locks" bash -c 'sudo systemctl stop unattended-upgrades 2>/dev/null || true; sudo rm -f /var/lib/dpkg/lock* /var/lib/apt/lists/lock 2>/dev/null || true; sudo dpkg --configure -a || true'
 exec_step "Updating system package index" sudo apt-get update -qq -y
 exec_step "Installing core system utilities" sudo apt-get install -qq -y --no-install-recommends psmisc lsof curl git gnupg ca-certificates lsb-release unzip
 exec_step "Installing Docker Engine & Docker Compose" bash -c 'curl -fsSL https://get.docker.com -o get-docker.sh && sed -i "s/sleep [0-9]\+/sleep 0/g" get-docker.sh && sh get-docker.sh && rm -f get-docker.sh && sudo apt-get install -qq -y docker-compose-plugin'
-exec_step "Configuring Docker daemon with high concurrency" bash -c 'sudo mkdir -p /etc/docker && echo '\''{"max-concurrent-downloads":10,"max-concurrent-uploads":10,"dns":["1.1.1.1","8.8.8.8"],"features":{"buildkit":true}}'\'' | sudo tee /etc/docker/daemon.json && sudo systemctl daemon-reload && sudo systemctl restart docker'
+exec_step "Configuring Docker daemon with memory-safe limits & log rotation" bash -c 'sudo mkdir -p /etc/docker && echo '\''{"log-driver":"json-file","log-opts":{"max-size":"5m","max-file":"2"},"max-concurrent-downloads":3,"max-concurrent-uploads":3,"dns":["1.1.1.1","8.8.8.8"]}'\'' | sudo tee /etc/docker/daemon.json && sudo systemctl daemon-reload && sudo systemctl restart docker'
 
-# 3. Environment Settings
 log_step "3" "Initializing Credentials & Microservice Structures"
 cd media_stack
 gen_pw() { cat /dev/urandom | tr -dc 'A-Za-z0-9' | fold -w 12 | head -n 1; }
-if [ -f .env ]; then
-    source .env 2>/dev/null || true
-fi
+[ -f .env ] && source .env 2>/dev/null || true
 DASH_PASS=${DASH_PASS:-$(gen_pw)}
 TERMINAL_PASS=${TERMINAL_PASS:-$(gen_pw)}
-BROWSER_PASS=${BROWSER_PASS:-$(gen_pw)}
 DELETE_KEY_PASS=${DELETE_KEY_PASS:-$(gen_pw)}
 VPN_PASS="10gbps"
+VPN_PORT="8388"
 printf "  ${GREEN}✔${NC} ${BOLD}%-56s${NC}\n" "Dashboard Password: ${GREEN}$DASH_PASS${NC}"
 printf "  ${GREEN}✔${NC} ${BOLD}%-56s${NC}\n" "Web Terminal Password: ${GREEN}$TERMINAL_PASS${NC}"
-printf "  ${GREEN}✔${NC} ${BOLD}%-56s${NC}\n" "Cloud Brave Password: ${GREEN}$BROWSER_PASS${NC}"
 printf "  ${GREEN}✔${NC} ${BOLD}%-56s${NC}\n" "Vault Delete Key: ${GREEN}$DELETE_KEY_PASS${NC}"
 
-# Auto-Scan to find optimal, completely free, unblocked inbound/outbound VPN port
-log_step "4" "Running 4-Stage Deep Socket Diagnostics for VPN Service"
-find_optimal_vpn_port() {
-    python3 -c '
-import socket, sys
-
-candidates = [443, 8443, 2053, 2083, 2087, 2096, 10443, 51820, 41234, 8888, 9000, 2082, 2086, 8080, 53]
-
-best_port = None
-for p in candidates:
-    try:
-        # 1. Inbound TCP binding test
-        s_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s_tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s_tcp.bind(("0.0.0.0", p))
-        s_tcp.listen(1)
-        
-        # 2. Inbound UDP binding test
-        s_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s_udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s_udp.bind(("0.0.0.0", p))
-        
-        # 3. Local TCP handshake test
-        client_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_tcp.settimeout(1)
-        client_tcp.connect(("127.0.0.1", p))
-        conn, addr = s_tcp.accept()
-        conn.close()
-        client_tcp.close()
-        
-        # 4. Local UDP datagram transmission test
-        client_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        client_udp.sendto(b"PING", ("127.0.0.1", p))
-        data, addr = s_udp.recvfrom(16)
-        client_udp.close()
-        
-        s_tcp.close()
-        s_udp.close()
-        
-        if data == b"PING":
-            best_port = p
-            break
-    except Exception:
-        continue
-
-print(best_port if best_port else 443)
-' 2>/dev/null
-}
-
-VPN_PORT=$(find_optimal_vpn_port)
-[ -z "$VPN_PORT" ] && VPN_PORT=443
-exec_step "Configuring bidirectional firewall rules for port $VPN_PORT" bash -c "sudo iptables -P INPUT ACCEPT 2>/dev/null || true; sudo iptables -P FORWARD ACCEPT 2>/dev/null || true; sudo iptables -P OUTPUT ACCEPT 2>/dev/null || true; sudo iptables -I INPUT -p tcp --dport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I INPUT -p udp --dport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I FORWARD -p tcp --dport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I FORWARD -p udp --dport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I OUTPUT -p tcp --sport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I OUTPUT -p udp --sport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; if command -v ufw &>/dev/null; then sudo ufw allow ${VPN_PORT}/tcp 2>/dev/null || true; sudo ufw allow ${VPN_PORT}/udp 2>/dev/null || true; fi"
-printf "  ${GREEN}✔${NC} ${BOLD}%-56s${NC}\n" "Guaranteed Active VPN Port: ${CYAN}${VPN_PORT} (TCP/UDP)${NC}"
+log_step "4" "Configuring VPN Firewall Rules (Port 8388)"
+exec_step "Configuring firewall for port $VPN_PORT (TCP/UDP)" bash -c "sudo iptables -P INPUT ACCEPT 2>/dev/null || true; sudo iptables -P FORWARD ACCEPT 2>/dev/null || true; sudo iptables -P OUTPUT ACCEPT 2>/dev/null || true; sudo iptables -I INPUT -p tcp --dport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I INPUT -p udp --dport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I FORWARD -p tcp --dport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I FORWARD -p udp --dport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I OUTPUT -p tcp --sport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; sudo iptables -I OUTPUT -p udp --sport ${VPN_PORT} -j ACCEPT 2>/dev/null || true; if command -v ufw &>/dev/null; then sudo ufw allow ${VPN_PORT}/tcp 2>/dev/null || true; sudo ufw allow ${VPN_PORT}/udp 2>/dev/null || true; fi"
+printf "  ${GREEN}✔${NC} ${BOLD}%-56s${NC}\n" "Active VPN Port: ${CYAN}${VPN_PORT} (TCP/UDP)${NC}"
 
 cat > .env << ENVEOF
 DASH_PASS=$DASH_PASS
 TERMINAL_PASS=$TERMINAL_PASS
-BROWSER_PASS=$BROWSER_PASS
 DELETE_KEY_PASS=$DELETE_KEY_PASS
 VPN_PASS=$VPN_PASS
 VPN_PORT=$VPN_PORT
@@ -165,12 +115,12 @@ source .env
 cat > vpn/config.json << VPNEOF
 {
     "server": "0.0.0.0",
-    "server_port": ${VPN_PORT},
+    "server_port": 8388,
     "password": "${VPN_PASS}",
     "method": "chacha20-ietf-poly1305",
+    "mode": "tcp_and_udp",
     "timeout": 300,
-    "fast_open": false,
-    "nameserver": "1.1.1.1"
+    "fast_open": false
 }
 VPNEOF
 
@@ -181,126 +131,39 @@ EXPOSE 7681
 CMD ["ttyd", "-p", "7681", "-i", "0.0.0.0", "-W", "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "bash", "-l"]
 TERMEOF
 
-cat > browser/Dockerfile << 'BROWSEREOF'
-FROM debian:bookworm-slim
-ENV DEBIAN_FRONTEND=noninteractive
-RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/force-unsafe-io && \
-    apt-get update -qq && \
-    apt-get install -y --no-install-recommends \
-        curl \
-        ca-certificates \
-        gnupg \
-        procps \
-        xvfb \
-        fluxbox \
-        x11vnc \
-        novnc \
-        websockify \
-        libgl1-mesa-dri \
-        mesa-utils \
-        dbus-x11 \
-        fonts-liberation \
-        fonts-noto-color-emoji \
-        fonts-freefont-ttf \
-        locales \
-        tzdata && \
-    curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" | tee /etc/apt/sources.list.d/brave-browser-release.list && \
-    apt-get update -qq && \
-    apt-get install -y --no-install-recommends brave-browser && \
-    mkdir -p /etc/brave/policies/managed /etc/chromium/policies/managed && \
-    echo '{"CommandLineFlagSecurityWarningsEnabled":false,"DefaultPopupsSetting":1,"BraveShieldsDisabledForUrls":["https://*.*","http://*.*"]}' > /etc/brave/policies/managed/default_policy.json && \
-    echo '{"CommandLineFlagSecurityWarningsEnabled":false,"DefaultPopupsSetting":1}' > /etc/chromium/policies/managed/default_policy.json && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-EXPOSE 6080
-CMD ["/entrypoint.sh"]
-BROWSEREOF
-
-cat > browser/entrypoint.sh << 'BROWSERENTEOF'
-#!/bin/bash
-export DISPLAY=:1
-export LANG=en_US.UTF-8
-export LC_ALL=en_US.UTF-8
-mkdir -p /tmp/.X11-unix /root/.config/BraveSoftware/Brave-Browser/Default /downloads /root/.fluxbox
-chmod 1777 /tmp/.X11-unix /downloads
-
-cat > /root/.fluxbox/apps << 'APPOF'
-[app] (name=brave-browser) (class=Brave-browser)
-  [Maximized] {yes}
-  [Deco] {NONE}
-[end]
-[app] (name=brave) (class=Brave)
-  [Maximized] {yes}
-  [Deco] {NONE}
-[end]
-APPOF
-
-# Pre-seed clean profile & disable farbling for human verification consistency
-cat > /root/.config/BraveSoftware/Brave-Browser/Default/Preferences << 'PREFEOF'
-{"profile":{"exit_type":"Normal","exited_cleanly":true},"brave":{"shields":{"fingerprinting_v2":0,"stats":{"ad_block_count":0}}}}
-PREFEOF
-cat > /root/.config/BraveSoftware/Brave-Browser/"Local State" << 'LSEOF'
-{"profile":{"exited_cleanly":true}}
-LSEOF
-
-Xvfb :1 -screen 0 1366x768x24 -ac +extension GLX +extension RENDER +extension RANDR -noreset &
-sleep 0.5
-fluxbox &
-sleep 0.5
-x11vnc -display :1 -nopw -listen 127.0.0.1 -forever -shared -bg -rfbport 5900 -noxdamage -xrandr
-websockify --web=/usr/share/novnc 6080 127.0.0.1:5900 &
-
-# Brave Browser High-Performance & Clean Flag Set (no warning bars, full Cloudflare Turnstile compatibility)
-BRAVE_FLAGS="--no-sandbox --disable-dev-shm-usage --window-size=1366,768 --start-maximized --no-first-run --no-default-browser-check --disable-background-networking --disable-sync --enable-smooth-scrolling --enable-features=ParallelDownloading,VaapiVideoDecoder --ignore-gpu-blocklist --enable-zero-copy --num-raster-threads=4 --js-flags=--max-old-space-size=4096 --password-store=basic --user-data-dir=/root/.config/BraveSoftware/Brave-Browser"
-
-while true; do
-    brave-browser $BRAVE_FLAGS "https://www.google.com" || brave $BRAVE_FLAGS "https://www.google.com"
-    sleep 1
-done
-BROWSERENTEOF
-
-# 5. Start Parallel Background Downloads (Git clone and binary requirements)
 log_step "5" "Downloading Web Assets & AriaNg Package"
 exec_step "Downloading AriaNg manager bundle in background" bash -c 'wget -q -O nginx/AriaNg-1.3.7-AllInOne.zip https://github.com/mayswind/AriaNg/releases/download/1.3.7/AriaNg-1.3.7-AllInOne.zip' &
 PID_ARIA=$!
 
-# 6. Simultaneously Write Compose & Configuration Files (Parallel CPU/Disk operations)
 log_step "6" "Compiling Container Configurations & Microservice Manifests"
 cat > docker-compose.yml << 'YMLEOF'
 services:
   engine:
     build: ./engine
     volumes: ['./downloads:/downloads', '/opt/media_engine_drive.json:/opt/media_engine_drive.json', '/opt/media_engine_gofile.json:/opt/media_engine_gofile.json']
-    environment: ['DASH_PASS=${DASH_PASS}', 'TERMINAL_PASS=${TERMINAL_PASS}', 'BROWSER_PASS=${BROWSER_PASS}', 'DELETE_KEY_PASS=${DELETE_KEY_PASS}', 'VPN_PORT=${VPN_PORT}', 'VPN_PASS=${VPN_PASS}']
+    environment: ['DASH_PASS=${DASH_PASS}', 'TERMINAL_PASS=${TERMINAL_PASS}', 'DELETE_KEY_PASS=${DELETE_KEY_PASS}', 'VPN_PORT=${VPN_PORT}', 'VPN_PASS=${VPN_PASS}']
     restart: unless-stopped
-    mem_limit: 2500m
+    mem_limit: 1024m
     networks: [media_net]
   vpn:
     image: ghcr.io/shadowsocks/ssserver-rust:latest
     network_mode: "host"
-    entrypoint: ["ssserver", "-s", "0.0.0.0:${VPN_PORT}", "-m", "chacha20-ietf-poly1305", "-k", "${VPN_PASS}", "-U", "--dns", "1.1.1.1"]
+    volumes: ['./vpn/config.json:/etc/shadowsocks-rust/config.json:ro']
+    command: ["ssserver", "-c", "/etc/shadowsocks-rust/config.json"]
     restart: unless-stopped
   terminal:
     build: ./terminal
     privileged: true
     pid: host
     restart: unless-stopped
-    networks: [media_net]
-  browser:
-    build: ./browser
-    shm_size: '2gb'
-    mem_limit: 3500m
-    restart: unless-stopped
-    volumes: ['./downloads:/downloads']
+    mem_limit: 64m
     networks: [media_net]
   nginx:
     image: nginx:alpine
     ports: ['80:80']
     volumes: ['./nginx/nginx.conf:/etc/nginx/nginx.conf:ro', './nginx/ariang:/usr/share/nginx/html/ariang:ro', './downloads:/downloads:ro']
     depends_on: [engine]
-    mem_limit: 150m
+    mem_limit: 64m
     restart: unless-stopped
     networks: [media_net]
 networks:
@@ -309,7 +172,7 @@ networks:
 YMLEOF
 
 cat > nginx/nginx.conf << 'NGINXEOF'
-events { worker_connections 8192; multi_accept on; }
+events { worker_connections 1024; multi_accept on; }
 http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
@@ -350,26 +213,6 @@ http {
             proxy_read_timeout 86400s;
             proxy_send_timeout 86400s;
         }
-        location /novnc/ {
-            proxy_pass http://browser:6080/;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_read_timeout 86400s;
-            proxy_send_timeout 86400s;
-        }
-        location /websockify {
-            proxy_pass http://browser:6080/websockify;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-            proxy_read_timeout 86400s;
-            proxy_send_timeout 86400s;
-        }
         location / { 
             proxy_pass http://engine:8080; 
             proxy_http_version 1.1;
@@ -388,6 +231,9 @@ NGINXEOF
 cat > engine/Dockerfile << 'ENGEOF'
 FROM python:3.10-slim-bookworm
 WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    MALLOC_ARENA_MAX=2
 RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/force-unsafe-io && \
     echo 'Acquire::http::Pipeline-Depth "100"; Acquire::Retries "3"; Acquire::Queue-Mode "access";' > /etc/apt/apt.conf.d/99speedup && \
     sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
@@ -396,10 +242,11 @@ RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/force-unsafe-io && \
         apt-get install -y --no-install-recommends gcc g++ python3-dev libffi-dev libssl-dev make; \
     fi && \
     apt-get install -y --no-install-recommends aria2 unrar p7zip-full procps curl && \
-    pip install --prefer-binary flask requests psutil waitress rarfile py7zr cloudscraper curl_cffi || true && \
+    pip install --no-cache-dir --prefer-binary flask requests psutil waitress rarfile py7zr cloudscraper curl_cffi || true && \
     if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then \
         apt-get purge -y gcc g++ python3-dev libffi-dev libssl-dev make && apt-get autoremove -y; \
-    fi
+    fi && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 COPY app.py .
 RUN python3 -c "import flask, requests, psutil, waitress" && python3 -m py_compile app.py
 CMD ["python3", "-u", "app.py"]
@@ -408,34 +255,11 @@ ENGEOF
 cat > engine/app.py << 'ENGPYEOF'
 import os, time, uuid, threading, shutil, re, mimetypes, concurrent.futures, hashlib, json, gc, zipfile, base64, collections, urllib.parse, subprocess
 
-# Start background Aria2 RPC daemon with maximum speed configuration
 def run_aria2():
     try:
-        cmd = [
-            "aria2c",
-            "--enable-rpc=true",
-            "--rpc-listen-all=true",
-            "--rpc-allow-origin-all=true",
-            "--rpc-listen-port=6800",
-            "--dir=/downloads",
-            "--max-concurrent-downloads=20",
-            "--max-connection-per-server=16",
-            "--split=16",
-            "--min-split-size=1M",
-            "--piece-length=1M",
-            "--allow-overwrite=true",
-            "--auto-file-renaming=false",
-            "--continue=true",
-            "--max-overall-download-limit=0",
-            "--max-overall-upload-limit=0",
-            "--file-allocation=none",
-            "--disk-cache=64M",
-            "--summary-interval=0",
-            "--daemon=false"
-        ]
+        cmd = ["aria2c","--enable-rpc=true","--rpc-listen-all=true","--rpc-allow-origin-all=true","--rpc-listen-port=6800","--dir=/downloads","--max-concurrent-downloads=10","--max-connection-per-server=16","--split=16","--min-split-size=1M","--piece-length=1M","--allow-overwrite=true","--auto-file-renaming=false","--continue=true","--max-overall-download-limit=0","--max-overall-upload-limit=0","--file-allocation=none","--disk-cache=16M","--summary-interval=0","--daemon=false"]
         subprocess.Popen(cmd)
-    except Exception as e:
-        print("Aria2 startup error:", e)
+    except Exception as e: print("Aria2 startup error:", e)
 threading.Thread(target=run_aria2, daemon=True).start()
 
 import urllib3.util.connection as urllib3_cn
@@ -459,11 +283,9 @@ try:
     try:
         from curl_cffi import CurlOpt
         ip_opt = CurlOpt.IPRESOLVE
-    except:
-        ip_opt = 113
+    except: ip_opt = 113
     rqk = {"impersonate": "chrome"}
-except:
-    creq, rqk, ip_opt = requests, {}, None
+except: creq, rqk, ip_opt = requests, {}, None
 
 def creq_get(url, headers=None, stream=False, timeout=None, allow_redirects=True):
     if creq is not requests:
@@ -474,8 +296,7 @@ def creq_get(url, headers=None, stream=False, timeout=None, allow_redirects=True
                     if hk.lower() == k.lower(): h[hk] = headers[hk]
         s = creq.Session(curl_options={ip_opt: 1} if ip_opt else {}, **rqk)
         return s.get(url, headers=h, stream=stream, timeout=timeout, allow_redirects=allow_redirects)
-    else:
-        return requests.get(url, headers=headers or HEADERS, stream=stream, timeout=timeout, allow_redirects=allow_redirects)
+    else: return requests.get(url, headers=headers or HEADERS, stream=stream, timeout=timeout, allow_redirects=allow_redirects)
 
 def creq_head(url, headers=None, timeout=None, allow_redirects=True):
     if creq is not requests:
@@ -486,10 +307,8 @@ def creq_head(url, headers=None, timeout=None, allow_redirects=True):
                     if hk.lower() == k.lower(): h[hk] = headers[hk]
         s = creq.Session(curl_options={ip_opt: 1} if ip_opt else {}, **rqk)
         r = s.head(url, headers=h, timeout=timeout, allow_redirects=allow_redirects)
-        s.close()
-        return r
-    else:
-        return requests.head(url, headers=headers or HEADERS, timeout=timeout, allow_redirects=allow_redirects)
+        s.close(); return r
+    else: return requests.head(url, headers=headers or HEADERS, timeout=timeout, allow_redirects=allow_redirects)
 
 archive_adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16)
 archive_session.mount('https://', archive_adapter); archive_session.mount('http://', archive_adapter)
@@ -507,8 +326,7 @@ db = {}; db_lock = threading.Lock(); global_mounted_data = None
 active_downloads = {}
 def register_download_conn(fid, r):
     with db_lock:
-        if fid not in active_downloads:
-            active_downloads[fid] = []
+        if fid not in active_downloads: active_downloads[fid] = []
         active_downloads[fid].append(r)
 
 def unregister_download_conn(fid, r):
@@ -516,8 +334,7 @@ def unregister_download_conn(fid, r):
         if fid in active_downloads:
             try: active_downloads[fid].remove(r)
             except ValueError: pass
-            if not active_downloads[fid]:
-                del active_downloads[fid]
+            if not active_downloads[fid]: del active_downloads[fid]
 
 def run_cleanup(p):
     def _clean():
@@ -542,10 +359,15 @@ _api_adapter = HTTPAdapter(max_retries=_retry_strategy, pool_connections=16, poo
 drive_api_session.mount("https://", _api_adapter); drive_api_session.mount("http://", _api_adapter)
 
 stream_session = requests.Session()
-_stream_adapter = HTTPAdapter(pool_connections=128, pool_maxsize=128, max_retries=3)
+_stream_adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32, max_retries=3)
 stream_session.mount("https://", _stream_adapter); stream_session.mount("http://", _stream_adapter)
 
-DASH_PASS = os.environ.get('DASH_PASS', 'admin'); TERMINAL_PASS = os.environ.get('TERMINAL_PASS', DASH_PASS); BROWSER_PASS = os.environ.get('BROWSER_PASS', DASH_PASS); VPN_PORT = os.environ.get('VPN_PORT', '443'); VPN_PASS = os.environ.get('VPN_PASS', '10gbps'); DELETE_KEY_PASS = os.environ.get('DELETE_KEY_PASS', ''); P2P_CHUNK_SIZE = 1048576; STREAM_CHUNK_SIZE = 2097152
+DASH_PASS = os.environ.get('DASH_PASS', 'admin')
+TERMINAL_PASS = os.environ.get('TERMINAL_PASS', DASH_PASS)
+VPN_PORT = os.environ.get('VPN_PORT', '8388')
+VPN_PASS = os.environ.get('VPN_PASS', '10gbps')
+DELETE_KEY_PASS = os.environ.get('DELETE_KEY_PASS', '')
+P2P_CHUNK_SIZE = 1048576; STREAM_CHUNK_SIZE = 2097152
 SPOOF_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 HEADERS = {'User-Agent': SPOOF_AGENT, 'Accept': '*/*', 'Connection': 'keep-alive', 'Accept-Encoding': 'identity'}
 sys_data = {"cpu": "Booting...", "ram": "Booting...", "swap": "Booting...", "disk": "Booting...", "net": "Booting..."}; net_p = None; net_pt = time.time()
@@ -599,14 +421,8 @@ _proxy_list_time = 0
 def get_free_proxies():
     global _proxy_list, _proxy_list_time
     now = time.time()
-    if _proxy_list and (now - _proxy_list_time < 600):
-        return _proxy_list
-    urls = [
-        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-        "https://raw.githubusercontent.com/clketc/Free-Proxy-List/main/http.txt",
-        "https://raw.githubusercontent.com/shiftytr/proxy-list/master/proxy.txt"
-    ]
+    if _proxy_list and (now - _proxy_list_time < 600): return _proxy_list
+    urls = ["https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt","https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"]
     proxies = []
     for url in urls:
         try:
@@ -614,10 +430,8 @@ def get_free_proxies():
             if r.status_code == 200:
                 for line in r.text.splitlines():
                     line = line.strip()
-                    if line and ":" in line:
-                        proxies.append(line)
-        except Exception as e:
-            print(f"Error fetching proxy list from {url}: {e}")
+                    if line and ":" in line: proxies.append(line)
+        except Exception: pass
     if proxies:
         _proxy_list = list(set(proxies))
         _proxy_list_time = now
@@ -627,68 +441,49 @@ def check_proxy(proxy):
     proxy_dict = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
     try:
         r = archive_session.get("https://api.gofile.io/servers", proxies=proxy_dict, timeout=3)
-        if r.status_code == 200 and r.json().get("status") == "ok":
-            return proxy
-    except:
-        pass
+        if r.status_code == 200 and r.json().get("status") == "ok": return proxy
+    except: pass
     return None
 
 def gofile_api_request(method, url, headers=None, json_data=None, data=None):
     try:
-        if method.upper() == 'POST':
-            r = archive_session.post(url, headers=headers, json=json_data, data=data, timeout=5)
-        else:
-            r = archive_session.get(url, headers=headers, timeout=5)
-        if r.status_code == 200:
-            return r
-    except Exception as e:
-        print(f"Direct Gofile API {method} to {url} failed: {e}. Trying proxies...")
+        if method.upper() == 'POST': r = archive_session.post(url, headers=headers, json=json_data, data=data, timeout=5)
+        else: r = archive_session.get(url, headers=headers, timeout=5)
+        if r.status_code == 200: return r
+    except Exception: pass
     proxies = get_free_proxies()
     import random
-    if not proxies:
-        raise Exception("No free proxies retrieved from lists. Cannot connect to Gofile API.")
-    candidates = random.sample(proxies, min(len(proxies), 150))
-    import concurrent.futures
+    if not proxies: raise Exception("No free proxies available.")
+    candidates = random.sample(proxies, min(len(proxies), 30))
     working_proxy = None
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=50)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
     futures = [executor.submit(check_proxy, p) for p in candidates]
     try:
         for future in concurrent.futures.as_completed(futures, timeout=5):
             res = future.result()
-            if res:
-                working_proxy = res
-                break
-    except Exception as e:
-        print(f"Error checking proxies: {e}")
+            if res: working_proxy = res; break
+    except Exception: pass
     executor.shutdown(wait=False)
-    if not working_proxy:
-        raise Exception("Connection to Gofile API timed out. (All direct and 150 proxy attempts failed)")
+    if not working_proxy: raise Exception("Gofile API connection timed out.")
     proxy_dict = {"http": f"http://{working_proxy}", "https": f"http://{working_proxy}"}
     try:
-        if method.upper() == 'POST':
-            r = archive_session.post(url, headers=headers, json=json_data, data=data, proxies=proxy_dict, timeout=6)
-        else:
-            r = archive_session.get(url, headers=headers, proxies=proxy_dict, timeout=6)
-        if r.status_code == 200:
-            return r
-    except Exception as e:
-        raise Exception(f"Connection failed on verified proxy: {e}")
+        if method.upper() == 'POST': r = archive_session.post(url, headers=headers, json=json_data, data=data, proxies=proxy_dict, timeout=6)
+        else: r = archive_session.get(url, headers=headers, proxies=proxy_dict, timeout=6)
+        if r.status_code == 200: return r
+    except Exception as e: raise Exception(f"Connection failed: {e}")
 
 def get_active_gofile_token():
     global _active_guest_token
     token = get_gofile_token()
-    if token:
-        return token, False
+    if token: return token, False
     with _guest_token_lock:
-        if _active_guest_token:
-            return _active_guest_token, True
+        if _active_guest_token: return _active_guest_token, True
         try:
             res = gofile_api_request("POST", "https://api.gofile.io/accounts").json()
             if res.get("status") == "ok":
                 _active_guest_token = res["data"]["token"]
                 return _active_guest_token, True
-        except Exception as e:
-            print("Error generating guest token:", e)
+        except Exception: pass
     return None, True
 
 def generate_website_token(token, user_agent=SPOOF_AGENT):
@@ -698,14 +493,10 @@ def generate_website_token(token, user_agent=SPOOF_AGENT):
 
 class HttpRangeFile:
     def __init__(self, url, fid=None):
-        self.url = url
-        self.headers = HEADERS.copy()
-        self.pos = 0
-        self.chunk_size = 2097152
+        self.url, self.headers, self.pos, self.chunk_size = url, HEADERS.copy(), 0, 2097152
         self.file_id = hashlib.md5(self.url.encode()).hexdigest()
-        self.fid = fid
-        self.active = True
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=16)
+        self.fid, self.active = fid, True
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
         try:
             r = stream_session.head(url, headers=self.headers, allow_redirects=True, timeout=15)
             cl = r.headers.get('Content-Length') or r.headers.get('content-length')
@@ -714,16 +505,12 @@ class HttpRangeFile:
                 cl = r.headers.get('Content-Length', 0)
                 self.url = r.url
                 r.close()
-            else:
-                self.url = r.url
+            else: self.url = r.url
             self.size = int(cl)
-        except Exception as e:
-            print("HttpRangeFile init error:", e)
-            self.size = 0
+        except Exception: self.size = 0
 
     def _fetch_single_chunk(self, chunk_idx):
-        if not self.active:
-            return b''
+        if not self.active: return b''
         ck = f"http_{self.file_id}_{chunk_idx}"
         with shared_drive_lock:
             if ck in shared_drive_cache:
@@ -731,86 +518,65 @@ class HttpRangeFile:
                 return shared_drive_cache[ck]
         start = chunk_idx * self.chunk_size
         end = min(start + self.chunk_size - 1, self.size - 1) if self.size > 0 else start + self.chunk_size - 1
-        if self.size > 0 and start >= self.size:
-            return b''
+        if self.size > 0 and start >= self.size: return b''
         h = self.headers.copy()
         h['Range'] = f'bytes={start}-{end}'
         if self.fid:
             with db_lock:
-                if self.fid not in db or db[self.fid].get('status') == 'Stopped':
-                    return b''
+                if self.fid not in db or db[self.fid].get('status') == 'Stopped': return b''
         data = b''
         try:
             r = stream_session.get(self.url, headers=h, timeout=15, stream=True)
-            if self.fid:
-                register_download_conn(self.fid, r)
+            if self.fid: register_download_conn(self.fid, r)
             try:
                 if r.status_code in [200, 206]:
                     blocks = []
                     for chunk in r.iter_content(131072):
-                        if not self.active:
-                            break
+                        if not self.active: break
                         blocks.append(chunk)
                     data = b''.join(blocks) if self.active else b''
             finally:
-                if self.fid:
-                    unregister_download_conn(self.fid, r)
+                if self.fid: unregister_download_conn(self.fid, r)
                 r.close()
-        except Exception as e:
-            print("Chunk fetch error:", e)
-            data = b''
+        except Exception: data = b''
         if self.active and data:
             with shared_drive_lock:
                 shared_drive_cache[ck] = data
-                while len(shared_drive_cache) > 128:
-                    shared_drive_cache.popitem(last=False)
+                while len(shared_drive_cache) > 16: shared_drive_cache.popitem(last=False)
         return data
 
     def _get_chunk(self, chunk_idx):
-        if not self.active:
-            return b''
-        for next_i in range(chunk_idx + 1, chunk_idx + 9):
-            if not self.active:
-                break
+        if not self.active: return b''
+        for next_i in range(chunk_idx + 1, chunk_idx + 3):
+            if not self.active: break
             nck = f"http_{self.file_id}_{next_i}"
-            with shared_drive_lock:
-                already_cached = nck in shared_drive_cache
+            with shared_drive_lock: already_cached = nck in shared_drive_cache
             if not already_cached and (self.size == 0 or next_i * self.chunk_size < self.size):
                 self.executor.submit(self._fetch_single_chunk, next_i)
-
         return self._fetch_single_chunk(chunk_idx)
 
     def read(self, size=-1):
-        if not self.active or (self.size > 0 and self.pos >= self.size):
-            return b''
+        if not self.active or (self.size > 0 and self.pos >= self.size): return b''
         if size < 0 or (self.size > 0 and self.pos + size > self.size):
             size = (self.size - self.pos) if self.size > 0 else 2097152
         res = bytearray()
         while size > 0 and self.active:
-            if self.size > 0 and self.pos >= self.size:
-                break
-            c_idx = self.pos // self.chunk_size
-            c_off = self.pos % self.chunk_size
+            if self.size > 0 and self.pos >= self.size: break
+            c_idx, c_off = self.pos // self.chunk_size, self.pos % self.chunk_size
             c_data = self._get_chunk(c_idx)
-            if not c_data or not self.active:
-                break
+            if not c_data or not self.active: break
             avail = len(c_data) - c_off
-            if avail <= 0:
-                break
+            if avail <= 0: break
             t = min(size, avail)
             res.extend(c_data[c_off : c_off + t])
-            self.pos += t
-            size -= t
+            self.pos += t; size -= t
         return bytes(res)
 
     def seek(self, offset, whence=0):
         if whence == 0: self.pos = offset
         elif whence == 1: self.pos += offset
         elif whence == 2: self.pos = (self.size + offset) if self.size > 0 else offset
-        if self.size > 0:
-            self.pos = max(0, min(self.pos, self.size))
-        else:
-            self.pos = max(0, self.pos)
+        self.pos = max(0, min(self.pos, self.size)) if self.size > 0 else max(0, self.pos)
         return self.pos
 
     def tell(self): return self.pos
@@ -825,28 +591,20 @@ class HttpRangeFile:
 
 class Segment:
     def __init__(self, start, end):
-        self.start = start
-        self.end = end
-        self.downloaded_bytes = 0
-        self.buffer = bytearray()
-        self.lock = threading.Lock()
-        self.event = threading.Event()
-        self.finished = False
+        self.start, self.end, self.downloaded_bytes, self.buffer = start, end, 0, bytearray()
+        self.lock, self.event, self.finished = threading.Lock(), threading.Event(), False
 
 class RAMSwarmStreamer:
     def __init__(self, url, total_size, start_pos=0):
-        self.url = url
-        self.total_size = total_size
-        self.pos = start_pos
+        self.url, self.total_size, self.pos = url, total_size, start_pos
         self.session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32)
-        self.session.mount('http://', adapter)
-        self.session.mount('https://', adapter)
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=32)
+        adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16)
+        self.session.mount('http://', adapter); self.session.mount('https://', adapter)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=12)
         self.stopped = False
 
         if self.total_size and self.total_size > 0:
-            self.num_segments = min(32, max(1, self.total_size // 1048576))
+            self.num_segments = min(6, max(1, self.total_size // 2097152))
             segment_size = self.total_size // self.num_segments
             self.segments = []
             for i in range(self.num_segments):
@@ -858,58 +616,39 @@ class RAMSwarmStreamer:
             for idx in range(start_seg, self.num_segments):
                 start_byte = start_pos if idx == start_seg else self.segments[idx].start
                 self.executor.submit(self._download_segment, idx, start_byte)
-        else:
-            self.total_size = 0
+        else: self.total_size = 0
 
     def _download_segment(self, seg_idx, start_byte):
         segment = self.segments[seg_idx]
-        end = segment.end
-        if start_byte > end:
-            segment.finished = True
-            segment.event.set()
-            return
+        if start_byte > segment.end:
+            segment.finished = True; segment.event.set(); return
 
         headers = HEADERS.copy()
-        headers['Range'] = f'bytes={start_byte}-{end}'
-        
-        for attempt in range(3):
-            if self.stopped:
-                break
+        headers['Range'] = f'bytes={start_byte}-{segment.end}'
+        for _ in range(3):
+            if self.stopped: break
             try:
                 r = self.session.get(self.url, headers=headers, timeout=15, stream=True)
                 if r.status_code in [200, 206]:
-                    for chunk in r.iter_content(262144): # 256KB buffer for maximum speed
-                        if self.stopped:
-                            r.close()
-                            return
-                        while len(segment.buffer) > 16777216 and not self.stopped: # Throttling at 16MB per segment
-                            time.sleep(0.02)
-                        if self.stopped:
-                            r.close()
-                            return
+                    for chunk in r.iter_content(262144):
+                        if self.stopped: r.close(); return
+                        while len(segment.buffer) > 2097152 and not self.stopped: time.sleep(0.02)
+                        if self.stopped: r.close(); return
                         with segment.lock:
                             segment.buffer.extend(chunk)
                             segment.downloaded_bytes += len(chunk)
                         segment.event.set()
-                    
-                    segment.finished = True
-                    segment.event.set()
-                    r.close()
-                    break
+                    segment.finished = True; segment.event.set()
+                    r.close(); break
                 r.close()
-            except Exception as e:
-                if self.stopped:
-                    break
+            except Exception:
+                if self.stopped: break
                 time.sleep(0.5)
-                
-        segment.finished = True
-        segment.event.set()
+        segment.finished = True; segment.event.set()
 
     def read(self, size):
         while True:
-            if (self.total_size and self.pos >= self.total_size) or self.stopped:
-                return b''
-
+            if (self.total_size and self.pos >= self.total_size) or self.stopped: return b''
             if not self.total_size or self.total_size <= 0:
                 if not hasattr(self, 'fallback_stream'):
                     self.fallback_stream = self.session.get(self.url, headers=HEADERS, stream=True, timeout=15)
@@ -918,29 +657,20 @@ class RAMSwarmStreamer:
                     data = next(self.fallback_iterator)
                     self.pos += len(data)
                     return data
-                except StopIteration:
-                    return b''
-                except Exception as e:
-                    return b''
+                except (StopIteration, Exception): return b''
 
             segment_size = self.total_size // self.num_segments
             seg_idx = min(self.num_segments - 1, self.pos // segment_size)
             segment = self.segments[seg_idx]
-
-            with segment.lock:
-                available = len(segment.buffer)
+            with segment.lock: available = len(segment.buffer)
 
             wait_start = time.time()
             while available == 0 and not segment.finished and not self.stopped:
                 segment.event.wait(timeout=0.2)
-                with segment.lock:
-                    available = len(segment.buffer)
-                if time.time() - wait_start > 15:
-                    break
+                with segment.lock: available = len(segment.buffer)
+                if time.time() - wait_start > 15: break
 
-            if self.stopped:
-                return b''
-
+            if self.stopped: return b''
             with segment.lock:
                 to_read = min(size, len(segment.buffer))
                 if to_read > 0:
@@ -949,22 +679,16 @@ class RAMSwarmStreamer:
                     self.pos += to_read
                     return res
 
-            if segment.finished and len(segment.buffer) == 0:
-                # Segment finished and fully read, loop to read next segment
-                continue
-
+            if segment.finished and len(segment.buffer) == 0: continue
             return b''
 
     def close(self):
         self.stopped = True
         if hasattr(self, 'segments'):
-            for segment in self.segments:
-                segment.event.set()
+            for segment in self.segments: segment.event.set()
         self.executor.shutdown(wait=False)
-        try:
-            self.session.close()
-        except:
-            pass
+        try: self.session.close()
+        except: pass
         if hasattr(self, 'fallback_stream'):
             try: self.fallback_stream.close()
             except: pass
@@ -973,7 +697,7 @@ class DriveRangeFile(HttpRangeFile):
     def __init__(self, file_id, access_token, size, fid=None):
         self.url = f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true'
         self.headers = {'Authorization': f'Bearer {access_token}', 'User-Agent': SPOOF_AGENT}
-        self.size = size; self.pos = 0; self.chunk_size = 4194304; self.file_id = file_id; self.fid = fid
+        self.size, self.pos, self.chunk_size, self.file_id, self.fid = size, 0, 4194304, file_id, fid
     def _get_chunk(self, chunk_idx):
         ck = f"drv_{self.file_id}_{chunk_idx}"
         with shared_drive_lock:
@@ -990,11 +714,9 @@ class DriveRangeFile(HttpRangeFile):
             try:
                 if r.status_code in [200, 206]:
                     blocks = []
-                    for chunk in r.iter_content(65536):
-                        blocks.append(chunk)
+                    for chunk in r.iter_content(65536): blocks.append(chunk)
                     data = b''.join(blocks)
-                else:
-                    data = b''
+                else: data = b''
             finally:
                 if self.fid: unregister_download_conn(self.fid, r)
                 r.close()
@@ -1005,19 +727,16 @@ class DriveRangeFile(HttpRangeFile):
         return data
 
 LOGIN_HTML = r"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Restricted Area</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#14171f;padding:40px;border-radius:12px;border:1px solid #2d3748;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5);width:100%;max-width:350px}input{padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;margin-bottom:20px;width:100%;box-sizing:border-box;font-size:16px;outline:none;text-align:center}input:focus{border-color:#00b3ff}button{padding:15px;background:#00b3ff;border:none;color:#fff;border-radius:8px;cursor:pointer;width:100%;font-size:16px;font-weight:bold;transition:0.2s}button:hover{background:#0099cc}h2{margin-top:0;margin-bottom:25px}</style></head><body><div class="box"><h2>🔒 Secure Engine Master</h2><form onsubmit="event.preventDefault(); document.cookie='dash_auth='+encodeURIComponent(document.getElementById('pw').value)+'; path=/; max-age=2592000'; window.location.reload();"><input type="password" id="pw" placeholder="Enter Password" autofocus required><button type="submit">Unlock Dashboard</button></form></div></body></html>"""
-HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engine Dashboard</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--drive:#10b981;--gofile:#ff7675}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:.3s}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:700;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px}input,select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;transition:.2s;white-space:nowrap}button:hover{opacity:.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748}.monitor-value{font-size:15px;font-weight:700;margin-top:8px;color:var(--accent);white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.file-name{font-weight:700;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333}</style></head><body><h2><span>🚀 Unified 7-Engine Master</span><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><a href="/brave" target="_blank" style="text-decoration:none;background:linear-gradient(135deg,#ff5500,#d93800);color:#fff;padding:6px 14px;border-radius:6px;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(255,85,0,0.4);display:inline-flex;align-items:center;gap:6px;transition:0.2s">🦁 Brave-Access</a><a href="/terminal" target="_blank" style="text-decoration:none;background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:6px 14px;border-radius:6px;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(16,185,129,0.4);display:inline-flex;align-items:center;gap:6px;transition:0.2s">💻 Terminal-Access</a><a href="/aria2" target="_blank" style="text-decoration:none;background:linear-gradient(135deg,#a855f7,#7c3aed);color:#fff;padding:6px 14px;border-radius:6px;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(168,85,247,0.4);display:inline-flex;align-items:center;gap:6px;transition:0.2s">📥 Aria2-Manager</a><a href="/vpn-panel" target="_blank" style="text-decoration:none;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;padding:6px 14px;border-radius:6px;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(245,158,11,0.4);display:inline-flex;align-items:center;gap:6px;transition:0.2s">🛡️ VPN-Panel</a><span style="font-size:14px;color:#888">Port 80 <span class="status-dot" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success)"></span></span></div></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram)">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--warn)">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success)">--</div></div><div class="monitor-card network-card"><div>Network Traffic (WAN)</div><div class="monitor-value" id="net" style="color:var(--success)">--</div></div></div><div class="engine-box" style="border-color:#10b981"><div class="engine-title"><span style="color:#10b981">📡 Engine 5: Direct Transfer (P2P RAM & Disk Relay)</span></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 1: Direct P2P</div><input type="file" id="file_p2p" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('p2p')" style="background:#10b981;color:#000">Generate P2P Link</button></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 2: Disk Buffered</div><input type="file" id="file_disk_relay" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('disk_relay')" style="background:#059669;color:#fff">Generate Disk Link</button></div><div class="input-group" style="margin-bottom:0"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 3: Direct Folder Upload</div><input type="file" id="file_folder" webkitdirectory directory multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('folder')" style="background:#047857;color:#fff">Upload Folder</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--purple)">💿 Engine 1: Disk Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple)">Send to Disk</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--ram)">⚡ Engine 2: Pure RAM Proxy</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000">Start RAM Proxy</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--multi)">🚀 Engine 3: Hyper-Thread Swarm Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_multi" placeholder="Paste link to swarm directly to VPS disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000">Swarm Download</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--swarm)">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_swarm" placeholder="Paste link to stream via 32x RAM Swarm..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff">Initialize Swarm</button></div></div><div class="engine-box" style="border-color:var(--drive)"><div class="engine-title"><span style="color:var(--drive)">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px"></span></div><div id="drive_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"><span id="drive_email" style="color:var(--success);font-weight:700;flex:1">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload to Drive..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000">Swarm Upload</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to Drive Folder, ZIP, RAR..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000">Stream Contents</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000">Generate Link</button></div><div id="zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"></div></div><div class="engine-box" style="border-color:var(--gofile)"><div class="engine-title"><span style="color:var(--gofile)">📂 Engine 7: Gofile.io vlc streaming & downloader</span> <span class="status-dot" id="gofile_dot" style="margin-left:10px"></span></div><div id="gofile_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="password" id="gofile_token" placeholder="🔑 Gofile Account Token..."></div><button onclick="connectGofile()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="gofile_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--gofile)"><span id="gofile_info" style="color:var(--gofile);font-weight:700;flex:1">✅ Server Vault Active. Connected to Gofile.</span><button onclick="disconnectGofile()" class="btn-red">Delete Token</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_gofile" placeholder="Paste Gofile Link (e.g. https://server.gofile.io/download/web/directory/filename.mkv)..."><button onclick="listGofileArchive()" style="background:var(--gofile);color:#000">Stream Contents</button></div><div id="gofile_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--gofile)"></div></div><div class="engine-box" style="border-color:#f59e0b"><div class="engine-title"><span style="color:#f59e0b">📦 Engine 8: Archive Extractor</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_engine8" placeholder="Paste direct link to ZIP, RAR, 7Z, TAR archive file..."><button onclick="listEngine8Archive()" style="background:#f59e0b;color:#000">Inspect & Extract Archive</button></div><div id="engine8_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid #f59e0b"></div></div><div class="file-grid" id="files" style="margin-top:20px"></div><script>function checkDriveStatus(){fetch("/api/drive/status").then(e=>e.json()).then(e=>{e.connected?(document.getElementById("drive_dot").style.background="var(--success)",document.getElementById("drive_auth_panel").style.display="none",document.getElementById("drive_connected_panel").style.display="flex",document.getElementById("drive_email").innerText="✅ Drive Active | 💾 "+(e.info||"")):(document.getElementById("drive_dot").style.background="var(--danger)",document.getElementById("drive_auth_panel").style.display="flex",document.getElementById("drive_connected_panel").style.display="none")})}function connectDrive(){let e=document.getElementById("drive_cid").value,t=document.getElementById("drive_csec").value,l=document.getElementById("drive_rt").value;if(!e||!t||!l)return alert("All keys required!");fetch("/api/drive/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({client_id:e,client_secret:t,refresh_token:l})}).then(e=>e.json()).then(e=>{e.success?checkDriveStatus():alert("Failed: "+e.error)})}function disconnectDrive(){let p=prompt("🔑 Enter Key Deletion Password to remove Drive keys:");if(!p)return;fetch("/api/drive/disconnect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({delete_pass:p})}).then(e=>e.json()).then(e=>{if(e.success)checkDriveStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Disconnect failed: "+err))}function checkGofileStatus(){fetch("/api/gofile/status?_t="+Date.now()).then(e=>e.json()).then(e=>{e.connected?(document.getElementById("gofile_dot").style.background="var(--success)",document.getElementById("gofile_auth_panel").style.display="none",document.getElementById("gofile_connected_panel").style.display="flex"):(document.getElementById("gofile_dot").style.background="var(--danger)",document.getElementById("gofile_auth_panel").style.display="flex",document.getElementById("gofile_connected_panel").style.display="none")}).catch(err=>console.error("Gofile status check failed:",err))}function connectGofile(){let e=document.getElementById("gofile_token").value;if(!e)return alert("Token required!");fetch("/api/gofile/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:e})}).then(e=>e.json()).then(e=>{if(e.success)checkGofileStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Connect failed: "+err))}function disconnectGofile(){let p=prompt("🔑 Enter Key Deletion Password to remove Gofile token:");if(!p)return;fetch("/api/gofile/disconnect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({delete_pass:p})}).then(e=>e.json()).then(e=>{if(e.success)checkGofileStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Disconnect failed: "+err))}async function listEngine8Archive(){let e=document.getElementById("url_engine8").value;if(e){let t=document.getElementById("engine8_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/engine8_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"engine8_contents")}else alert("No URL!")}async function listGofileArchive(){let e=document.getElementById("url_gofile").value;if(e){let t=document.getElementById("gofile_contents");t.style.display="block";t.innerHTML='Loading...';let isDirect=e.includes("gofile.io/download/")||e.includes("store-")||e.includes("/download/web/");let apiEndpoint=isDirect?"/api/gofile_register_direct":"/api/gofile_archive_list";let l=await fetch(apiEndpoint+"?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"gofile_contents")}else alert("No URL!")}function renderArchiveBox(e,t){let l=document.getElementById(t),d=t==="zip_contents"?"url_drive_zip":t==="swarm_zip_contents"?"url_swarm_zip":t==="gofile_contents"?"url_gofile":t==="engine8_contents"?"url_engine8":"url_direct_zip",n=e.mount_id||"none";let i=`<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #333"><button onclick="clearMountedArchive('${t}','${d}')" class="btn-red">Clear Mount</button></div>`;e.files.forEach(s=>{let c=window.location.origin+s.url,u=encodeURIComponent(s.name);i+=`<div class="zip-item">📄 ${s.name} <div style="display:flex;gap:5px"><input type="text" id="zl_${s.b64}" value="${c}" readonly onclick="this.select()"><button onclick="copyToBox('zl_${s.b64}')" style="background:var(--accent);color:#fff">Copy</button></div></div>`});l.innerHTML=i;l.style.display="block"}async function listDirectArchive(){let e=document.getElementById("url_direct_zip").value;if(e){let t=document.getElementById("direct_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/direct_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"direct_zip_contents")}}async function listSwarmArchive(){let e=document.getElementById("url_swarm_zip").value;if(e){let t=document.getElementById("swarm_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/swarm_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"swarm_zip_contents")}}async function listDriveArchive(){let e=document.getElementById("url_drive_zip").value;if(e){let t=document.getElementById("zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/drive_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"zip_contents")}else alert("No URL!")}function clearMountedArchive(e,t){fetch("/api/clear_archive_mount",{method:"POST"}).then(()=>{document.getElementById(e).style.display="none";document.getElementById(t).value=""})}function addFile(e){let t=document.getElementById("url_"+e).value;if(t){document.getElementById("url_"+e).value="";fetch("/api/add?type="+e+"&url="+encodeURIComponent(t))}}async function initUpload(e){let t=document.getElementById("file_"+e),l=t.files;if(0===l.length)return;for(let d=0;d<l.length;d++){let n=l[d],rp=n.webkitRelativePath||n.name;let o=await fetch("/api/upload_init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:e,name:n.name,size:n.size,relative_path:rp})}),a=await o.json();startGbpsP2P(a.fid,n,true)}t.value=""}async function startGbpsP2P(e,t,l){let n=1048576,o=Math.ceil(t.size/n),a=[],i=new Set,s=true,r=0;async function c(){while(s){let u=await fetch("/api/p2p_poll/"+e);if(!u.ok){s=false;break}let m=await u.json();for(let g of m)if(!i.has(g)&&!a.includes(g))a.push(g);await new Promise(k=>setTimeout(k,1000))}}async function v(){while(s){let E=-1;if(a.length>0)E=a.shift();else if(l&&r<o){while(i.has(r)&&r<o)r++;if(r<o)E=r++}if(E!==-1){i.add(E);let w=E*n,S=Math.min(w+n,t.size),C=t.slice(w,S);for(let x=0;x<3;x++){let L=await fetch(`/api/p2p_up/${e}/${E}`,{method:"POST",body:C});if(L.ok)break;await new Promise(I=>setTimeout(I,500))}i.delete(E)}else await new Promise(T=>setTimeout(T,200))}}c();for(let q=0;q<8;q++)v()}function copyToBox(e){let t=document.getElementById(e);t.select();document.execCommand("copy");alert("Copied!")}function triggerAction(e,t){fetch("/api/action/"+e+"/"+t)}checkDriveStatus();checkGofileStatus();fetch("/api/get_archive_mount").then(e=>e.json()).then(e=>{if(e.mounted&&e.data){let t=e.data.type==="direct"?"direct_zip_contents":e.data.type==="swarm"?"swarm_zip_contents":e.data.type==="engine8"?"engine8_contents":(e.data.type==="drive"||e.data.type==="drive_folder")?"zip_contents":e.data.type==="gofile_folder"?"gofile_contents":"";if(t)renderArchiveBox(e.data,t)}});setInterval(checkDriveStatus,60000);setInterval(checkGofileStatus,60000);setInterval(()=>{fetch("/api/data").then(e=>e.json()).then(e=>{document.getElementById("cpu").innerText=e.sys.cpu;document.getElementById("ram").innerText=e.sys.ram;document.getElementById("swap").innerText=e.sys.swap;document.getElementById("disk").innerText=e.sys.disk;document.getElementById("net").innerText=e.sys.net;let t="";let now=Date.now();if(!window.sp)window.sp={};e.files.forEach(d=>{let stx="";let downMB=(d.down/1048576).toFixed(2);let totMB=d.total?(d.total/1048576).toFixed(2):"∞";if(d.total>0&&d.down<d.total){if(!window.sp[d.id])window.sp[d.id]={d:d.down,t:now,s:0};let dd=d.down-window.sp[d.id].d,dt=(now-window.sp[d.id].t)/1e3;if(dt>=1){window.sp[d.id].s=dd>0?dd/dt/1048576:0;window.sp[d.id].d=d.down;window.sp[d.id].t=now}if(window.sp[d.id].s>0)stx=" ⚡ "+window.sp[d.id].s.toFixed(1)+" MB/s"}let th=d.active_threads>0?` <span style="color:#06b6d4">[${d.active_threads} Threads]</span>`:"";let m=d.total?Math.min(100,Math.round((d.down/d.total)*100))+"%":"Live";let f=d.total?`<progress value="${d.down}" max="${d.total}"></progress>`:"";let u=encodeURIComponent(d.name);let y=window.location.origin+"/stream/"+d.id+"/"+u;t+=`<div class="file-card"><div class="file-name">[${d.type.toUpperCase()}] ${d.name}</div><div class="file-status">${d.status} - ${m} (${downMB} MB / ${totMB} MB)${stx}${th}</div>${f}<div class="link-box"><input type="text" id="l_${d.id}" value="${y}" readonly onclick="this.select()"><button onclick="copyToBox('l_${d.id}')">Copy</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${d.id}','stop')">Abort</button></div></div>`});document.getElementById("files").innerHTML=t||'<div style="color:#555">No active tasks.</div>'})},1000)</script></body></html>"""
+
+HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engine Dashboard</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#00b3ff;--success:#10b981;--danger:#ef4444;--warn:#f59e0b;--purple:#8b5cf6;--ram:#06b6d4;--multi:#f97316;--swarm:#ec4899;--drive:#10b981;--gofile:#ff7675}body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}.status-dot{height:12px;width:12px;background:var(--danger);border-radius:50%;display:inline-block;box-shadow:0 0 8px var(--danger);transition:.3s}.engine-box{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.engine-title{font-weight:700;font-size:1.2em;margin-bottom:15px;display:flex;align-items:center;gap:8px}.input-group{display:flex;gap:10px;margin-bottom:10px}input,select{flex:1;padding:15px;border-radius:8px;border:1px solid #333;background:#000;color:#fff;font-size:16px;outline:none}button{padding:12px 18px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;transition:.2s;white-space:nowrap}button:hover{opacity:.8}.monitors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px;margin-bottom:25px}.monitor-card{background:var(--card);padding:15px;border-radius:8px;text-align:center;border:1px solid #2d3748}.monitor-value{font-size:15px;font-weight:700;margin-top:8px;color:var(--accent);white-space:nowrap}.network-card{grid-column:1 / -1}.file-grid{display:grid;gap:15px}.file-card{background:var(--card);padding:20px;border-radius:8px;position:relative}.file-name{font-weight:700;font-size:1.1em;word-break:break-all;margin-bottom:10px}.file-status{color:var(--warn);font-size:.9em;margin-bottom:10px}progress{width:100%;height:10px;border-radius:5px;margin-bottom:10px;accent-color:var(--success)}.link-box{display:flex;gap:5px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.link-box input{margin:0;flex:1;padding:10px;border:1px solid #555;background:#111;color:#00ffcc;font-family:monospace;font-size:14px}.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;align-items:center}.btn-red{background:transparent;border:1px solid var(--danger);color:var(--danger)}.btn-red:hover{background:var(--danger);color:#fff}.zip-item{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #333}</style></head><body><h2><span>🚀 Unified 7-Engine Master</span><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><a href="/files/" target="_blank" style="text-decoration:none;background:linear-gradient(135deg,#00b3ff,#0077b6);color:#fff;padding:6px 14px;border-radius:6px;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(0,179,255,0.4);display:inline-flex;align-items:center;gap:6px">📁 Files</a><a href="/terminal" target="_blank" style="text-decoration:none;background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:6px 14px;border-radius:6px;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(16,185,129,0.4);display:inline-flex;align-items:center;gap:6px">💻 Terminal</a><a href="/aria2" target="_blank" style="text-decoration:none;background:linear-gradient(135deg,#a855f7,#7c3aed);color:#fff;padding:6px 14px;border-radius:6px;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(168,85,247,0.4);display:inline-flex;align-items:center;gap:6px">📥 Aria2</a><a href="/vpn-panel" target="_blank" style="text-decoration:none;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;padding:6px 14px;border-radius:6px;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(245,158,11,0.4);display:inline-flex;align-items:center;gap:6px">🛡️ VPN-Panel</a><span style="font-size:14px;color:#888">Port 80 <span class="status-dot" id="dot" style="background:var(--success);box-shadow:0 0 8px var(--success)"></span></span></div></h2><div class="monitors"><div class="monitor-card"><div>CPU Load</div><div class="monitor-value" id="cpu">--</div></div><div class="monitor-card"><div>RAM (Used/Free/Total)</div><div class="monitor-value" id="ram" style="color:var(--ram)">--</div></div><div class="monitor-card"><div>Swap (Used/Free/Total)</div><div class="monitor-value" id="swap" style="color:var(--warn)">--</div></div><div class="monitor-card"><div>Disk (Used/Free/Total)</div><div class="monitor-value" id="disk" style="color:var(--success)">--</div></div><div class="monitor-card network-card"><div>Network Traffic (WAN)</div><div class="monitor-value" id="net" style="color:var(--success)">--</div></div></div><div class="engine-box" style="border-color:#10b981"><div class="engine-title"><span style="color:#10b981">📡 Engine 5: Direct Transfer (P2P RAM & Disk Relay)</span></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 1: Direct P2P</div><input type="file" id="file_p2p" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('p2p')" style="background:#10b981;color:#000">Generate P2P Link</button></div><div class="input-group" style="margin-bottom:10px"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 2: Disk Buffered</div><input type="file" id="file_disk_relay" multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('disk_relay')" style="background:#059669;color:#fff">Generate Disk Link</button></div><div class="input-group" style="margin-bottom:0"><div style="flex:1;background:#000;border:1px solid #333;border-radius:8px;padding:5px"><div style="color:#aaa;font-size:11px;padding-left:10px">Box 3: Direct Folder Upload</div><input type="file" id="file_folder" webkitdirectory directory multiple style="border:none;width:100%;color:#fff;font-size:14px;padding:5px 10px"></div><button onclick="initUpload('folder')" style="background:#047857;color:#fff">Upload Folder</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--purple)">💿 Engine 1: Disk Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_disk" placeholder="Paste link to download sequentially..."><button onclick="addFile('disk')" style="background:var(--purple)">Send to Disk</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--ram)">⚡ Engine 2: Pure RAM Proxy</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_ram" placeholder="Paste link to proxy purely through RAM..."><button onclick="addFile('ram')" style="background:var(--ram);color:#000">Start RAM Proxy</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--multi)">🚀 Engine 3: Hyper-Thread Swarm Forge</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_multi" placeholder="Paste link to swarm directly to VPS disk..."><button onclick="addFile('multi')" style="background:var(--multi);color:#000">Swarm Download</button></div></div><div class="engine-box"><div class="engine-title"><span style="color:var(--swarm)">🌪️ Engine 4: 32x RAM Swarm</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_swarm" placeholder="Paste link to stream via 32x RAM Swarm..."><button onclick="addFile('swarm')" style="background:var(--swarm);color:#fff">Initialize Swarm</button></div></div><div class="engine-box" style="border-color:var(--drive)"><div class="engine-title"><span style="color:var(--drive)">☁️ Engine 6: Google One Backend</span> <span class="status-dot" id="drive_dot" style="margin-left:10px"></span></div><div id="drive_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="text" id="drive_cid" placeholder="🔑 Client ID..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_csec" placeholder="🔑 Client Secret..."></div><div class="input-group" style="margin-bottom:0"><input type="password" id="drive_rt" placeholder="🔑 Refresh Token..."></div><button onclick="connectDrive()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="drive_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"><span id="drive_email" style="color:var(--success);font-weight:700;flex:1">✅ Server Vault Active. Connected to Drive.</span><button onclick="disconnectDrive()" class="btn-red">Delete Server Vault Keys</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive" placeholder="Box 1: Single-Thread Upload to Drive..."><button onclick="addFile('drive')" style="background:var(--drive);color:#000">Upload (RAM)</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_swarm" placeholder="Box 2: Multi-Thread Swarm Upload to Drive..."><button onclick="addFile('drive_swarm')" style="background:var(--drive);color:#000">Swarm Upload</button></div><div class="input-group" style="margin-bottom:10px"><input type="text" id="url_drive_zip" placeholder="Box 3: Link to Drive Folder, ZIP, RAR..."><button onclick="listDriveArchive()" style="background:var(--drive);color:#000">Stream Contents</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_drive_direct" placeholder="Box 4: Paste Drive Link to Generate Direct Link..."><button onclick="addFile('drive_direct')" style="background:var(--drive);color:#000">Generate Link</button></div><div id="zip_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--success)"></div></div><div class="engine-box" style="border-color:var(--gofile)"><div class="engine-title"><span style="color:var(--gofile)">📂 Engine 7: Gofile.io vlc streaming & downloader</span> <span class="status-dot" id="gofile_dot" style="margin-left:10px"></span></div><div id="gofile_auth_panel" style="display:flex;flex-direction:column;gap:10px;margin-bottom:15px"><div class="input-group" style="margin-bottom:0"><input type="password" id="gofile_token" placeholder="🔑 Gofile Account Token..."></div><button onclick="connectGofile()" style="background:#4b5563;color:#fff;width:100%">Save to Server Vault & Connect</button></div><div id="gofile_connected_panel" style="display:none;margin-bottom:15px;align-items:center;gap:10px;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--gofile)"><span id="gofile_info" style="color:var(--gofile);font-weight:700;flex:1">✅ Server Vault Active. Connected to Gofile.</span><button onclick="disconnectGofile()" class="btn-red">Delete Token</button></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_gofile" placeholder="Paste Gofile Link (e.g. https://server.gofile.io/download/web/directory/filename.mkv)..."><button onclick="listGofileArchive()" style="background:var(--gofile);color:#000">Stream Contents</button></div><div id="gofile_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid var(--gofile)"></div></div><div class="engine-box" style="border-color:#f59e0b"><div class="engine-title"><span style="color:#f59e0b">📦 Engine 8: Archive Extractor</span></div><div class="input-group" style="margin-bottom:0"><input type="text" id="url_engine8" placeholder="Paste direct link to ZIP, RAR, 7Z, TAR archive file..."><button onclick="listEngine8Archive()" style="background:#f59e0b;color:#000">Inspect & Extract Archive</button></div><div id="engine8_contents" style="margin-top:10px;display:none;background:#0d1117;padding:15px;border-radius:8px;border:1px solid #f59e0b"></div></div><div class="file-grid" id="files" style="margin-top:20px"></div><script>function checkDriveStatus(){fetch("/api/drive/status").then(e=>e.json()).then(e=>{e.connected?(document.getElementById("drive_dot").style.background="var(--success)",document.getElementById("drive_auth_panel").style.display="none",document.getElementById("drive_connected_panel").style.display="flex",document.getElementById("drive_email").innerText="✅ Drive Active | 💾 "+(e.info||"")):(document.getElementById("drive_dot").style.background="var(--danger)",document.getElementById("drive_auth_panel").style.display="flex",document.getElementById("drive_connected_panel").style.display="none")})}function connectDrive(){let e=document.getElementById("drive_cid").value,t=document.getElementById("drive_csec").value,l=document.getElementById("drive_rt").value;if(!e||!t||!l)return alert("All keys required!");fetch("/api/drive/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({client_id:e,client_secret:t,refresh_token:l})}).then(e=>e.json()).then(e=>{e.success?checkDriveStatus():alert("Failed: "+e.error)})}function disconnectDrive(){let p=prompt("🔑 Enter Key Deletion Password to remove Drive keys:");if(!p)return;fetch("/api/drive/disconnect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({delete_pass:p})}).then(e=>e.json()).then(e=>{if(e.success)checkDriveStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Disconnect failed: "+err))}function checkGofileStatus(){fetch("/api/gofile/status?_t="+Date.now()).then(e=>e.json()).then(e=>{e.connected?(document.getElementById("gofile_dot").style.background="var(--success)",document.getElementById("gofile_auth_panel").style.display="none",document.getElementById("gofile_connected_panel").style.display="flex"):(document.getElementById("gofile_dot").style.background="var(--danger)",document.getElementById("gofile_auth_panel").style.display="flex",document.getElementById("gofile_connected_panel").style.display="none")}).catch(err=>console.error("Gofile status check failed:",err))}function connectGofile(){let e=document.getElementById("gofile_token").value;if(!e)return alert("Token required!");fetch("/api/gofile/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:e})}).then(e=>e.json()).then(e=>{if(e.success)checkGofileStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Connect failed: "+err))}function disconnectGofile(){let p=prompt("🔑 Enter Key Deletion Password to remove Gofile token:");if(!p)return;fetch("/api/gofile/disconnect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({delete_pass:p})}).then(e=>e.json()).then(e=>{if(e.success)checkGofileStatus();else alert("Failed: "+(e.error||"Unknown error"))}).catch(err=>alert("Disconnect failed: "+err))}async function listEngine8Archive(){let e=document.getElementById("url_engine8").value;if(e){let t=document.getElementById("engine8_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/engine8_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"engine8_contents")}else alert("No URL!")}async function listGofileArchive(){let e=document.getElementById("url_gofile").value;if(e){let t=document.getElementById("gofile_contents");t.style.display="block";t.innerHTML='Loading...';let isDirect=e.includes("gofile.io/download/")||e.includes("store-")||e.includes("/download/web/");let apiEndpoint=isDirect?"/api/gofile_register_direct":"/api/gofile_archive_list";let l=await fetch(apiEndpoint+"?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"gofile_contents")}else alert("No URL!")}function renderArchiveBox(e,t){let l=document.getElementById(t),d=t==="zip_contents"?"url_drive_zip":t==="swarm_zip_contents"?"url_swarm_zip":t==="gofile_contents"?"url_gofile":t==="engine8_contents"?"url_engine8":"url_direct_zip",n=e.mount_id||"none";let i=`<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #333"><button onclick="clearMountedArchive('${t}','${d}')" class="btn-red">Clear Mount</button></div>`;e.files.forEach(s=>{let c=window.location.origin+s.url;i+=`<div class="zip-item">📄 ${s.name} <div style="display:flex;gap:5px"><input type="text" id="zl_${s.b64}" value="${c}" readonly onclick="this.select()"><button onclick="copyToBox('zl_${s.b64}')" style="background:var(--accent);color:#fff">Copy</button></div></div>`});l.innerHTML=i;l.style.display="block"}async function listDirectArchive(){let e=document.getElementById("url_direct_zip").value;if(e){let t=document.getElementById("direct_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/direct_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"direct_zip_contents")}}async function listSwarmArchive(){let e=document.getElementById("url_swarm_zip").value;if(e){let t=document.getElementById("swarm_zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/swarm_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"swarm_zip_contents")}}async function listDriveArchive(){let e=document.getElementById("url_drive_zip").value;if(e){let t=document.getElementById("zip_contents");t.style.display="block";t.innerHTML='Loading...';let l=await fetch("/api/drive_archive_list?url="+encodeURIComponent(e)),d=await l.json();d.error?t.innerHTML='❌ '+d.error:renderArchiveBox(d,"zip_contents")}else alert("No URL!")}function clearMountedArchive(e,t){fetch("/api/clear_archive_mount",{method:"POST"}).then(()=>{document.getElementById(e).style.display="none";document.getElementById(t).value=""})}function addFile(e){let t=document.getElementById("url_"+e).value;if(t){document.getElementById("url_"+e).value="";fetch("/api/add?type="+e+"&url="+encodeURIComponent(t))}}async function initUpload(e){let t=document.getElementById("file_"+e),l=t.files;if(0===l.length)return;for(let d=0;d<l.length;d++){let n=l[d],rp=n.webkitRelativePath||n.name;let o=await fetch("/api/upload_init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:e,name:n.name,size:n.size,relative_path:rp})}),a=await o.json();startGbpsP2P(a.fid,n,true)}t.value=""}async function startGbpsP2P(e,t,l){let n=1048576,o=Math.ceil(t.size/n),a=[],i=new Set,s=true,r=0;async function c(){while(s){let u=await fetch("/api/p2p_poll/"+e);if(!u.ok){s=false;break}let m=await u.json();for(let g of m)if(!i.has(g)&&!a.includes(g))a.push(g);await new Promise(k=>setTimeout(k,1000))}}async function v(){while(s){let E=-1;if(a.length>0)E=a.shift();else if(l&&r<o){while(i.has(r)&&r<o)r++;if(r<o)E=r++}if(E!==-1){i.add(E);let w=E*n,S=Math.min(w+n,t.size),C=t.slice(w,S);for(let x=0;x<3;x++){let L=await fetch(`/api/p2p_up/${e}/${E}`,{method:"POST",body:C});if(L.ok)break;await new Promise(I=>setTimeout(I,500))}i.delete(E)}else await new Promise(T=>setTimeout(T,200))}}c();for(let q=0;q<8;q++)v()}function copyToBox(e){let t=document.getElementById(e);t.select();document.execCommand("copy");alert("Copied!")}function triggerAction(e,t){fetch("/api/action/"+e+"/"+t)}checkDriveStatus();checkGofileStatus();fetch("/api/get_archive_mount").then(e=>e.json()).then(e=>{if(e.mounted&&e.data){let t=e.data.type==="direct"?"direct_zip_contents":e.data.type==="swarm"?"swarm_zip_contents":e.data.type==="engine8"?"engine8_contents":(e.data.type==="drive"||e.data.type==="drive_folder")?"zip_contents":e.data.type==="gofile_folder"?"gofile_contents":"";if(t)renderArchiveBox(e.data,t)}});setInterval(checkDriveStatus,60000);setInterval(checkGofileStatus,60000);setInterval(()=>{fetch("/api/data").then(e=>e.json()).then(e=>{document.getElementById("cpu").innerText=e.sys.cpu;document.getElementById("ram").innerText=e.sys.ram;document.getElementById("swap").innerText=e.sys.swap;document.getElementById("disk").innerText=e.sys.disk;document.getElementById("net").innerText=e.sys.net;let t="";let now=Date.now();if(!window.sp)window.sp={};e.files.forEach(d=>{let stx="";let downMB=(d.down/1048576).toFixed(2);let totMB=d.total?(d.total/1048576).toFixed(2):"∞";if(d.total>0&&d.down<d.total){if(!window.sp[d.id])window.sp[d.id]={d:d.down,t:now,s:0};let dd=d.down-window.sp[d.id].d,dt=(now-window.sp[d.id].t)/1e3;if(dt>=1){window.sp[d.id].s=dd>0?dd/dt/1048576:0;window.sp[d.id].d=d.down;window.sp[d.id].t=now}if(window.sp[d.id].s>0)stx=" ⚡ "+window.sp[d.id].s.toFixed(1)+" MB/s"}let th=d.active_threads>0?` <span style="color:#06b6d4">[${d.active_threads} Threads]</span>`:"";let m=d.total?Math.min(100,Math.round((d.down/d.total)*100))+"%":"Live";let f=d.total?`<progress value="${d.down}" max="${d.total}"></progress>`:"";let u=encodeURIComponent(d.name);let y=window.location.origin+"/stream/"+d.id+"/"+u;t+=`<div class="file-card"><div class="file-name">[${d.type.toUpperCase()}] ${d.name}</div><div class="file-status">${d.status} - ${m} (${downMB} MB / ${totMB} MB)${stx}${th}</div>${f}<div class="link-box"><input type="text" id="l_${d.id}" value="${y}" readonly onclick="this.select()"><button onclick="copyToBox('l_${d.id}')">Copy</button></div><div class="btn-group"><button class="btn-red" onclick="triggerAction('${d.id}','stop')">Abort</button></div></div>`});document.getElementById("files").innerHTML=t||'<div style="color:#555">No active tasks.</div>'})},1000)</script></body></html>"""
 
 TERMINAL_LOGIN_HTML = r"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Terminal-Access Authentication</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#14171f;padding:40px;border-radius:12px;border:1px solid #2d3748;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.6);width:100%;max-width:380px}.icon{font-size:42px;margin-bottom:12px}h2{margin:0 0 8px 0;font-size:22px;color:#fff}p{color:#94a3b8;font-size:13px;margin-bottom:25px}input{padding:14px;border-radius:8px;border:1px solid #334155;background:#000;color:#00ffcc;margin-bottom:18px;width:100%;box-sizing:border-box;font-size:16px;outline:none;text-align:center;font-family:monospace;letter-spacing:1px}input:focus{border-color:#10b981;box-shadow:0 0 10px rgba(16,185,129,0.3)}button{padding:14px;background:linear-gradient(135deg,#10b981,#059669);border:none;color:#fff;border-radius:8px;cursor:pointer;width:100%;font-size:15px;font-weight:700;transition:0.2s;box-shadow:0 4px 12px rgba(16,185,129,0.4)}button:hover{opacity:.9}</style></head><body><div class="box"><div class="icon">💻</div><h2>Terminal-Access</h2><p>Enter Master Terminal Password to launch root VPS shell</p><form onsubmit="event.preventDefault(); document.cookie='term_auth='+encodeURIComponent(document.getElementById('pw').value)+'; path=/; max-age=2592000'; window.location.reload();"><input type="password" id="pw" placeholder="Enter Terminal Password" autofocus required><button type="submit">Unlock Root Terminal</button></form></div></body></html>"""
 
 TERMINAL_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VPS Root Web Terminal</title><style>*{box-sizing:border-box;margin:0;padding:0}body{background:#000;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{background:#0d1117;padding:8px 16px;border-bottom:1px solid #30363d;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;z-index:10}.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:14px}.badge{background:#059669;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;font-weight:600}.actions{display:flex;align-items:center;gap:8px}.btn{background:#21262d;color:#c9d1d9;border:1px solid #30363d;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px;transition:.15s}.btn:hover{background:#30363d;color:#fff;border-color:#8b949e}.btn-green{background:#238636;color:#fff;border-color:#2ea043}.btn-green:hover{background:#2ea043}.btn-red{background:#da3633;color:#fff;border-color:#f85149}.btn-red:hover{background:#b62324}.cmd-bar{display:flex;gap:6px;flex:1;max-width:480px}.cmd-input{flex:1;background:#161b22;border:1px solid #30363d;color:#58a6ff;font-family:monospace;font-size:13px;padding:6px 10px;border-radius:6px;outline:none}.cmd-input:focus{border-color:#58a6ff}.terminal-frame{flex:1;width:100%;height:calc(100vh - 52px);border:none;background:#000}#toast{position:fixed;bottom:20px;right:20px;background:#238636;color:#fff;padding:10px 18px;border-radius:6px;font-size:13px;font-weight:600;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:999}</style></head><body><div class="header"><div class="brand"><span>💻 VPS Root Terminal</span><span class="badge">SUDO ROOT ACTIVE</span></div><div class="cmd-bar"><input type="text" id="quickCmd" class="cmd-input" placeholder="Type or paste command to send..."><button class="btn btn-green" onclick="sendCmd()">Send ↵</button><button class="btn" onclick="pasteClipboard()">📋 Paste</button></div><div class="actions"><button class="btn" onclick="reloadTerm()">🔄 Refresh</button><button class="btn btn-red" onclick="lockTerm()">🔒 Lock</button></div></div><iframe id="termFrame" class="terminal-frame" src="/ttyd/"></iframe><div id="toast"></div><script>function showToast(e){let t=document.getElementById("toast");t.innerText=e,t.style.display="block",setTimeout(()=>{t.style.display="none"},2500)}async function pasteClipboard(){try{let e=await navigator.clipboard.readText();e&&(document.getElementById("quickCmd").value=e,showToast("Pasted from clipboard! Click Send to execute."))}catch(t){let n=prompt("Paste command here:");n&&(document.getElementById("quickCmd").value=n)}}function sendCmd(){let e=document.getElementById("quickCmd"),t=e.value;if(!t)return;try{let n=document.getElementById("termFrame");n.contentWindow&&n.contentWindow.postMessage({type:"input",data:t+"\r"},"*")}catch(l){}showToast("Command sent: "+t),e.value=""}document.getElementById("quickCmd").addEventListener("keydown",function(e){"Enter"===e.key&&sendCmd()});function reloadTerm(){document.getElementById("termFrame").src="/ttyd/?_t="+Date.now(),showToast("Terminal session reloaded")}function lockTerm(){document.cookie="term_auth=; path=/; max-age=0",window.location.reload()}</script></body></html>"""
 
-BRAVE_LOGIN_HTML = r"""<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Brave-Access Authentication</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#14171f;padding:40px;border-radius:12px;border:1px solid #2d3748;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.6);width:100%;max-width:380px}.icon{font-size:42px;margin-bottom:12px}h2{margin:0 0 8px 0;font-size:22px;color:#fff}p{color:#94a3b8;font-size:13px;margin-bottom:25px}input{padding:14px;border-radius:8px;border:1px solid #334155;background:#000;color:#00ffcc;margin-bottom:18px;width:100%;box-sizing:border-box;font-size:16px;outline:none;text-align:center;font-family:monospace;letter-spacing:1px}input:focus{border-color:#ff5500;box-shadow:0 0 10px rgba(255,85,0,0.3)}button{padding:14px;background:linear-gradient(135deg,#ff5500,#d93800);border:none;color:#fff;border-radius:8px;cursor:pointer;width:100%;font-size:15px;font-weight:700;transition:0.2s;box-shadow:0 4px 12px rgba(255,85,0,0.4)}button:hover{opacity:.9}</style></head><body><div class="box"><div class="icon">🦁</div><h2>Brave-Access</h2><p>Enter Master Password to open full cloud Brave browser</p><form onsubmit="event.preventDefault(); document.cookie='browser_auth='+encodeURIComponent(document.getElementById('pw').value)+'; path=/; max-age=2592000'; window.location.reload();"><input type="password" id="pw" placeholder="Enter Browser Password" autofocus required><button type="submit">Launch Brave Browser</button></form></div></body></html>"""
-
-BRAVE_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cloud Brave Web Browser</title><style>*{box-sizing:border-box;margin:0;padding:0}body{background:#000;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{background:#0d1117;padding:8px 16px;border-bottom:1px solid #30363d;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;z-index:10}.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:14px}.badge{background:#ff5500;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;font-weight:600}.actions{display:flex;align-items:center;gap:8px}.btn{background:#21262d;color:#c9d1d9;border:1px solid #30363d;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px;transition:.15s}.btn:hover{background:#30363d;color:#fff;border-color:#8b949e}.btn-orange{background:#ff5500;color:#fff;border-color:#ff5500}.btn-orange:hover{background:#d93800}.btn-green{background:#238636;color:#fff;border-color:#2ea043}.btn-green:hover{background:#2ea043}.btn-red{background:#da3633;color:#fff;border-color:#f85149}.btn-red:hover{background:#b62324}.url-bar{display:flex;gap:6px;flex:1;max-width:550px}.url-input{flex:1;background:#161b22;border:1px solid #30363d;color:#58a6ff;font-family:monospace;font-size:13px;padding:6px 10px;border-radius:6px;outline:none}.url-input:focus{border-color:#58a6ff}.browser-frame{flex:1;width:100%;height:calc(100vh - 52px);border:none;background:#000;display:block}#toast{position:fixed;bottom:20px;right:20px;background:#ff5500;color:#fff;padding:10px 18px;border-radius:6px;font-size:13px;font-weight:600;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:999}</style></head><body><div class="header"><div class="brand"><span>🦁 Cloud Brave Browser (v1.81+)</span><span class="badge">1366×768 REMOTE RESIZING</span></div><div class="url-bar"><input type="text" id="quickUrl" class="url-input" placeholder="Type or paste URL (e.g. https://fast.com)..."><button class="btn btn-orange" onclick="openUrl()">Go ↵</button><button class="btn" onclick="pasteToUrl()">📋 Paste</button></div><div class="actions"><button class="btn btn-orange" onclick="setMode('remote')">🖥️ Remote Fit</button><button class="btn" onclick="setMode('scale')">📐 Scale Fit</button><button class="btn" onclick="reloadFrame()">🔄 Refresh</button><button class="btn" onclick="toggleFullscreen()">⛶ Fullscreen</button><button class="btn btn-red" onclick="lockBrowser()">🔒 Lock</button></div></div><iframe id="browserFrame" class="browser-frame" src="/novnc/vnc.html?autoconnect=true&resize=remote&reconnect=true&quality=9&compression=2"></iframe><div id="toast"></div><script>function showToast(e){let t=document.getElementById("toast");t.innerText=e,t.style.display="block",setTimeout(()=>{t.style.display="none"},2500)}async function pasteToUrl(){try{let e=await navigator.clipboard.readText();e&&(document.getElementById("quickUrl").value=e,showToast("Pasted from clipboard!"))}catch(t){let n=prompt("Paste URL here:");n&&(document.getElementById("quickUrl").value=n)}}function openUrl(){let e=document.getElementById("quickUrl"),t=e.value.trim();if(!t)return;if(!t.startsWith("http://")&&!t.startsWith("https://"))t="https://"+t;navigator.clipboard.writeText(t).then(()=>{showToast("URL copied! Paste directly in Brave address bar.")}).catch(()=>{});e.value=""}document.getElementById("quickUrl").addEventListener("keydown",function(e){"Enter"===e.key&&openUrl()});function setMode(mode){let f=document.getElementById("browserFrame");f.src="/novnc/vnc.html?autoconnect=true&resize="+mode+"&reconnect=true&quality=9&compression=2&_t="+Date.now();showToast("Switched to "+(mode==='remote'?'Remote Auto-Resize (1366x768 Dynamic)':'Scale to Fit'))}function reloadFrame(){document.getElementById("browserFrame").src="/novnc/vnc.html?autoconnect=true&resize=remote&reconnect=true&quality=9&compression=2&_t="+Date.now(),showToast("Browser session reloaded")}function toggleFullscreen(){let e=document.getElementById("browserFrame");e.requestFullscreen?e.requestFullscreen():e.webkitRequestFullscreen&&e.webkitRequestFullscreen()}function lockBrowser(){document.cookie="browser_auth=; path=/; max-age=0",window.location.reload()}</script></body></html>"""
-
 ARIA2_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aria2 Download Manager</title><style>*{box-sizing:border-box;margin:0;padding:0}body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}.header{background:#0d1117;padding:8px 16px;border-bottom:1px solid #30363d;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;z-index:10}.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:14px}.badge{background:#a855f7;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;font-weight:600}.actions{display:flex;align-items:center;gap:8px}.btn{background:#21262d;color:#c9d1d9;border:1px solid #30363d;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px;transition:.15s}.btn:hover{background:#30363d;color:#fff;border-color:#8b949e}.btn-purple{background:#a855f7;color:#fff;border-color:#a855f7}.btn-purple:hover{background:#9333ea}.btn-red{background:#da3633;color:#fff;border-color:#f85149}.btn-red:hover{background:#b62324}.aria-frame{flex:1;width:100%;height:calc(100vh - 52px);border:none;background:#0d1117}#toast{position:fixed;bottom:20px;right:20px;background:#a855f7;color:#fff;padding:10px 18px;border-radius:6px;font-size:13px;font-weight:600;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:999}</style></head><body><div class="header"><div class="brand"><span>📥 Aria2 Download Manager (AriaNg)</span><span class="badge">16-THREAD ACCELERATED</span></div><div class="actions"><button class="btn btn-purple" onclick="openDirect()">🔗 Open Direct Tab</button><button class="btn" onclick="reloadFrame()">🔄 Refresh</button><button class="btn" onclick="toggleFullscreen()">⛶ Fullscreen</button><button class="btn btn-red" onclick="lockAria()">🔒 Lock</button></div></div><iframe id="ariaFrame" class="aria-frame" src="/ariang/index.html"></iframe><div id="toast"></div><script>function getTargetUrl(){let proto=window.location.protocol==='https:'?'wss':'ws';let port=window.location.port?window.location.port:(window.location.protocol==='https:'?'443':'80');let host=window.location.hostname;return '/ariang/index.html#!/settings/rpc/set/'+proto+'/'+host+'/'+port+'/jsonrpc'}function initFrame(){let u=getTargetUrl();document.getElementById("ariaFrame").src=u}function showToast(e){let t=document.getElementById("toast");t.innerText=e,t.style.display="block",setTimeout(()=>{t.style.display="none"},2500)}function openDirect(){window.open(getTargetUrl(),"_blank")}function reloadFrame(){let u=getTargetUrl();document.getElementById("ariaFrame").src=u+"&_t="+Date.now(),showToast("Aria2 session reloaded")}function toggleFullscreen(){let e=document.getElementById("ariaFrame");e.requestFullscreen?e.requestFullscreen():e.webkitRequestFullscreen&&e.webkitRequestFullscreen()}function lockAria(){document.cookie="dash_auth=; path=/; max-age=0",window.location.reload()}initFrame();</script></body></html>"""
 
-VPN_PANEL_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VPN Live Control Panel</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#f59e0b;--success:#10b981;--danger:#ef4444;--cyan:#06b6d4;--purple:#8b5cf6}body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}.status-dot{height:12px;width:12px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 10px var(--success)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin:20px 0}.card{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748}.card-title{font-size:13px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}.card-val{font-size:24px;font-weight:700;color:#fff}.panel-box{background:var(--card);padding:22px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.panel-title{font-size:16px;font-weight:700;margin-bottom:15px;display:flex;align-items:center;gap:8px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}th,td{padding:12px 14px;text-align:left;border-bottom:1px solid #2d3748}th{color:#94a3b8;font-weight:600;background:#0d1117}tr:hover{background:#1a202c}button{padding:10px 16px;background:linear-gradient(135deg,var(--accent),#d97706);border:none;color:#fff;border-radius:6px;font-weight:700;cursor:pointer;transition:.2s}button:hover{opacity:.85}.copy-box{display:flex;gap:8px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.copy-box input{flex:1;padding:8px 12px;border:1px solid #444;background:#111;color:#00ffcc;font-family:monospace;font-size:13px;border-radius:4px;outline:none}</style></head><body><h2><span>🛡️ Shadowsocks 10GBPS VPN Live Control Panel</span><div style="display:flex;align-items:center;gap:10px"><span class="status-dot"></span><span style="font-size:14px;color:var(--success);font-weight:600">LIVE MONITORING</span></div></h2><div class="grid"><div class="card"><div class="card-title">Live Download Rate (Rx)</div><div class="card-val" id="rx_speed" style="color:var(--cyan)">0.00 MB/s</div></div><div class="card"><div class="card-title">Live Upload Rate (Tx)</div><div class="card-val" id="tx_speed" style="color:var(--success)">0.00 MB/s</div></div><div class="card"><div class="card-title">Active Connected Peers</div><div class="card-val" id="peer_count" style="color:var(--accent)">0</div></div><div class="card"><div class="card-title">VPN Server Port & Protocol</div><div class="card-val" id="vpn_port" style="color:var(--purple)">Port -- (TCP/UDP)</div></div></div><div class="panel-box"><div class="panel-title"><span>👥 Live Connected Peers & Traffic Sessions</span></div><div class="table-wrap"><table><thead><tr><th>Peer Remote IP</th><th>Port</th><th>Protocol</th><th>Send Queue</th><th>Recv Queue</th><th>Status</th></tr></thead><tbody id="peer_rows"><tr><td colspan="6" style="text-align:center;color:#64748b">Scanning for active client sessions...</td></tr></tbody></table></div></div><div class="panel-box"><div class="panel-title"><span>🔑 Quick Client Connection Access Keys</span></div><div style="margin-bottom:12px"><label style="font-size:12px;color:#94a3b8">Shadowsocks Universal Access Key (Shadowrocket, Clash, v2rayN, Outline):</label><div class="copy-box"><input type="text" id="ss_link" readonly onclick="this.select()"><button onclick="copyVal('ss_link')">Copy SS Key</button></div></div><div><label style="font-size:12px;color:#94a3b8">Outline One-Click Access Key:</label><div class="copy-box"><input type="text" id="outline_link" readonly onclick="this.select()"><button onclick="copyVal('outline_link')">Copy Outline Key</button></div></div></div><div class="panel-box"><div class="panel-title"><span>⚙️ Server Status & Health Diagnostics</span></div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px"><div style="background:#0d1117;padding:12px;border-radius:6px;border:1px solid #2d3748"><span style="color:#94a3b8">Encryption Cipher:</span><br><strong style="color:var(--success)">chacha20-ietf-poly1305</strong></div><div style="background:#0d1117;padding:12px;border-radius:6px;border:1px solid #2d3748"><span style="color:#94a3b8">Network Mode:</span><br><strong style="color:var(--cyan)">Host Bare-Metal (Zero-NAT)</strong></div><div style="background:#0d1117;padding:12px;border-radius:6px;border:1px solid #2d3748"><span style="color:#94a3b8">Upstream DNS Resolver:</span><br><strong style="color:var(--accent)">1.1.1.1 (Cloudflare Ultra Fast)</strong></div><div style="background:#0d1117;padding:12px;border-radius:6px;border:1px solid #2d3748"><span style="color:#94a3b8">Server Public IP:</span><br><strong id="srv_ip" style="color:#fff">--</strong></div></div></div><script>function copyVal(e){let t=document.getElementById(e);t.select();document.execCommand("copy");alert("Copied to clipboard!")}function updateStats(){fetch("/api/vpn/stats").then(e=>e.json()).then(e=>{document.getElementById("rx_speed").innerText=e.rx_speed;document.getElementById("tx_speed").innerText=e.tx_speed;document.getElementById("peer_count").innerText=e.peer_count;document.getElementById("vpn_port").innerText="Port "+e.port+" (TCP/UDP)";document.getElementById("ss_link").value=e.ss_link;document.getElementById("outline_link").value=e.outline_link;document.getElementById("srv_ip").innerText=e.server_ip;let t="";if(e.peers&&e.peers.length>0){e.peers.forEach(p=>{t+=`<tr><td style="color:var(--cyan);font-weight:700">🖥️ ${p.ip}</td><td>${p.port}</td><td><span style="background:#1e293b;color:#38bdf8;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">${p.proto}</span></td><td>${p.send_q}</td><td>${p.recv_q}</td><td><span style="color:var(--success)">● ESTABLISHED</span></td></tr>`})}else{t='<tr><td colspan="6" style="text-align:center;color:#64748b">No active peer sessions at this moment. Waiting for client connections...</td></tr>'}document.getElementById("peer_rows").innerHTML=t}).catch(err=>console.error("VPN stats error:",err))}updateStats();setInterval(updateStats,1000);</script></body></html>"""
+VPN_PANEL_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VPN Live Control Panel</title><style>:root{--bg:#0a0c10;--card:#14171f;--text:#e2e8f0;--accent:#f59e0b;--success:#10b981;--danger:#ef4444;--cyan:#06b6d4;--purple:#8b5cf6}body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;padding:20px;max-width:1200px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}.status-dot{height:12px;width:12px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 10px var(--success)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin:20px 0}.card{background:var(--card);padding:20px;border-radius:10px;border:1px solid #2d3748}.card-title{font-size:13px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}.card-val{font-size:24px;font-weight:700;color:#fff}.panel-box{background:var(--card);padding:22px;border-radius:10px;border:1px solid #2d3748;margin-bottom:20px}.panel-title{font-size:16px;font-weight:700;margin-bottom:15px;display:flex;align-items:center;gap:8px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}th,td{padding:12px 14px;text-align:left;border-bottom:1px solid #2d3748}th{color:#94a3b8;font-weight:600;background:#0d1117}tr:hover{background:#1a202c}button{padding:10px 16px;background:linear-gradient(135deg,var(--accent),#d97706);border:none;color:#fff;border-radius:6px;font-weight:700;cursor:pointer;transition:.2s}button:hover{opacity:.85}.copy-box{display:flex;gap:8px;margin-top:10px;align-items:center;background:#000;padding:10px;border-radius:6px;border:1px solid #333}.copy-box input{flex:1;padding:8px 12px;border:1px solid #444;background:#111;color:#00ffcc;font-family:monospace;font-size:13px;border-radius:4px;outline:none}</style></head><body><h2><span>🛡️ Shadowsocks 10GBPS VPN Live Control Panel</span><div style="display:flex;align-items:center;gap:10px"><span class="status-dot"></span><span style="font-size:14px;color:var(--success);font-weight:600">LIVE MONITORING</span></div></h2><div class="grid"><div class="card"><div class="card-title">Live Download Rate (Rx)</div><div class="card-val" id="rx_speed" style="color:var(--cyan)">0.00 MB/s</div></div><div class="card"><div class="card-title">Live Upload Rate (Tx)</div><div class="card-val" id="tx_speed" style="color:var(--success)">0.00 MB/s</div></div><div class="card"><div class="card-title">Active Connected Peers</div><div class="card-val" id="peer_count" style="color:var(--accent)">0</div></div><div class="card"><div class="card-title">VPN Server Port & Protocol</div><div class="card-val" id="vpn_port" style="color:var(--purple)">Port -- (TCP/UDP)</div></div></div><div class="panel-box"><div class="panel-title"><span>👥 Live Connected Peers & Traffic Sessions</span></div><div class="table-wrap"><table><thead><tr><th>Peer Remote IP</th><th>Port</th><th>Protocol</th><th>Send Queue</th><th>Recv Queue</th><th>Status</th></tr></thead><tbody id="peer_rows"><tr><td colspan="6" style="text-align:center;color:#64748b">Scanning for active client sessions...</td></tr></tbody></table></div></div><div class="panel-box"><div class="panel-title"><span>🔑 Client Connection Access Key</span></div><div><label style="font-size:12px;color:#94a3b8">Outline / Universal One-Click Access Key (Outline, Shadowrocket, Clash, v2rayN):</label><div class="copy-box"><input type="text" id="outline_link" readonly onclick="this.select()"><button onclick="copyVal('outline_link')">Copy Outline Key</button></div></div></div><div class="panel-box"><div class="panel-title"><span>⚙️ Server Status & Health Diagnostics</span></div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px"><div style="background:#0d1117;padding:12px;border-radius:6px;border:1px solid #2d3748"><span style="color:#94a3b8">Encryption Cipher:</span><br><strong style="color:var(--success)">chacha20-ietf-poly1305</strong></div><div style="background:#0d1117;padding:12px;border-radius:6px;border:1px solid #2d3748"><span style="color:#94a3b8">Network Mode:</span><br><strong style="color:var(--cyan)">Host Bare-Metal (Zero-NAT)</strong></div><div style="background:#0d1117;padding:12px;border-radius:6px;border:1px solid #2d3748"><span style="color:#94a3b8">Upstream DNS Resolver:</span><br><strong style="color:var(--accent)">1.1.1.1 (Cloudflare Ultra Fast)</strong></div><div style="background:#0d1117;padding:12px;border-radius:6px;border:1px solid #2d3748"><span style="color:#94a3b8">Server Public IP:</span><br><strong id="srv_ip" style="color:#fff">--</strong></div></div></div><script>function copyVal(e){let t=document.getElementById(e);t.select();document.execCommand("copy");alert("Copied to clipboard!")}function updateStats(){fetch("/api/vpn/stats").then(e=>e.json()).then(e=>{document.getElementById("rx_speed").innerText=e.rx_speed;document.getElementById("tx_speed").innerText=e.tx_speed;document.getElementById("peer_count").innerText=e.peer_count;document.getElementById("vpn_port").innerText="Port "+e.port+" (TCP/UDP)";document.getElementById("outline_link").value=e.outline_link;document.getElementById("srv_ip").innerText=e.server_ip;let t="";if(e.peers&&e.peers.length>0){e.peers.forEach(p=>{t+=`<tr><td style="color:var(--cyan);font-weight:700">🖥️ ${p.ip}</td><td>${p.port}</td><td><span style="background:#1e293b;color:#38bdf8;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">${p.proto}</span></td><td>${p.send_q}</td><td>${p.recv_q}</td><td><span style="color:var(--success)">● ESTABLISHED</span></td></tr>`})}else{t='<tr><td colspan="6" style="text-align:center;color:#64748b">No active peer sessions at this moment. Waiting for client connections...</td></tr>'}document.getElementById("peer_rows").innerHTML=t}).catch(err=>console.error("VPN stats error:",err))}updateStats();setInterval(updateStats,1000);</script></body></html>"""
 
 vpn_stats_prev = {'t': time.time(), 'rx': 0, 'tx': 0}
 
@@ -1026,7 +745,6 @@ def api_vpn_stats():
     global vpn_stats_prev
     now = time.time()
     dt = max(now - vpn_stats_prev['t'], 0.001)
-    
     rx_bytes, tx_bytes = 0, 0
     try:
         with open('/proc/net/dev', 'r') as f:
@@ -1037,11 +755,9 @@ def api_vpn_stats():
                         rx_bytes += int(parts[0])
                         tx_bytes += int(parts[8])
     except: pass
-    
     rx_speed = max((rx_bytes - vpn_stats_prev['rx']) / dt / (1024**2), 0) if vpn_stats_prev['rx'] > 0 else 0
     tx_speed = max((tx_bytes - vpn_stats_prev['tx']) / dt / (1024**2), 0) if vpn_stats_prev['tx'] > 0 else 0
     vpn_stats_prev = {'t': now, 'rx': rx_bytes, 'tx': tx_bytes}
-    
     peers = []
     try:
         cmd = f"ss -tuni '( sport = :{VPN_PORT} )' 2>/dev/null"
@@ -1049,75 +765,41 @@ def api_vpn_stats():
         for line in out.splitlines()[1:]:
             parts = line.split()
             if len(parts) >= 5:
-                proto = parts[0].upper()
-                recv_q = parts[1]
-                send_q = parts[2]
-                peer_part = parts[4] if len(parts) > 4 else ""
+                proto, recv_q, send_q, peer_part = parts[0].upper(), parts[1], parts[2], parts[4] if len(parts) > 4 else ""
                 if ':' in peer_part:
                     ip = peer_part.rsplit(':', 1)[0].replace('[', '').replace(']', '')
                     port = peer_part.rsplit(':', 1)[1]
                     if ip not in ['0.0.0.0', '127.0.0.1', '*', '::']:
                         peers.append({'ip': ip, 'port': port, 'proto': proto, 'recv_q': recv_q, 'send_q': send_q})
     except: pass
-    
     srv_ip = request.host.split(':')[0]
     out_b64 = base64.b64encode(f"chacha20-ietf-poly1305:{VPN_PASS}".encode()).decode()
-    ss_link = f"ss://{out_b64}@{srv_ip}:{VPN_PORT}#10GBPS-VPN"
     outline_link = f"ss://{out_b64}@{srv_ip}:{VPN_PORT}/?outline=1#10GBPS-VPN"
-    
-    return jsonify({
-        'rx_speed': f"{rx_speed:.2f} MB/s",
-        'tx_speed': f"{tx_speed:.2f} MB/s",
-        'peer_count': len(peers),
-        'peers': peers,
-        'port': VPN_PORT,
-        'server_ip': srv_ip,
-        'ss_link': ss_link,
-        'outline_link': outline_link
-    })
+    return jsonify({'rx_speed': f"{rx_speed:.2f} MB/s", 'tx_speed': f"{tx_speed:.2f} MB/s", 'peer_count': len(peers), 'peers': peers, 'port': VPN_PORT, 'server_ip': srv_ip, 'outline_link': outline_link})
 
 @app.route('/')
 def index():
-    headers = {
-        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
-        'Pragma': 'no-cache',
-        'Expires': '0',
-        'Content-Disposition': 'inline'
-    }
-    if request.cookies.get('dash_auth') != DASH_PASS:
-        return Response(render_template_string(LOGIN_HTML), mimetype='text/html', headers=headers)
+    headers = {'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', 'Content-Disposition': 'inline'}
+    if request.cookies.get('dash_auth') != DASH_PASS: return Response(render_template_string(LOGIN_HTML), mimetype='text/html', headers=headers)
     return Response(render_template_string(HTML), mimetype='text/html', headers=headers)
 
 @app.route('/terminal')
 def terminal_page():
     headers = {'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', 'Content-Disposition': 'inline'}
     auth = request.cookies.get('term_auth') or request.args.get('auth')
-    if auth != TERMINAL_PASS:
-        return Response(render_template_string(TERMINAL_LOGIN_HTML), mimetype='text/html', headers=headers)
+    if auth != TERMINAL_PASS: return Response(render_template_string(TERMINAL_LOGIN_HTML), mimetype='text/html', headers=headers)
     return Response(render_template_string(TERMINAL_HTML), mimetype='text/html', headers=headers)
-
-@app.route('/brave')
-@app.route('/chrome')
-@app.route('/browser')
-def brave_page():
-    headers = {'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', 'Content-Disposition': 'inline'}
-    auth = request.cookies.get('browser_auth') or request.args.get('auth')
-    if auth != BROWSER_PASS:
-        return Response(render_template_string(BRAVE_LOGIN_HTML), mimetype='text/html', headers=headers)
-    return Response(render_template_string(BRAVE_HTML), mimetype='text/html', headers=headers)
 
 @app.route('/aria2')
 def aria2_page():
     headers = {'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', 'Content-Disposition': 'inline'}
-    if request.cookies.get('dash_auth') != DASH_PASS:
-        return Response(render_template_string(LOGIN_HTML), mimetype='text/html', headers=headers)
+    if request.cookies.get('dash_auth') != DASH_PASS: return Response(render_template_string(LOGIN_HTML), mimetype='text/html', headers=headers)
     return Response(render_template_string(ARIA2_HTML), mimetype='text/html', headers=headers)
 
 @app.route('/vpn-panel')
 def vpn_panel_page():
     headers = {'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', 'Content-Disposition': 'inline'}
-    if request.cookies.get('dash_auth') != DASH_PASS:
-        return Response(render_template_string(LOGIN_HTML), mimetype='text/html', headers=headers)
+    if request.cookies.get('dash_auth') != DASH_PASS: return Response(render_template_string(LOGIN_HTML), mimetype='text/html', headers=headers)
     return Response(render_template_string(VPN_PANEL_HTML), mimetype='text/html', headers=headers)
 
 @app.route('/api/get_archive_mount')
@@ -1151,8 +833,7 @@ def build_archive_data(rf, file_id=None, a_type='direct', url=None):
                 if not i.is_directory: _add(i.filename, i.uncompressed)
     else: raise Exception("Unsupported format.")
     mount_info = {'files': fs, 'type': a_type, 'mount_id': mid, 'bu': bu, 'created_at': time.time()}
-    with archive_mounts_lock:
-        archive_mounts_cache[bu] = mount_info
+    with archive_mounts_lock: archive_mounts_cache[bu] = mount_info
     global_mounted_data = mount_info
     return global_mounted_data
 
@@ -1186,28 +867,23 @@ def drive_connect():
         t, e = get_drive_auth()
         if e: return jsonify({'error': e})
         return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)})
+    except Exception as e: return jsonify({'error': str(e)})
 
 @app.route('/api/drive/disconnect', methods=['POST'])
 def drive_disconnect():
     try:
         p = (request.json or {}).get('delete_pass', '')
-        if DELETE_KEY_PASS and p != DELETE_KEY_PASS:
-            return jsonify({'error': 'Incorrect Key Deletion Password!'}), 403
+        if DELETE_KEY_PASS and p != DELETE_KEY_PASS: return jsonify({'error': 'Incorrect Key Deletion Password!'}), 403
         with drive_creds_lock:
             if os.path.exists(DRIVE_CREDS_FILE):
-                with open(DRIVE_CREDS_FILE, 'w') as f:
-                    f.write('{}')
+                with open(DRIVE_CREDS_FILE, 'w') as f: f.write('{}')
         return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)})
+    except Exception as e: return jsonify({'error': str(e)})
 
 @app.route('/api/gofile/status')
 def gofile_status():
     t = get_gofile_token()
-    info = 'Active' if t else 'Inactive'
-    return jsonify({'connected': bool(t), 'info': info})
+    return jsonify({'connected': bool(t), 'info': 'Active' if t else 'Inactive'})
 
 @app.route('/api/gofile/connect', methods=['POST'])
 def gofile_connect():
@@ -1218,25 +894,20 @@ def gofile_connect():
         with gofile_creds_lock:
             with open(GOFILE_CREDS_FILE, 'w') as f: json.dump({'token': t}, f)
         return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)})
+    except Exception as e: return jsonify({'error': str(e)})
 
 @app.route('/api/gofile/disconnect', methods=['POST'])
 def gofile_disconnect():
     global _active_guest_token
     try:
         p = (request.json or {}).get('delete_pass', '')
-        if DELETE_KEY_PASS and p != DELETE_KEY_PASS:
-            return jsonify({'error': 'Incorrect Key Deletion Password!'}), 403
+        if DELETE_KEY_PASS and p != DELETE_KEY_PASS: return jsonify({'error': 'Incorrect Key Deletion Password!'}), 403
         with gofile_creds_lock:
             if os.path.exists(GOFILE_CREDS_FILE):
-                with open(GOFILE_CREDS_FILE, 'w') as f:
-                    f.write('{}')
-        with _guest_token_lock:
-            _active_guest_token = None
+                with open(GOFILE_CREDS_FILE, 'w') as f: f.write('{}')
+        with _guest_token_lock: _active_guest_token = None
         return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)})
+    except Exception as e: return jsonify({'error': str(e)})
 
 @app.route('/api/drive_archive_list')
 def drive_archive_list():
@@ -1268,170 +939,77 @@ def gofile_archive_list():
     m = re.search(r'gofile\.io/d/([a-zA-Z0-9_-]+)', url) or re.search(r'([a-zA-Z0-9_-]+)$', url.strip())
     content_id = m.group(1) if m else url.strip().split('/')[-1]
     if not content_id: return jsonify({'error': 'Invalid Gofile Link'})
-    
     t, is_guest = get_active_gofile_token()
     if not t: return jsonify({'error': 'Failed to obtain Gofile authentication token'})
-    
-    headers = {
-        'User-Agent': SPOOF_AGENT,
-        'Authorization': f'Bearer {t}',
-        'X-Website-Token': generate_website_token(t, SPOOF_AGENT)
-    }
-    
+    headers = {'User-Agent': SPOOF_AGENT, 'Authorization': f'Bearer {t}', 'X-Website-Token': generate_website_token(t, SPOOF_AGENT)}
     try:
         r = gofile_api_request("GET", f'https://api.gofile.io/contents/{content_id}', headers=headers)
         res = r.json()
-        if res.get('status') != 'ok':
-            return jsonify({'error': f"Gofile API Error: {res.get('status')} - {res.get('data', {}).get('message', 'Unknown Error')}"})
-        
-        data = res.get('data', {})
-        contents = data.get('contents', {})
-        
-        files = []
+        if res.get('status') != 'ok': return jsonify({'error': f"Gofile API Error: {res.get('status')}"})
+        data = res.get('data', {}); contents = data.get('contents', {}); files = []
         with gofile_cache_lock:
             for fid, f in contents.items():
                 if f.get('type') == 'file':
                     dlink = f.get('link') or f.get('directLink')
                     if not dlink: continue
-                    gofile_files_cache[fid] = {
-                        'type': 'folder_file',
-                        'content_id': content_id,
-                        'gofile_fid': fid,
-                        'dlink': dlink,
-                        'updated_at': time.time()
-                    }
-                    name = f.get('name', 'file')
-                    size = int(f.get('size', 0))
-                    files.append({
-                        'name': name,
-                        'size': size,
-                        'b64': base64.urlsafe_b64encode(fid.encode()).decode(),
-                        'url': f"/gofile_stream/{fid}/{urllib.parse.quote(name)}"
-                    })
-        
+                    gofile_files_cache[fid] = {'type': 'folder_file', 'content_id': content_id, 'gofile_fid': fid, 'dlink': dlink, 'updated_at': time.time()}
+                    name, size = f.get('name', 'file'), int(f.get('size', 0))
+                    files.append({'name': name, 'size': size, 'b64': base64.urlsafe_b64encode(fid.encode()).decode(), 'url': f"/gofile_stream/{fid}/{urllib.parse.quote(name)}"})
         mid = f"mount_{str(uuid.uuid4())[:8]}"
         global_mounted_data = {'files': files, 'type': 'gofile_folder', 'mount_id': mid}
         return jsonify(global_mounted_data)
-    except Exception as e:
-        return jsonify({'error': str(e)})
+    except Exception as e: return jsonify({'error': str(e)})
 
 @app.route('/api/gofile_register_direct')
 def gofile_register_direct():
     global global_mounted_data
     url = request.args.get('url')
-    if not url: return jsonify({'error': 'No URL provided'})
+    if not url or not url.strip().startswith('http'): return jsonify({'error': 'Invalid URL'})
     url = url.strip()
-    if not url.startswith('http'):
-        return jsonify({'error': 'Invalid URL'})
-    parsed = urllib.parse.urlparse(url)
-    fname = os.path.basename(parsed.path)
-    if not fname or '.' not in fname:
-        fname = "gofile_stream.mkv"
+    fname = os.path.basename(urllib.parse.urlparse(url).path) or "gofile_stream.mkv"
     fid = f"direct_{str(uuid.uuid4())[:8]}"
-    with gofile_cache_lock:
-        gofile_files_cache[fid] = {
-            'type': 'direct_link',
-            'url': url,
-            'updated_at': time.time()
-        }
-    files = [{
-        'name': fname,
-        'size': 0,
-        'b64': base64.urlsafe_b64encode(fid.encode()).decode(),
-        'url': f"/gofile_stream/{fid}/{urllib.parse.quote(fname)}"
-    }]
-    mid = f"mount_{str(uuid.uuid4())[:8]}"
-    global_mounted_data = {'files': files, 'type': 'gofile_folder', 'mount_id': mid}
+    with gofile_cache_lock: gofile_files_cache[fid] = {'type': 'direct_link', 'url': url, 'updated_at': time.time()}
+    files = [{'name': fname, 'size': 0, 'b64': base64.urlsafe_b64encode(fid.encode()).decode(), 'url': f"/gofile_stream/{fid}/{urllib.parse.quote(fname)}"}]
+    global_mounted_data = {'files': files, 'type': 'gofile_folder', 'mount_id': f"mount_{str(uuid.uuid4())[:8]}"}
     return jsonify(global_mounted_data)
-
-@app.route('/api/debug_proxies')
-def debug_proxies():
-    proxies = get_free_proxies()
-    return jsonify({
-        'cache_size': len(proxies),
-        'cache_age_seconds': time.time() - _proxy_list_time,
-        'sample': proxies[:10] if proxies else []
-    })
 
 @app.route('/gofile_stream/<file_id>/<path:fname>', methods=['GET', 'HEAD'])
 def gofile_stream(file_id, fname):
-    with gofile_cache_lock:
-        entry = gofile_files_cache.get(file_id)
-    if not entry: return "File not found in cache. Please reload folder.", 404
-    
+    with gofile_cache_lock: entry = gofile_files_cache.get(file_id)
+    if not entry: return "File not found.", 404
     dlink = None
     if isinstance(entry, dict) and entry.get('type') == 'folder_file':
         now = time.time()
-        # Refresh Gofile link if it is older than 15 minutes (900 seconds)
         if now - entry.get('updated_at', 0) > 900:
-            content_id = entry['content_id']
-            gofile_fid = entry['gofile_fid']
             try:
-                t, is_guest = get_active_gofile_token()
+                t, _ = get_active_gofile_token()
                 if t:
-                    headers = {
-                        'User-Agent': SPOOF_AGENT,
-                        'Authorization': f'Bearer {t}',
-                        'X-Website-Token': generate_website_token(t, SPOOF_AGENT)
-                    }
-                    r = gofile_api_request("GET", f'https://api.gofile.io/contents/{content_id}', headers=headers)
-                    res = r.json()
+                    headers = {'User-Agent': SPOOF_AGENT, 'Authorization': f'Bearer {t}', 'X-Website-Token': generate_website_token(t, SPOOF_AGENT)}
+                    res = gofile_api_request("GET", f'https://api.gofile.io/contents/{entry["content_id"]}', headers=headers).json()
                     if res.get('status') == 'ok':
-                        contents = res.get('data', {}).get('contents', {})
-                        f = contents.get(gofile_fid, {})
-                        new_dlink = f.get('link') or f.get('directLink')
-                        if new_dlink:
-                            with gofile_cache_lock:
-                                # Refresh cache for all files in this response to prevent redundant API hits
-                                for fid, item in contents.items():
-                                    if item.get('type') == 'file':
-                                        dl = item.get('link') or item.get('directLink')
-                                        if dl:
-                                            gofile_files_cache[fid] = {
-                                                'type': 'folder_file',
-                                                'content_id': content_id,
-                                                'gofile_fid': fid,
-                                                'dlink': dl,
-                                                'updated_at': now
-                                            }
-                            dlink = new_dlink
-            except Exception as e:
-                print(f"Error auto-refreshing Gofile link: {e}")
-        if not dlink:
-            dlink = entry['dlink']
-    elif isinstance(entry, dict) and entry.get('type') == 'direct_link':
-        dlink = entry['url']
-    else:
-        dlink = entry if isinstance(entry, str) else None
-        
-    if not dlink: return "Gofile link expired or not found.", 404
-    
-    t, is_guest = get_active_gofile_token()
+                        f = res.get('data', {}).get('contents', {}).get(entry['gofile_fid'], {})
+                        nl = f.get('link') or f.get('directLink')
+                        if nl: entry['dlink'], entry['updated_at'] = nl, now
+            except: pass
+        dlink = entry['dlink']
+    elif isinstance(entry, dict) and entry.get('type') == 'direct_link': dlink = entry['url']
+    if not dlink: return "Expired", 404
+    t, _ = get_active_gofile_token()
     headers = {'User-Agent': SPOOF_AGENT, 'Accept': '*/*', 'Connection': 'keep-alive'}
     rh = request.headers.get('Range')
     if rh: headers['Range'] = rh
-    
-    cookies = {}
-    if t:
-        cookies['accountToken'] = t
-        headers['Cookie'] = f"accountToken={t}"
-        
+    cookies = {'accountToken': t} if t else {}
+    if t: headers['Cookie'] = f"accountToken={t}"
     r = requests.get(dlink, headers=headers, cookies=cookies, stream=True, allow_redirects=True, timeout=(15, 86400))
     register_download_conn(file_id, r)
-    
     def gen_gofile():
         try:
-            for ck in r.iter_content(STREAM_CHUNK_SIZE):
-                yield ck
-        finally:
-            unregister_download_conn(file_id, r)
-            r.close()
-            
+            for ck in r.iter_content(STREAM_CHUNK_SIZE): yield ck
+        finally: unregister_download_conn(file_id, r); r.close()
     resp = Response(gen_gofile(), status=r.status_code)
     for k, v in r.headers.items():
         if k.lower() in ['content-length', 'content-range', 'accept-ranges']: resp.headers[k] = v
-    resp.headers['Content-Type'] = 'application/octet-stream'
-    resp.headers['X-Accel-Buffering'] = 'no'
+    resp.headers['Content-Type'], resp.headers['X-Accel-Buffering'] = 'application/octet-stream', 'no'
     resp.headers['Content-Disposition'] = f'attachment; filename="{urllib.parse.quote(fname)}"'
     return resp
 
@@ -1446,16 +1024,12 @@ def drive_folder_dl(file_id, fname):
     register_download_conn(file_id, r)
     def gen_drive():
         try:
-            for ck in r.iter_content(STREAM_CHUNK_SIZE):
-                yield ck
-        finally:
-            unregister_download_conn(file_id, r)
-            r.close()
+            for ck in r.iter_content(STREAM_CHUNK_SIZE): yield ck
+        finally: unregister_download_conn(file_id, r); r.close()
     resp = Response(gen_drive(), status=r.status_code)
     for k, v in r.headers.items():
         if k.lower() in ['content-length', 'content-range', 'accept-ranges']: resp.headers[k] = v
-    resp.headers['Content-Type'] = 'application/octet-stream'
-    resp.headers['X-Accel-Buffering'] = 'no'
+    resp.headers['Content-Type'], resp.headers['X-Accel-Buffering'] = 'application/octet-stream', 'no'
     resp.headers['Content-Disposition'] = f'attachment; filename="{urllib.parse.quote(fname)}"'
     return resp
 
@@ -1492,18 +1066,18 @@ def p2p_poll(fid):
         with st.lock:
             for i in [i for i, t in st.active.items() if now - t > 10]: del st.active[i]; st.needed.add(i) if i not in st.chunks else None
             for idx in list(st.needed):
-                if len(ret) >= 64: break
+                if len(ret) >= 32: break
                 st.needed.remove(idx); st.active[idx] = now; ret.append(idx)
     elif ft in ['disk_relay', 'folder'] and fid in disk_streams:
         st = disk_streams[fid]
         with st.lock:
             for i in [i for i, t in st.active.items() if now - t > 10]: del st.active[i]; st.prioritized.add(i) if i not in st.written_chunks else None
             for idx in sorted(list(st.prioritized)):
-                if len(ret) >= 64: break
+                if len(ret) >= 32: break
                 st.prioritized.remove(idx); st.active[idx] = now; ret.append(idx)
-            if len(ret) < 64:
+            if len(ret) < 32:
                 for idx in sorted(list(st.background)):
-                    if len(ret) >= 64: break
+                    if len(ret) >= 32: break
                     st.background.remove(idx); st.active[idx] = now; ret.append(idx)
     return jsonify(ret)
 
@@ -1519,7 +1093,7 @@ def p2p_up(fid, idx):
             st.chunks[idx] = d
             if idx in st.active: del st.active[idx]
             if idx in st.needed: st.needed.remove(idx)
-            if len(st.chunks) > 500: del st.chunks[next(iter(st.chunks))]
+            if len(st.chunks) > 32: del st.chunks[next(iter(st.chunks))]
             st.cond.notify_all()
         with db_lock: db[fid]['down'] += len(d)
     elif ft in ['disk_relay', 'folder'] and fid in disk_streams:
@@ -1539,13 +1113,11 @@ def api_data():
     with db_lock: sf = [{'id': str(k), 'name': str(v.get('name', 'Unknown')), 'status': str(v.get('status', 'Pending')), 'down': int(v.get('down', 0)), 'total': int(v.get('total', 0)), 'type': str(v.get('type', 'disk')).upper(), 'active_threads': int(v.get('active_threads', 0))} for k, v in db.items()]
     return jsonify({"sys": sys_data, "files": sf})
 
-
 @app.route('/stream/<fid>/<path:fname>', methods=['GET', 'HEAD'])
 def unified_stream(fid, fname):
     with db_lock:
         if fid not in db: return "404", 404
         fobj = db[fid]
-    
     ftype, mt, rh = fobj.get('type'), 'application/octet-stream', request.headers.get('Range')
 
     def get_range_bounds(ts):
@@ -1563,7 +1135,6 @@ def unified_stream(fid, fname):
         hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'attachment; filename="{urllib.parse.quote(fname)}"', 'X-Accel-Buffering': 'no'}
         if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
         if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
-        
         def gen_p2p():
             start_idx, end_idx, offset = sb // P2P_CHUNK_SIZE, eb // P2P_CHUNK_SIZE, sb % P2P_CHUNK_SIZE
             for idx in range(start_idx, end_idx + 1):
@@ -1593,16 +1164,12 @@ def unified_stream(fid, fname):
         register_download_conn(fid, r)
         def gen_drive():
             try:
-                for ck in r.iter_content(STREAM_CHUNK_SIZE):
-                    yield ck
-            finally:
-                unregister_download_conn(fid, r)
-                r.close()
+                for ck in r.iter_content(STREAM_CHUNK_SIZE): yield ck
+            finally: unregister_download_conn(fid, r); r.close()
         resp = Response(gen_drive(), status=r.status_code)
         for k, v in r.headers.items():
             if k.lower() in ['content-length', 'content-range', 'accept-ranges']: resp.headers[k] = v
-        resp.headers['Content-Type'] = mt
-        resp.headers['X-Accel-Buffering'] = 'no'
+        resp.headers['Content-Type'], resp.headers['X-Accel-Buffering'] = mt, 'no'
         resp.headers['Content-Disposition'] = f'attachment; filename="{urllib.parse.quote(fname)}"'
         return resp
         
@@ -1612,7 +1179,6 @@ def unified_stream(fid, fname):
         hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'attachment; filename="{urllib.parse.quote(fname)}"', 'X-Accel-Buffering': 'no'}
         if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
         if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
-        
         streamer = RAMSwarmStreamer(fobj['url'], ts, start_pos=sb)
         def gen_swarm():
             nonlocal sb
@@ -1623,13 +1189,10 @@ def unified_stream(fid, fname):
                         if db.get(fid, {}).get('status') == 'Stopped': break
                     d = streamer.read(min(STREAM_CHUNK_SIZE, eb - c + 1))
                     if not d: break
-                    yield d
-                    c += len(d)
+                    yield d; c += len(d)
                     with db_lock:
-                        if fid in db:
-                            db[fid]['down'] = c
-            finally:
-                streamer.close()
+                        if fid in db: db[fid]['down'] = c
+            finally: streamer.close()
         return Response(gen_swarm(), status=206 if rh else 200, headers=hdrs)
         
     elif ftype == 'ram':
@@ -1639,16 +1202,12 @@ def unified_stream(fid, fname):
         register_download_conn(fid, r)
         def gen_ram():
             try:
-                for ck in r.iter_content(STREAM_CHUNK_SIZE):
-                    yield ck
-            finally:
-                unregister_download_conn(fid, r)
-                r.close()
+                for ck in r.iter_content(STREAM_CHUNK_SIZE): yield ck
+            finally: unregister_download_conn(fid, r); r.close()
         resp = Response(gen_ram(), status=r.status_code)
         for k, v in r.headers.items():
             if k.lower() in ['content-length', 'content-range', 'accept-ranges']: resp.headers[k] = v
-        resp.headers['Content-Type'] = mt
-        resp.headers['X-Accel-Buffering'] = 'no'
+        resp.headers['Content-Type'], resp.headers['X-Accel-Buffering'] = mt, 'no'
         resp.headers['Content-Disposition'] = f'attachment; filename="{urllib.parse.quote(fname)}"'
         return resp
         
@@ -1656,8 +1215,6 @@ def unified_stream(fid, fname):
         fp, ts = fobj.get('path'), fobj.get('total', 0)
         if not fp: return "404", 404
         sb, eb = get_range_bounds(ts)
-        
-        # Static Redirect if complete
         if fobj.get('status') == 'Completed' and os.path.exists(fp):
             fn = os.path.basename(fp)
             resp = Response(status=200)
@@ -1665,54 +1222,37 @@ def unified_stream(fid, fname):
             resp.headers['Content-Type'] = mt
             resp.headers['Content-Disposition'] = f'attachment; filename="{urllib.parse.quote(fname)}"'
             return resp
-            
         hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'attachment; filename="{urllib.parse.quote(fname)}"', 'X-Accel-Buffering': 'no'}
         if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
         if request.method == 'HEAD': return Response(status=206 if rh else 200, headers=hdrs)
-        
         def gen_local():
-            c = sb
-            end_bound = eb if ts else (2**63 - 1)
-            with db_lock:
-                initial_dl = db.get(fid, {}).get('down', 0) if fid in db else 0
+            c = sb; end_bound = eb if ts else (2**63 - 1)
+            with db_lock: initial_dl = db.get(fid, {}).get('down', 0) if fid in db else 0
             should_block_on_catchup = (sb < initial_dl) or (sb == 0)
-
             while c <= end_bound:
                 with db_lock:
                     dl_pos = db.get(fid, {}).get('down', 0) if fid in db else 0
                     status = db.get(fid, {}).get('status', 'Stopped') if fid in db else 'Stopped'
-                if status in ['Stopped', 'Error: Connection Refused by Host', 'Error: Incomplete'] and not os.path.exists(fp):
-                    break
+                if status in ['Stopped', 'Error: Connection Refused by Host', 'Error: Incomplete'] and not os.path.exists(fp): break
                 if c >= dl_pos:
-                    if status in ['Completed', 'Stopped', 'Error: Connection Refused by Host', 'Error: Incomplete']:
-                        break
-                    if should_block_on_catchup:
-                        time.sleep(0.5)
-                        continue
-                    else:
-                        break
+                    if status in ['Completed', 'Stopped', 'Error: Connection Refused by Host', 'Error: Incomplete']: break
+                    if should_block_on_catchup: time.sleep(0.5); continue
+                    else: break
                 try:
                     with open(fp, 'rb') as lf:
                         lf.seek(c)
                         d = lf.read(min(STREAM_CHUNK_SIZE, min(end_bound - c + 1, dl_pos - c)))
-                    if d:
-                        yield d
-                        c += len(d)
-                    else:
-                        time.sleep(0.5)
-                except:
-                    time.sleep(0.5)
+                    if d: yield d; c += len(d)
+                    else: time.sleep(0.5)
+                except: time.sleep(0.5)
         return Response(gen_local(), status=206 if rh else 200, headers=hdrs)
 
 @app.route('/<string:a_type>_archive_dl/<string:bu>/<string:b64_name>/<path:fname>', methods=['GET', 'HEAD'])
 def archive_stream(a_type, bu, b64_name, fname):
-    with archive_mounts_lock:
-        mount_info = archive_mounts_cache.get(bu)
+    with archive_mounts_lock: mount_info = archive_mounts_cache.get(bu)
     if not mount_info:
-        if global_mounted_data and global_mounted_data.get('bu') == bu:
-            mount_info = global_mounted_data
-        else:
-            return "Archive mount not found or expired.", 404
+        if global_mounted_data and global_mounted_data.get('bu') == bu: mount_info = global_mounted_data
+        else: return "Archive mount not found or expired.", 404
     tf = next((x for x in mount_info['files'] if x['b64'] == b64_name), None)
     if not tf: return "File not found in archive mount.", 404
     rh, ts = request.headers.get('Range'), tf['size']
@@ -1720,7 +1260,6 @@ def archive_stream(a_type, bu, b64_name, fname):
     if rh and ts:
         m = re.search(r'bytes=(\d+)-(\d*)', rh)
         if m: sb, eb = int(m.group(1)), int(m.group(2)) if m.group(2) else eb
-        
     mt = 'application/octet-stream'
     hdrs = {'Content-Type': mt, 'Accept-Ranges': 'bytes', 'Content-Disposition': f'attachment; filename="{urllib.parse.quote(fname)}"', 'X-Accel-Buffering': 'no'}
     if ts: hdrs.update({'Content-Length': str(eb - sb + 1), 'Content-Range': f'bytes {sb}-{eb}/{ts}'})
@@ -1732,6 +1271,7 @@ def archive_stream(a_type, bu, b64_name, fname):
             with zipfile.ZipFile(rf) as zf:
                 zinfo = zf.getinfo(tf['name'])
                 if zinfo.compress_type == zipfile.ZIP_STORED:
+                    import struct
                     header_pos = zinfo.header_offset
                     rf.seek(header_pos + 26)
                     fn_len, extra_len = struct.unpack('<HH', rf.read(4))
@@ -1743,8 +1283,7 @@ def archive_stream(a_type, bu, b64_name, fname):
                         chunk_to_read = min(STREAM_CHUNK_SIZE, bytes_remaining)
                         d = rf.read(chunk_to_read)
                         if not d: break
-                        yield d
-                        bytes_remaining -= len(d)
+                        yield d; bytes_remaining -= len(d)
                 else:
                     with zf.open(zinfo) as z_item:
                         to_skip = sb
@@ -1757,12 +1296,9 @@ def archive_stream(a_type, bu, b64_name, fname):
                         while c <= eb and getattr(rf, 'active', True):
                             d = z_item.read(min(STREAM_CHUNK_SIZE, eb - c + 1))
                             if not d: break
-                            yield d
-                            c += len(d)
-        except Exception as e:
-            print("Engine 8 stream error:", e)
-        finally:
-            rf.close()
+                            yield d; c += len(d)
+        except Exception as e: print("Engine stream error:", e)
+        finally: rf.close()
     return Response(gen(), status=206 if rh else 200, headers=hdrs)
 
 def update_file_metadata(fid, r):
@@ -1796,16 +1332,14 @@ def worker_core(fid, mode):
                     r.close()
                 except: pass
                 time.sleep(1.5 * (attempt + 1))
-                
             if r is None or r.status_code not in [200, 206]:
-                with db_lock: 
+                with db_lock:
                     if fid in db: db[fid]['status'] = "Error: Connection Refused by Host"
                 return
-
             u = str(r.url) if hasattr(r, 'url') and r.url else u
             update_file_metadata(fid, r); tot = int(r.headers.get('content-length', 0)); r.close()
-            with db_lock: 
-                if fid in db: db[fid]['total'], db[fid]['url'], db[fid]['status'] = tot, u, f"Ready - Link Expires in 24 Hours"
+            with db_lock:
+                if fid in db: db[fid]['total'], db[fid]['url'], db[fid]['status'] = tot, u, "Ready - Link Expires in 24 Hours"
             return
 
         if mode == 'drive_direct':
@@ -1820,33 +1354,27 @@ def worker_core(fid, mode):
 
         tot, r, is_c = 0, None, (creq is not requests); bh = HEADERS.copy()
         if mode == 'multi': pu = urllib.parse.urlparse(u); bh['Referer'], bh['Origin'] = f"{pu.scheme}://{pu.netloc}/", f"{pu.scheme}://{pu.netloc}"
-        
         for attempt in range(5):
-            try: 
+            try:
                 r = creq_get(u, headers={**bh, 'Range': 'bytes=0-1048575'}, stream=True, timeout=15, allow_redirects=True)
                 if r.status_code in [200, 206]: break
                 r.close()
             except: pass
             time.sleep(1.5 * (attempt + 1))
-            
         if not r or r.status_code in [403, 503, 429, 401, 400]:
             is_c = False
             for attempt in range(5):
-                try: 
+                try:
                     r = requests.get(u, headers={**bh, 'Range': 'bytes=0-1048575', 'Accept-Encoding': 'identity'}, stream=True, timeout=15, allow_redirects=True)
                     if r.status_code in [200, 206]: break
                     r.close()
                 except: pass
                 time.sleep(1.5 * (attempt + 1))
-                
-        if not r: raise Exception("Connection Refused by Host (Blocked by CDN)")
+        if not r: raise Exception("Connection Refused by Host")
         if r.status_code >= 400 and r.status_code != 416: r.raise_for_status()
-        
-        final_url = str(r.url) if hasattr(r, 'url') and r.url else u
-        u = final_url
+        u = str(r.url) if hasattr(r, 'url') and r.url else u
         with db_lock:
             if fid in db: db[fid]['url'] = u
-
         update_file_metadata(fid, r)
         cr = r.headers.get('Content-Range', ''); tot = int(cr.split('/')[-1]) if cr and '/' in cr else (int(r.headers.get('content-length', 0)) if r.status_code == 200 else 0)
         sup_range = r.headers.get('accept-ranges') == 'bytes' or r.headers.get('Content-Range') or r.headers.get('content-length')
@@ -1854,12 +1382,11 @@ def worker_core(fid, mode):
         if tot == 0:
             try: rh = requests.head(u, headers=HEADERS, timeout=10, allow_redirects=True); tot = int(rh.headers.get('content-length', 0))
             except: pass
-        
         with db_lock:
             if fid not in db: return
             db[fid]['total'], p = tot, db[fid]['path']
             if mode == 'multi': db[fid]['written'], db[fid]['priority'] = set(), set()
-            
+
         if mode == 'disk' or (mode == 'multi' and (tot == 0 or not sup_range)):
             rets = 0
             while rets < 20:
@@ -1878,8 +1405,7 @@ def worker_core(fid, mode):
                             except: pass
                         if dl > 0 and r.status_code != 206: dl = 0; db[fid]['down'] = 0
                         with open(p, 'r+b' if tot > 0 else ('ab' if dl > 0 else 'wb')) as f:
-                            if tot > 0:
-                                f.seek(dl)
+                            if tot > 0: f.seek(dl)
                             for c in r.iter_content(1048576):
                                 with db_lock:
                                     if fid not in db or db[fid].get('status') == 'Stopped': break
@@ -1898,25 +1424,11 @@ def worker_core(fid, mode):
 
         if mode == 'multi':
             open(p, 'wb').truncate(tot); fd = os.open(p, os.O_WRONLY)
-            with db_lock:
-                db_type = db[fid].get('type') if fid in db else 'multi'
-            is_torbox_engine3 = (db_type == 'multi') and any(x in u.lower() for x in ["torbox", "tb-cdn", "indi.tb-cdn"])
-            if is_torbox_engine3:
-                csz = max(1048576, min(16777216, tot // 128 if tot > 0 else 16777216))
-                max_thr_ceil = 4  
-            else:
-                csz = max(262144, min(2097152, tot // 512 if tot > 0 else 2097152))
-                max_thr_ceil = 128
-            
+            csz = max(262144, min(2097152, tot // 512 if tot > 0 else 2097152))
+            max_thr_ceil = 32
             with db_lock: db[fid]['chunk_size'] = csz
             tc = (tot + csz - 1) // csz; pc, ac, lk, ef = set(range(tc)), set(), threading.Lock(), []
-            sc = max_thr_ceil
-            ma = 4 if is_torbox_engine3 else 8
-            ll = False
-            ss = False if is_torbox_engine3 else True
-            aw = 0
-            let = time.time()
-            
+            sc, ma, ll, ss, aw, let = max_thr_ceil, 8, False, True, 0, time.time()
             def get_nc():
                 with lk:
                     with db_lock:
@@ -1927,18 +1439,10 @@ def worker_core(fid, mode):
                     av = pc - ac
                     if av: c = min(av); ac.add(c); return c
                     return None
-            
             def mw():
                 nonlocal ma, sc, ll, ss, aw, let
-                s = None
-                def init_s():
-                    nonlocal s
-                    if s:
-                        try: s.close()
-                        except: pass
-                    s = creq.Session(curl_options={ip_opt: 1} if ip_opt else {}, **rqk) if is_c else requests.Session()
-                    if not is_c: ad = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0); s.mount('http://', ad); s.mount('https://', ad)
-                init_s()
+                s = creq.Session(curl_options={ip_opt: 1} if ip_opt else {}, **rqk) if is_c else requests.Session()
+                if not is_c: s.mount('http://', requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)); s.mount('https://', requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0))
                 with lk: aw += 1
                 with db_lock: db[fid]['active_threads'] = aw if fid in db else 0
                 try:
@@ -1952,7 +1456,7 @@ def worker_core(fid, mode):
                             continue
                         st, en = ci * csz, min(ci * csz + csz - 1, tot - 1); el = en - st + 1; h = bh.copy(); h['Range'] = f'bytes={st}-{en}'; suc, bd, ld = False, 0, 0
                         try:
-                            res = s.get(u, headers=h, timeout=(10, 25) if is_torbox_engine3 else (5, 10), stream=True)
+                            res = s.get(u, headers=h, timeout=(5, 10), stream=True)
                             if res.status_code in [404, 410]: ef.append(True); raise Exception("Fatal HTTP")
                             if res.status_code in [403, 401, 400, 429, 503, 508]: raise Exception("Rate Limit")
                             res.raise_for_status()
@@ -1979,8 +1483,6 @@ def worker_core(fid, mode):
                                 unregister_download_conn(fid, res)
                                 res.close()
                         except Exception as e:
-                            if is_torbox_engine3:
-                                init_s()  
                             with lk:
                                 if any(x in str(e).lower() for x in ["rate limit", "429", "503", "508", "requests", "403", "401", "400", "reset", "refused", "timeout", "eof"]):
                                     if not ll: sc, ll, ss, let = max(2, aw // 2), True, False, time.time(); ma = min(ma, sc)
@@ -1993,12 +1495,11 @@ def worker_core(fid, mode):
                             with lk:
                                 if ll and aw > ma: break
                 finally:
-                    if s:
-                        try: s.close()
-                        except: pass
+                    try: s.close()
+                    except: pass
                     with lk: aw -= 1
                     with db_lock: db[fid]['active_threads'] = aw if fid in db else 0
-            
+
             ths = []
             while True:
                 with db_lock:
@@ -2008,14 +1509,12 @@ def worker_core(fid, mode):
                     if not pc and not ac: break
                     ca = aw
                 if ll and (time.time() - let > 30): ll, sc = False, min(max_thr_ceil, sc + 1)
-                if pl > 0: ll = False; ma = min(sc, ma + 32) if ma < sc else ma
+                if pl > 0: ll = False; ma = min(sc, ma + 16) if ma < sc else ma
                 if ca < ma:
-                    sp = min(16, ma - ca)
-                    for _ in range(sp): 
+                    sp = min(8, ma - ca)
+                    for _ in range(sp):
                         t = threading.Thread(target=mw, daemon=True)
-                        t.start()
-                        ths.append(t)
-                        time.sleep(0.15) 
+                        t.start(); ths.append(t); time.sleep(0.15)
                     with db_lock: db[fid]['status'] = f'Hyper-Scaling ({ca+sp} Threads)...' if fid in db else ""
                 else:
                     with db_lock: db[fid]['status'] = f'Downloading (Locked at {ca} Threads)' if ll else f'Downloading ({ca} Threads)'
@@ -2026,7 +1525,6 @@ def worker_core(fid, mode):
                 elif pc: db[fid]['active_threads'], db[fid]['status'] = 0, 'Error: Incomplete'
                 else: db[fid]['active_threads'], db[fid]['down'], db[fid]['status'] = 0, tot, 'Completed'
             return
-
     except Exception as e:
         with db_lock: db[fid]['status'] = f'Error: {str(e)[:40]}' if fid in db else ""
 
@@ -2043,37 +1541,29 @@ def engine3_worker(fid):
                 r.close()
             except: pass
             time.sleep(1.5 * (attempt + 1))
-            
         if r is None or r.status_code not in [200, 206]:
-            with db_lock: 
+            with db_lock:
                 if fid in db: db[fid]['status'] = "Error: Connection Refused by Host"
             return
-            
-        final_url = str(r.url) if hasattr(r, 'url') and r.url else u
-        u = final_url
+        u = str(r.url) if hasattr(r, 'url') and r.url else u
         with db_lock:
             if fid in db: db[fid]['url'] = u
-
         update_file_metadata(fid, r)
         tot = int(r.headers.get('content-length', 0)); sr = r.headers.get('accept-ranges') == 'bytes' or r.headers.get('Content-Range')
         if tot == 0:
             try: rh = creq_head(u, headers=HEADERS, timeout=10, allow_redirects=True); tot = int(rh.headers.get('content-length', 0))
             except: pass
         with db_lock: db[fid]['total'], p = tot, db[fid]['path']
-
         if not sr or tot == 0:
             with open(p, 'wb') as f:
                 iter_chunks = r.iter_content(4194304) if hasattr(r, 'iter_content') else r.raw.read
                 for ck in iter_chunks:
                     with db_lock:
                         if db[fid].get('status') == 'Stopped': r.close(); raise Exception("Stopped")
-                    if ck:
-                        f.write(ck)
-                        with db_lock: db[fid]['down'] += len(ck)
+                    if ck: f.write(ck); db[fid]['down'] += len(ck)
             r.close()
             with db_lock: db[fid]['status'] = 'Completed'
             return
-
         r.close()
         worker_core(fid, 'multi')
         with db_lock:
@@ -2089,7 +1579,6 @@ def drive_worker(fid, swarm=False):
     try:
         token, err = get_drive_auth()
         if err: raise Exception(err)
-        
         r = None
         for attempt in range(5):
             try:
@@ -2098,17 +1587,13 @@ def drive_worker(fid, swarm=False):
                 r.close()
             except: pass
             time.sleep(1.5 * (attempt + 1))
-            
         if r is None or r.status_code not in [200, 206]:
-            with db_lock: 
+            with db_lock:
                 if fid in db: db[fid]['status'] = "Error: Connection Refused by Host"
             return
-            
-        final_url = str(r.url) if hasattr(r, 'url') and r.url else u
-        u = final_url
+        u = str(r.url) if hasattr(r, 'url') and r.url else u
         with db_lock:
             if fid in db: db[fid]['url'] = u
-
         update_file_metadata(fid, r)
         tot = int(r.headers.get('content-length', 0)); sr = r.headers.get('accept-ranges') == 'bytes' or r.headers.get('Content-Range')
         if tot == 0:
@@ -2129,7 +1614,7 @@ def drive_worker(fid, swarm=False):
             return False, None
 
         if not swarm or not sr or tot == 0:
-            cz, sb, fi, buf = 33554432, 0, None, bytearray()
+            cz, sb, fi, buf = 16777216, 0, None, bytearray()
             register_download_conn(fid, r)
             try:
                 iter_chunks = r.iter_content(4194304) if hasattr(r, 'iter_content') else r.raw.read
@@ -2156,14 +1641,12 @@ def drive_worker(fid, swarm=False):
         r.close()
         with db_lock: db[fid]['status'] = 'Swarming to Buffer Disk...'
         worker_core(fid, 'multi')
-        
         with db_lock:
             if db[fid].get('status') != 'Completed': raise Exception("Buffer Download Failed.")
             db[fid]['status'], db[fid]['down'] = 'Piping Buffer to Drive...', 0
             p = db[fid]['path']
-            
         with open(p, 'rb') as f:
-            cz, sb, fi = 67108864, 0, None
+            cz, sb, fi = 33554432, 0, None
             while sb < tot:
                 with db_lock:
                     if db[fid].get('status') == 'Stopped': raise Exception("Stopped")
@@ -2200,24 +1683,19 @@ def action(fid, act):
             db[fid]['status'] = 'Stopped'; ft, ptd = db[fid].get('type'), db[fid].get('path')
             u = db[fid].get('url', ''); u_hash = hashlib.md5(u.encode()).hexdigest() if u else ''; sw_hash = hashlib.md5(f"sw_{u}".encode()).hexdigest() if u else ''
             file_id = db[fid].get('file_id', '')
-
-            # Close all active HTTP connections immediately to raise socket exception in downloader threads
             if fid in active_downloads:
                 for r in list(active_downloads[fid]):
                     try: r.close()
                     except: pass
-
             if ft == 'p2p' and fid in p2p_streams:
                 with p2p_streams[fid].lock: p2p_streams[fid].cond.notify_all()
                 p2p_streams[fid].chunks.clear(); del p2p_streams[fid]
             elif ft in ['disk_relay', 'folder'] and fid in disk_streams:
                 with disk_streams[fid].lock: disk_streams[fid].cond.notify_all()
                 del disk_streams[fid]
-            
             with shared_drive_lock:
                 keys_to_del = [k for k in shared_drive_cache.keys() if (file_id and file_id in k) or (u_hash and u_hash in k) or (sw_hash and sw_hash in k) or fid in k]
                 for k in keys_to_del: del shared_drive_cache[k]
-
             del db[fid]
             if ptd: run_cleanup(ptd)
     gc.collect(); return "OK"
@@ -2264,19 +1742,15 @@ def cleaner():
                 for fid in list(gofile_files_cache.keys()):
                     entry = gofile_files_cache[fid]
                     updated = entry.get('updated_at', 0) if isinstance(entry, dict) else 0
-                    if now - updated > 172800:
-                        del gofile_files_cache[fid]
-        except Exception as e:
-            print("Pruning Gofile cache failed:", e)
+                    if now - updated > 172800: del gofile_files_cache[fid]
+        except Exception: pass
         try:
             with archive_mounts_lock:
                 for bu in list(archive_mounts_cache.keys()):
                     entry = archive_mounts_cache[bu]
                     created_at = entry.get('created_at', 0)
-                    if now - created_at > 172800:
-                        del archive_mounts_cache[bu]
-        except Exception as e:
-            print("Pruning Archive mounts cache failed:", e)
+                    if now - created_at > 172800: del archive_mounts_cache[bu]
+        except Exception: pass
         gc.collect()
 threading.Thread(target=cleaner, daemon=True).start()
 
@@ -2284,7 +1758,7 @@ def drive_token_refresher():
     while True:
         time.sleep(1800)
         try: get_drive_auth()
-        except Exception as e: print("Token Refresher Thread Safe Catch:", e)
+        except Exception: pass
 threading.Thread(target=drive_token_refresher, daemon=True).start()
 
 @app.route('/files/')
@@ -2292,29 +1766,20 @@ threading.Thread(target=drive_token_refresher, daemon=True).start()
 def list_files(req_path=''):
     headers = {'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0'}
     auth_token = request.args.get('auth') or request.cookies.get('dash_auth')
-    if auth_token != DASH_PASS:
-        return Response(render_template_string(LOGIN_HTML), mimetype='text/html', headers=headers)
-        
+    if auth_token != DASH_PASS: return Response(render_template_string(LOGIN_HTML), mimetype='text/html', headers=headers)
     abs_path = os.path.normpath(os.path.join(DL_DIR, req_path))
-    if not abs_path.startswith(DL_DIR):
-        return "Access Denied", 403
-        
+    if not abs_path.startswith(DL_DIR): return "Access Denied", 403
     if request.args.get('action') == 'delete':
         if os.path.exists(abs_path):
             try:
-                if os.path.isdir(abs_path):
-                    shutil.rmtree(abs_path)
-                else:
-                    os.remove(abs_path)
-            except Exception as e:
-                return f"Delete failed: {str(e)}", 500
+                if os.path.isdir(abs_path): shutil.rmtree(abs_path)
+                else: os.remove(abs_path)
+            except Exception as e: return f"Delete failed: {str(e)}", 500
         parent = os.path.dirname(req_path.rstrip('/'))
         parent_url = f"/files/{parent}" if parent else "/files/"
         return render_template_string(f"<script>window.location.href = '{parent_url}'</script>")
 
-    if not os.path.exists(abs_path):
-        return "File Not Found", 404
-        
+    if not os.path.exists(abs_path): return "File Not Found", 404
     if os.path.isdir(abs_path):
         items = os.listdir(abs_path)
         html = """<!DOCTYPE html><html><head><title>Downloads Browser</title><style>body{background:#0a0c10;color:#e2e8f0;font-family:system-ui,sans-serif;padding:20px;max-width:850px;margin:auto}h2{border-bottom:2px solid #333;padding-bottom:10px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}a{color:#00b3ff;text-decoration:none;font-weight:600}a:hover{text-decoration:underline}.item{padding:14px;border-bottom:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center;background:#14171f;margin-bottom:8px;border-radius:8px;border:1px solid #2d3748}.btn-group{display:flex;gap:8px}.btn{padding:8px 14px;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:14px;transition:0.2s}.btn-blue{background:#00b3ff;color:#000}.btn-blue:hover{opacity:.8}.btn-red{background:transparent;border:1px solid #ef4444;color:#ef4444}.btn-red:hover{background:#ef4444;color:#fff}</style></head><body><h2><span>📁 Downloads Directory</span><a href="/" style="font-size:14px;color:#888;font-weight:normal">↩ Back to Dashboard</a></h2><div style="margin-bottom:15px;font-size:14px;color:#888"><a href="/files/?auth=""" + DASH_PASS + """">Root</a> / """ + req_path + """</div><div>"""
@@ -2343,27 +1808,23 @@ def list_files(req_path=''):
 
 if __name__ == '__main__':
     from waitress import serve
-    serve(app, host='0.0.0.0', port=8080, threads=128, connection_limit=2000, channel_timeout=86400)
+    serve(app, host='0.0.0.0', port=8080, threads=16, connection_limit=500, channel_timeout=86400)
 ENGPYEOF
 
-# 7. Wait for all background downloads to complete & Unpack AriaNg
 log_step "7" "Unpacking Web Packages & AriaNg Manager"
 exec_step "Extracting AriaNg download manager assets" bash -c 'wait $PID_ARIA 2>/dev/null || true; mkdir -p nginx/ariang && if [ -f nginx/AriaNg-1.3.7-AllInOne.zip ]; then unzip -qo nginx/AriaNg-1.3.7-AllInOne.zip -d nginx/ariang 2>/dev/null || true; rm -f nginx/AriaNg-1.3.7-AllInOne.zip; fi; if [ ! -f nginx/ariang/index.html ]; then wget -q -O nginx/AriaNg-1.3.7-AllInOne.zip https://github.com/mayswind/AriaNg/releases/download/1.3.7/AriaNg-1.3.7-AllInOne.zip && unzip -qo nginx/AriaNg-1.3.7-AllInOne.zip -d nginx/ariang 2>/dev/null && rm -f nginx/AriaNg-1.3.7-AllInOne.zip || curl -sSL https://raw.githubusercontent.com/mayswind/AriaNg-DailyBuild/master/index.html -o nginx/ariang/index.html 2>/dev/null || true; fi; chmod -R 755 nginx/ariang 2>/dev/null || true'
 
-# 8. Flush Old Instances & Prepare Port Allocations
 log_step "8" "Flushing Old Instances & Preparing Port Allocations"
 exec_step "Stopping previous container stack" docker compose down --remove-orphans
 exec_step "Clearing host ports (80, $VPN_PORT)" bash -c "for p in 80 ${VPN_PORT}; do docker ps -a --filter \"publish=\$p\" -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null || true; sudo pkill -9 -f \"docker-proxy.*\$p\" 2>/dev/null || true; sudo fuser -k -9 \$p/tcp 2>/dev/null || true; sudo fuser -k -9 \$p/udp 2>/dev/null || true; done"
 
-# 9. Build and Run Services (Clean Stack Rebuild and Boot)
 log_step "9" "Building High-Performance Container Stack"
-for srv in engine browser terminal; do
+for srv in engine terminal; do
     exec_step "Compiling [${srv}] microservice image" bash -c "docker compose build -q '$srv'"
 done
 exec_step "Launching all microservice container services" docker compose up -d --force-recreate --remove-orphans
 
-# 10. Host Auto-Debugger Tool Generation & Deep Disk Cleanup
-log_step "10" "Deploying Auto-Debugger & Deep Disk Cache Purge"
+log_step "10" "Deploying Auto-Debugger & Deep Disk/RAM Cache Purge"
 sudo tee /usr/local/bin/media-debug > /dev/null << 'DEBUGEOF'
 #!/bin/bash
 stty sane 2>/dev/null || true
@@ -2381,8 +1842,7 @@ echo -e "${CYAN}╚════════════════════�
 
 TARGET_DIR="INSTALL_PATH_PLACEHOLDER"
 cd "$TARGET_DIR" || exit 1
-
-VPN_PORT_ACTIVE=$(grep '^VPN_PORT=' .env 2>/dev/null | cut -d= -f2 || echo "443")
+VPN_PORT_ACTIVE=$(grep '^VPN_PORT=' .env 2>/dev/null | cut -d= -f2 || echo "8388")
 
 for p in 80 ${VPN_PORT_ACTIVE}; do
     pids=$(sudo lsof -t -i :$p 2>/dev/null || true)
@@ -2399,7 +1859,7 @@ if ! sudo docker info &>/dev/null; then
     sleep 0.1
 fi
 
-for s in engine vpn terminal browser nginx; do
+for s in engine vpn terminal nginx; do
     cn=$(sudo docker ps -a --format '{{.Names}}' | grep -E "${s}" | head -n 1)
     status=$(sudo docker inspect -f '{{.State.Status}}' "$cn" 2>/dev/null || echo "missing")
     if [ "$status" != "running" ]; then
@@ -2419,7 +1879,6 @@ fi
 
 e_code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1/ || echo "000")
 echo -e "\r  ${GREEN}✔${NC} Master Dashboard: HTTP $e_code"
-
 if [ "$e_code" = "502" ] || [ "$e_code" = "000" ]; then
     echo -e "\r  ${YELLOW}[Auto-Fix] Restarting engine...${NC}"
     sudo docker compose restart engine >/dev/null 2>&1 || true
@@ -2441,7 +1900,7 @@ stty onlcr opost 2>/dev/null || true
 CYAN='\033[38;5;51m'
 GREEN='\033[38;5;48m'
 NC='\033[0m'
-echo -e "\r\n${CYAN}🧹 Running Master VPS Disk Purge...${NC}"
+echo -e "\r\n${CYAN}🧹 Running Master VPS Disk & Memory Purge...${NC}"
 sudo docker builder prune -a -f >/dev/null 2>&1 || true
 sudo docker system prune -f >/dev/null 2>&1 || true
 sudo apt-get autoremove --purge -y >/dev/null 2>&1 || true
@@ -2458,7 +1917,9 @@ if command -v snap &>/dev/null; then
 fi
 sudo mkdir -p /tmp /var/tmp /var/log/journal
 sudo chmod 1777 /tmp /var/tmp
-echo -e "\r  ${GREEN}✔${NC} Disk cleanup complete! Current disk space:"
+sync
+echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1 || true
+echo -e "\r  ${GREEN}✔${NC} Disk and RAM cleanup complete! Current disk space:"
 df -h /
 CLEANEOF
 sudo chmod +x /usr/local/bin/disk-clean
@@ -2467,24 +1928,23 @@ exec_step "Deploying /usr/local/bin/media-debug & media-fix" bash -c 'true'
 exec_step "Deploying /usr/local/bin/disk-clean utility" bash -c 'true'
 exec_step "Executing system stack self-test" /usr/local/bin/media-debug
 exec_step "Pruning unused Docker build cache & dangling layers" sudo docker builder prune -a -f
-exec_step "Purging apt cache, journals, and system logs" bash -c 'sudo docker system prune -a -f >/dev/null 2>&1 || true; sudo apt-get autoremove --purge -y >/dev/null 2>&1 || true; sudo apt-get clean >/dev/null 2>&1 || true; sudo rm -rf /var/cache/apt/archives/* /var/lib/apt/lists/* 2>/dev/null || true; sudo journalctl --vacuum-size=10M >/dev/null 2>&1 || true; sudo journalctl --vacuum-time=1d >/dev/null 2>&1 || true; sudo find /var/log -type f -name "*.log" -exec truncate -s 0 {} + 2>/dev/null || true; sudo find /var/log -type f -name "*.gz" -delete 2>/dev/null || true; sudo rm -rf /var/crash/* /var/backups/* /tmp/* /tmp/.* /var/tmp/* /var/tmp/.* 2>/dev/null || true; if command -v snap &>/dev/null; then sudo rm -rf /var/lib/snapd/cache/* 2>/dev/null || true; fi; sudo mkdir -p /tmp /var/tmp /var/log/journal; sudo chmod 1777 /tmp /var/tmp'
+exec_step "Purging apt cache, journals, system logs & flushing RAM caches" bash -c 'sudo docker system prune -a -f >/dev/null 2>&1 || true; sudo apt-get autoremove --purge -y >/dev/null 2>&1 || true; sudo apt-get clean >/dev/null 2>&1 || true; sudo rm -rf /var/cache/apt/archives/* /var/lib/apt/lists/* 2>/dev/null || true; sudo journalctl --vacuum-size=10M >/dev/null 2>&1 || true; sudo journalctl --vacuum-time=1d >/dev/null 2>&1 || true; sudo find /var/log -type f -name "*.log" -exec truncate -s 0 {} + 2>/dev/null || true; sudo find /var/log -type f -name "*.gz" -delete 2>/dev/null || true; sudo rm -rf /var/crash/* /var/backups/* /tmp/* /tmp/.* /var/tmp/* /var/tmp/.* 2>/dev/null || true; if command -v snap &>/dev/null; then sudo rm -rf /var/lib/snapd/cache/* 2>/dev/null || true; fi; sudo mkdir -p /tmp /var/tmp /var/log/journal; sudo chmod 1777 /tmp /var/tmp; sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1 || true'
 
 SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 OUTLINE_ENCODED=$(echo -n "chacha20-ietf-poly1305:${VPN_PASS}" | base64 -w 0)
 
-# Build credentials text with explicit CR-LF (\r\n) line endings to permanently prevent Bitvise SSH staircase / zig-zagging
 cat > /root/engine_credentials.txt << CREDEOF
 =====================================================================
-🎯 V184-ULTRA-PRO (BRAVE-ACCESS + TERMINAL-ACCESS + ARIA2 + VPN-PANEL)
+🎯 V184-ULTRA-PRO (FILE-MANAGER + TERMINAL + ARIA2 + VPN-PANEL)
 =====================================================================
 
 🌐 --- 1. WEB MASTER CONSOLE ---
 Link:     http://$SERVER_IP
 Password: $DASH_PASS
 
-🦁 --- 2. CLOUD BRAVE BROWSER (v1.81+ | 1366x768 REMOTE RESIZING) ---
-Link:     http://$SERVER_IP/brave
-Password: $BROWSER_PASS
+📁 --- 2. FILE BROWSER / DOWNLOADS ---
+Link:     http://$SERVER_IP/files/
+Password: $DASH_PASS
 
 💻 --- 3. VPS WEB TERMINAL (ROOT SUDO ACCESS) ---
 Link:     http://$SERVER_IP/terminal
@@ -2499,22 +1959,19 @@ Link:     http://$SERVER_IP/vpn-panel
 Password: $DASH_PASS
 
 🛡️ --- 6. 10GBPS VPN TUNNEL (PORT ${VPN_PORT}) ---
-SS Link:      ss://${OUTLINE_ENCODED}@${SERVER_IP}:${VPN_PORT}#10GBPS-VPN
 Outline Link: ss://${OUTLINE_ENCODED}@${SERVER_IP}:${VPN_PORT}/?outline=1#10GBPS-VPN
 Password:     $VPN_PASS
 Port:         ${VPN_PORT} (TCP/UDP)
 
-🔑 --- 7. VAULT KEYS DELETE PASSWORD ---
-Password:     $DELETE_KEY_PASS
+🔑 --- 7. VAULT PASSWORD (DRIVE & GOFILE KEYS DELETION) ---
+Vault Password: $DELETE_KEY_PASS
 =====================================================================
 CREDEOF
 
-# Format credentials file with exact \r\n line breaks
 sed -i 's/\r*$//' /root/engine_credentials.txt
 sed -i 's/$/\r/' /root/engine_credentials.txt
 chmod 600 /root/engine_credentials.txt
 
-# Reset terminal modes to guarantee clean left-aligned rendering
 stty sane 2>/dev/null || true
 stty onlcr opost 2>/dev/null || true
 
@@ -2522,7 +1979,6 @@ echo -e "\r\n${CYAN}╔═══════════════════
 echo -e "${CYAN}║${NC}   ${BOLD}${GREEN}🎉 ALL SERVICES DEPLOYED & OPTIMIZED SUCCESSFULLY!${NC}                ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}\r\n"
 
-# Print each line with forced carriage return to column 0
 while IFS= read -r line; do
     printf "\r  %s\r\n" "$line"
 done < /root/engine_credentials.txt
